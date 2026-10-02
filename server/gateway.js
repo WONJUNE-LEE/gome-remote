@@ -72,7 +72,7 @@ export function connectionSettings(target, input) {
               "ignore-cert": target.ignoreCertificate === true,
               "resize-method": "display-update",
               "server-layout": "en-us-qwerty",
-              "enable-wallpaper": false,
+              "enable-wallpaper": true,
               "enable-drive": false,
               "enable-printing": false,
               "disable-audio": true,

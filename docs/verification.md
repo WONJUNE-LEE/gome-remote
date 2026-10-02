@@ -178,3 +178,51 @@ The new design supersedes the overlay and persistent exit button described above
   build. A later native menu connection probe encountered a safeStorage encryption
   error in its isolated test profile before connecting; it is not counted as a
   native menu interaction pass or as proof that credential encryption works.
+
+## Ubuntu application and wallpaper correction
+
+The owner reported Settings and Firefox failing to open and a solid blue desktop.
+Four server-side defects were confirmed on the retained test desktop:
+
+- Settings exited because D-Bus activation lacked the desktop environment that
+  existed only inside the shell unit. The shell now exports its Ubuntu GNOME and
+  Wayland identity to both D-Bus and the systemd user manager before starting.
+- The GNOME portal unit requires an active graphical-session.target. The bare
+  shell previously did not pull it in. The shell now binds to that target and is
+  ordered before it; portal activation works after a user-manager restart.
+- Snap Firefox rejected the dedicated account's legacy `/var/lib` home. New
+  accounts use `/home/<user>`. Collision checks preserve both standard and legacy
+  homes. The owner's existing account was relocated with the session stopped,
+  a full backup and checksum comparison, preserving credentials and files while
+  updating the RDP HOME and certificate paths. This was a controlled migration,
+  not an installer upgrade path or a global Snap sandbox configuration change.
+- `XDG_CURRENT_DESKTOP=GNOME` selected an upstream default wallpaper URI pointing
+  to an absent `gnome/adwaita-l.jxl`. The initial diagnostic command inherited the
+  host's Ubuntu identity and misleadingly reported an existing Ubuntu image.
+  `ubuntu:GNOME` selects the installed Ubuntu defaults. RDP also explicitly
+  enables wallpaper instead of requesting that the server suppress it.
+
+Validation:
+
+- All 18 Node tests, TypeScript check and build pass. The actual RDP wire fixture
+  now requires wallpaper=true; VNC still leaves the RDP option unset.
+- Four Python tests pass, including seven reserved destination paths as regular
+  files and dangling symlinks, standard-home account creation, and the actual
+  installer-generated shell unit's desktop identity, activation export and
+  graphical-session ordering. The simulated installer performs no host changes.
+- After resetting the temporary wallpaper override, restarting the dedicated
+  user manager and reconnecting, the default Ubuntu wallpaper appears with no
+  per-user picture-uri override. A no-override GNOME-only control reproduced the
+  blue desktop; changing the desktop identity resolved it.
+- Settings opens through D-Bus activation without injecting desktop variables
+  into the calling process. Firefox opens through GNOME search over real remote
+  keyboard input; its window is visible through the actual guacd/RDP/browser path.
+- User-manager environment contains the new home, ubuntu:GNOME, wayland and the
+  Wayland socket. The graphical target and both portal services are active.
+- systemd unit verification passes; the host has an unrelated pre-existing
+  spice-vdagent unit warning. No firewall, global Snap allowance, or other login
+  account was changed. The original home and root-only migration backup remain.
+
+The client UI is unchanged at 0.1.2; this correction requires server updates and
+reconnection, not a replacement Windows ZIP. Full host reboot and native Windows
+execution remain separate verification limits.

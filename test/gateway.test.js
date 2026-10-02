@@ -127,6 +127,7 @@ async function fixture(t, protocol = "rdp", clock = Date.now) {
               "read-only",
               "enable-drive",
               "disable-copy",
+              "enable-wallpaper",
             ]),
           );
         if (parts[0] === "connect") {
@@ -250,6 +251,7 @@ for (const protocol of ["rdp", "vnc"])
         "false",
         protocol === "rdp" ? "false" : "",
         "true",
+        protocol === "rdp" ? "true" : "",
       ],
     );
     assert.ok(messages.includes("0.,5.$test;"));

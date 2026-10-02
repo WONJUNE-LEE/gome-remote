@@ -77,7 +77,8 @@ the UI and run the gateway with a loopback `publicOrigin`.
 
 The installer is for Ubuntu 26.04 with GNOME 50, `gnome-remote-desktop`, `openssl`,
 systemd with network namespaces, and `systemd-socket-proxyd`. It creates a **new, dedicated Linux user** with its own
-home and applications. It does not reuse or expose your existing login session.
+home under `/home/<user>` and applications, including Snap-installed Firefox.
+It does not reuse or expose your existing login session.
 It refuses existing users, homes, state directories, and unit files (including
 dangling symlinks). New files are created exclusively, never overwritten.
 
@@ -88,6 +89,11 @@ sudo python3 scripts/setup-headless.py --user gome-remote --port 33490
 The installer creates:
 
 - A dedicated user and a lingering systemd user manager for the GNOME shell.
+- Ubuntu GNOME/Wayland environment exported to both D-Bus and systemd application
+  activation before the shell starts, so desktop-launched Settings recognizes GNOME.
+  `ubuntu:GNOME` selects Ubuntu's installed default wallpaper and theme instead
+  of upstream GNOME wallpaper paths that may not exist on Ubuntu.
+- A graphical session target tied to the shell, allowing desktop portals to start.
 - A headless GNOME shell and a system RDP service running as that user in its
   own private network namespace. The stock user RDP services are masked.
 - A local TLS certificate and random RDP credentials, with the private key
@@ -102,6 +108,14 @@ The RDP port itself is not reachable over Tailscale or the LAN; remote clients
 reach it through the authenticated gateway. For a second Ubuntu host, deploy a
 separate gateway there. The GNOME desktop's applications retain normal host
 networking; only the RDP daemon and its socket proxy are isolated.
+
+RDP connections enable desktop wallpaper. A physical monitor is not required
+for the wallpaper or applications. New installation requires
+`dbus-update-activation-environment` (Ubuntu's `dbus-bin` package).
+The installer does not upgrade existing accounts. For a legacy `/var/lib/<user>`
+home, preserve files and credentials before a planned session shutdown and home
+relocation; TLS certificate paths and the RDP service's `HOME` must also be updated.
+Simply moving the directory while the desktop is running is not supported.
 
 Do **not** add `--virtual-monitor` to the GNOME shell. GNOME Remote Desktop creates
 the display when a client connects; pre-creating another monitor can select an

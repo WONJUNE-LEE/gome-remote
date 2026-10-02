@@ -77,7 +77,7 @@ def main():
         parser.error("Run with sudo")
     if not re.fullmatch(r"[a-z][a-z0-9-]{1,30}", args.user) or not 1024 <= args.port <= 65535:
         parser.error("Invalid user or port")
-    for binary in ["gnome-shell", "grdctl", "openssl", "runuser", "loginctl", "unshare"]:
+    for binary in ["gnome-shell", "grdctl", "openssl", "runuser", "loginctl", "unshare", "dbus-update-activation-environment"]:
         if not shutil.which(binary):
             parser.error(f"Missing required command: {binary}")
     try:
@@ -87,11 +87,13 @@ def main():
     else:
         parser.error("The dedicated user already exists. Refusing to overwrite it.")
     state_dir = Path("/etc/gome-remote")
-    home = Path(f"/var/lib/{args.user}")
+    # Desktop applications (including confined Snap apps) expect a normal home.
+    home = Path(f"/home/{args.user}")
+    legacy_home = Path(f"/var/lib/{args.user}")
     system_units = Path("/etc/systemd/system")
     unit_names = ["gome-remote-rdp.service", "gome-remote-rdp-proxy.service", "gome-remote-rdp-proxy.socket"]
     # Refuse all existing destinations, including dangling links and old installations.
-    for path in [state_dir, home, system_units / "gome-remote-firewall.service", *[system_units / name for name in unit_names]]:
+    for path in [state_dir, home, legacy_home, system_units / "gome-remote-firewall.service", *[system_units / name for name in unit_names]]:
         if os.path.lexists(path):
             parser.error(f"Existing installation resource: {path}. Refusing to overwrite it.")
     proxy = Path("/usr/lib/systemd/systemd-socket-proxyd")
@@ -105,7 +107,7 @@ def main():
     finally:
         probe.close()
 
-    run(["useradd", "--create-home", "--home-dir", f"/var/lib/{args.user}", "--shell", "/bin/bash", args.user])
+    run(["useradd", "--create-home", "--home-dir", str(home), "--shell", "/bin/bash", args.user])
     account = pwd.getpwnam(args.user)
     uid, gid = account.pw_uid, account.pw_gid
     home = Path(account.pw_dir)
@@ -134,12 +136,16 @@ def main():
     run(prefix + ["gsettings", "set", "org.gnome.desktop.screensaver", "lock-enabled", "false"])
     private_write(units / "gome-remote-shell.service", """[Unit]
 Description=Gome Remote dedicated headless GNOME desktop
+BindsTo=graphical-session.target
+Before=graphical-session.target
 
 [Service]
 Type=dbus
 BusName=org.gnome.Shell
 Environment=XDG_SESSION_TYPE=wayland
-Environment=XDG_CURRENT_DESKTOP=GNOME
+Environment=XDG_CURRENT_DESKTOP=ubuntu:GNOME
+# D-Bus/systemd-launched applications must see the same desktop as the shell.
+ExecStartPre=/usr/bin/dbus-update-activation-environment --systemd XDG_SESSION_TYPE XDG_CURRENT_DESKTOP
 ExecStart=/usr/bin/gnome-shell --headless --no-x11
 Restart=on-failure
 RestartSec=3
