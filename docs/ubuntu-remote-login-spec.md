@@ -288,8 +288,8 @@ Keep prior verified results distinguishable from the new architecture's results.
 ## Review and approval boundaries
 
 The owner chose F and official Remote Login on 2026-10-03. Existing-service reuse
-is selected. Select the review engine once for this redesign immediately before its
-first design gate. Three independent reviewers must approve this spec with no
+is selected. The owner selected Codex 3 for this redesign on 2026-10-03. Use that
+engine throughout its review stages. Three independent reviewers must approve this spec with no
 open major/blocker. After owner agreement, write the implementation plan; the
 plan is not independently reviewed. Implementation receives its own pushed-diff
 gate. A changed diff after convergence requires review of those changes.
