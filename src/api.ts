@@ -1,5 +1,7 @@
 let token = "";
 let revision = 0;
+let fullscreenTarget = false;
+let fullscreenTransition: Promise<void> | undefined;
 async function request(path: string, input?: unknown) {
   const response = await fetch(path, {
     method: input ? "POST" : "GET",
@@ -46,10 +48,21 @@ export const api: DesktopAPI = window.desktop || {
     };
   },
   async forget() {},
-  async fullscreen(enabled) {
-    if (!enabled && document.fullscreenElement) await document.exitFullscreen();
-    else if (enabled && !document.fullscreenElement)
-      await document.documentElement.requestFullscreen();
+  fullscreen(enabled) {
+    fullscreenTarget = enabled;
+    if (!fullscreenTransition) {
+      // Start synchronously to preserve the browser's user activation requirement.
+      fullscreenTransition = (async () => {
+        while (!!document.fullscreenElement !== fullscreenTarget) {
+          if (fullscreenTarget)
+            await document.documentElement.requestFullscreen();
+          else await document.exitFullscreen();
+        }
+      })().finally(() => {
+        fullscreenTransition = undefined;
+      });
+    }
+    return fullscreenTransition;
   },
   async fullscreenState() {
     return !!document.fullscreenElement;

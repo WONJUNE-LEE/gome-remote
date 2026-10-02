@@ -295,3 +295,19 @@ test("windowed intent during a native entry is applied after that entry complete
   assert.deepEqual(f.fullscreenRequests, [true, false]);
   assert.equal(await f.invoke("fullscreen-state"), true);
 });
+
+test("a second F11 during entry queues exit instead of repeating entry", async () => {
+  const f = await desktop();
+  for (let i = 0; i < 2; i++) {
+    assert.equal(
+      f.input({ key: "F11", type: "keyDown", isAutoRepeat: false }),
+      true,
+    );
+    assert.equal(f.input({ key: "F11", type: "keyUp" }), true);
+  }
+  assert.deepEqual(f.fullscreenRequests, [true]);
+  f.finishFullscreen(true);
+  assert.deepEqual(f.fullscreenRequests, [true, false]);
+  f.finishFullscreen(false);
+  assert.equal(await f.invoke("fullscreen-state"), false);
+});

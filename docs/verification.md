@@ -111,7 +111,12 @@ that is applied when entry completes.
   the exact IPC intent sequence `[true, false]` before any entry notification.
   The main-process regression completes the delayed entry and verifies the
   queued exit request, then the final windowed state.
-- All 12 Node tests, TypeScript checks, and the production build pass on Linux.
+- Browser API regressions execute the actual TypeScript adapter with deferred
+  DOM fullscreen promises: entry starts in the gesture, exit during entry is
+  applied exactly once after completion, already-windowed exit is a no-op, and
+  a rejected entry permits retry. A native regression presses F11 twice before
+  entry completes and requires an exit request after the entry event.
+- All 15 Node tests, TypeScript checks, and the production build pass on Linux.
   Mac tests/check/build and packaged startup/secure-storage/IPC smoke passed
   before the review follow-up. Native Mac fullscreen automation was inconclusive:
   IPC entry did not complete within the wait; direct native entry after focusing
