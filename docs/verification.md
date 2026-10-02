@@ -1,13 +1,14 @@
 # Verification record — 2026-10-03
 
-This records the initial implementation before independent review. It is not a
+This records local verification and fixes identified by independent review. It is not a
 claim that all four physical client/host combinations have been tested.
 
 ## Observed passes
 
 - Initial `npm test`: 8 tests passed on Linux (Node 24.21.0) and macOS (Node 26.0.0).
-  After review fixes, all 10 tests pass on Linux, including delayed IPC credential
-  and server-list responses across gateway changes. The updated Mac run is pending.
+  After review fixes, all 10 tests pass on Linux and macOS, including delayed IPC
+  credential and server-list responses across gateway changes. Updated macOS
+  native packaging and the secure-storage/IPC startup smoke test also pass.
   The integration fixture records the actual TCP handshake received from the
   HTTP/WebSocket gateway, rather than asserting a settings-builder mock.
 - `npm run check` and `npm run build`: pass on Linux and macOS.
@@ -33,8 +34,10 @@ claim that all four physical client/host combinations have been tested.
   with the isolated RDP daemon. The stock user daemons are masked before startup.
   GRD needs FUSE clipboard support, so NoNewPrivileges is not applied to GRD;
   it remains enabled for the socket proxy.
-- Python collision tests pass for all six reserved paths, including dangling
-  links, before any system command runs. Exclusive-write tests preserve existing
+- Python tests pass (3 cases). Collision checks cover all six reserved paths, including dangling
+  links, assert the exact refusal reason with an executable proxy available, and
+  stop before any system command runs. A clean-path positive control reaches
+  account creation without performing it. Exclusive-write tests preserve existing
   files and symlink targets. `systemd-analyze verify` passes for all three units.
 - Restarting that dedicated user manager automatically starts the shell and RDP
   services; the browser reconnects and launches Text Editor again.
@@ -60,7 +63,7 @@ review applies to the pushed implementation branch before merging.
 
 - The owner chose Codex 3. The first review found configuration races, missing
   collision checks, firewall reload exposure, and two test gaps. Fixes are
-  implemented and awaiting the next review round.
+  implemented; the independent gate is tracked in the review records.
 - Windows native execution, DPAPI persistence, and all four physical connection
   combinations require owner-device checks. A real Mac VNC service was found
   reachable, but no existing Mac VNC password was read or changed, and Mac host

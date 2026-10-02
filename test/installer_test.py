@@ -1,5 +1,6 @@
 """Preflight collision tests without root, services, or host changes."""
 import importlib.util
+import io
 import os
 from pathlib import Path
 import tempfile
@@ -32,21 +33,52 @@ class InstallerTests(unittest.TestCase):
                         collision.symlink_to("missing-target")
                     else:
                         collision.write_text("preserve-existing-resource")
+                    proxy = mapped("/usr/lib/systemd/systemd-socket-proxyd")
+                    proxy.parent.mkdir(parents=True)
+                    proxy.write_text("#!/bin/sh\nexit 0\n")
+                    proxy.chmod(0o700)
+                    errors = io.StringIO()
                     with patch.object(installer, "Path", side_effect=mapped), \
                          patch.object(installer.os, "geteuid", return_value=0), \
                          patch.object(installer.shutil, "which", return_value="/usr/bin/test-command"), \
                          patch.object(installer.pwd, "getpwnam", side_effect=KeyError), \
                          patch.object(installer, "run") as run, \
                          patch("sys.argv", ["setup-headless.py", "--user", "gome-test"]), \
-                         patch("sys.stderr"):
+                         patch("sys.stderr", errors):
                         with self.assertRaises(SystemExit) as raised:
                             installer.main()
                         self.assertEqual(raised.exception.code, 2)
+                        self.assertIn(f"Existing installation resource: {collision}. Refusing to overwrite it.", errors.getvalue())
                         run.assert_not_called()
                     if dangling:
                         self.assertTrue(collision.is_symlink())
                     else:
                         self.assertEqual(collision.read_text(), "preserve-existing-resource")
+
+    def test_clean_destinations_reach_account_creation(self):
+        class PreflightPassed(Exception):
+            pass
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            def mapped(value):
+                return root / str(value).lstrip("/")
+            proxy = mapped("/usr/lib/systemd/systemd-socket-proxyd")
+            proxy.parent.mkdir(parents=True)
+            proxy.write_text("#!/bin/sh\nexit 0\n")
+            proxy.chmod(0o700)
+            def stop_before_mutation(args, **kwargs):
+                if args[0] == "useradd":
+                    raise PreflightPassed()
+                self.assertEqual(args, ["unshare", "--net", "true"])
+            with patch.object(installer, "Path", side_effect=mapped), \
+                 patch.object(installer.os, "geteuid", return_value=0), \
+                 patch.object(installer.shutil, "which", return_value="/usr/bin/test-command"), \
+                 patch.object(installer.pwd, "getpwnam", side_effect=KeyError), \
+                 patch.object(installer.socket, "socket"), \
+                 patch.object(installer, "run", side_effect=stop_before_mutation), \
+                 patch("sys.argv", ["setup-headless.py", "--user", "gome-test"]):
+                with self.assertRaises(PreflightPassed):
+                    installer.main()
 
     def test_private_write_is_exclusive_and_does_not_follow_links(self):
         with tempfile.TemporaryDirectory() as tmp:
