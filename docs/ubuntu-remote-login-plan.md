@@ -31,7 +31,7 @@ Review engine remains Codex 3. This is the author's execution document.
 
 - [x] Design approval and isolated author worktree restored.
 - [ ] Compatibility rehearsal.
-- [ ] Client/gateway profile.
+- [x] Client/gateway profile (20 Node tests, type check and build passed).
 - [ ] Account setup, migration and rollback.
 - [ ] End-to-end rehearsal and failure checks.
 - [ ] Documentation, required checks and implementation review.

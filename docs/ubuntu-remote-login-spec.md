@@ -1,6 +1,7 @@
 # Ubuntu remote login through GDM
 
-Status: F design draft; official existing Remote Login selected; independent review pending.
+Status: Approved for implementation. Codex 3 design review converged at `b5bb77c`
+on 2026-10-03; the owner agreed to that specification on 2026-10-03.
 Date: 2026-10-03. Baseline: `d164aaf` on `feat/remote-desktop`.
 The owner approved the F workflow and the direction of normal Ubuntu login.
 Implementation starts only after this specification converges in independent
