@@ -15,6 +15,21 @@ spec.loader.exec_module(installer)
 
 
 class InstallerTests(unittest.TestCase):
+    def test_missing_xdg_user_dirs_fails_before_account_lookup_or_mutation(self):
+        errors = io.StringIO()
+        with patch.object(installer.os, "geteuid", return_value=0), \
+             patch.object(installer.shutil, "which", side_effect=lambda name: None if name == "xdg-user-dirs-update" else "/usr/bin/test-command"), \
+             patch.object(installer.pwd, "getpwnam", side_effect=AssertionError("Account lookup reached before dependency rejection")) as lookup, \
+             patch.object(installer, "run") as run, \
+             patch("sys.argv", ["setup-headless.py", "--user", "gome-test"]), \
+             patch("sys.stderr", errors):
+            with self.assertRaises(SystemExit) as raised:
+                installer.main()
+            self.assertEqual(raised.exception.code, 2)
+            self.assertIn("Missing required command: xdg-user-dirs-update", errors.getvalue())
+            lookup.assert_not_called()
+            run.assert_not_called()
+
     def test_existing_resources_are_rejected_before_system_changes(self):
         destinations = [
             "/home/gome-test", "/var/lib/gome-test", "/etc/gome-remote",
@@ -111,13 +126,16 @@ class InstallerTests(unittest.TestCase):
             proxy.chmod(0o700)
             settings = []
             initialized_user_dirs = False
+            expected_prefix = ["runuser", "-u", "gome-test", "--", "env", "LC_ALL=C",
+                               f"XDG_RUNTIME_DIR=/run/user/{os.getuid()}",
+                               f"DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/{os.getuid()}/bus"]
             def simulate(args, **kwargs):
                 nonlocal initialized_user_dirs
                 if "xdg-user-dirs-update" in args:
-                    self.assertIn("gome-test", args)
+                    self.assertEqual(args, expected_prefix + ["xdg-user-dirs-update"])
                     initialized_user_dirs = True
                 if "gsettings" in args:
-                    settings.append(args[args.index("gsettings") + 1:])
+                    settings.append(args.copy())
                 if args[0] == "useradd":
                     home.mkdir(parents=True)
                 elif "mkdir" in args:
@@ -159,8 +177,8 @@ class InstallerTests(unittest.TestCase):
             self.assertEqual(unit["Service"]["BusName"], "org.gnome.Shell")
             self.assertEqual(unit["Service"]["ExecStart"].split(),
                              ["/usr/bin/gnome-shell", "--headless", "--no-x11", "--mode=ubuntu"])
-            self.assertIn(["set", "org.gnome.shell.extensions.dash-to-dock", "dock-position", "BOTTOM"], settings)
-            self.assertIn(["set", "org.gnome.shell.extensions.dash-to-dock", "dock-fixed", "true"], settings)
+            self.assertIn(expected_prefix + ["gsettings", "set", "org.gnome.shell.extensions.dash-to-dock", "dock-position", "BOTTOM"], settings)
+            self.assertIn(expected_prefix + ["gsettings", "set", "org.gnome.shell.extensions.dash-to-dock", "dock-fixed", "true"], settings)
 
 
 if __name__ == "__main__":

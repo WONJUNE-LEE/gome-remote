@@ -237,9 +237,13 @@ The installer initializes standard XDG user directories before the shell starts:
 without a Desktop directory, the newly enabled desktop-icons extension retried
 and failed. No per-user extension enable list or copied mode definition is needed.
 
-- Four installer tests and Python compilation pass. The generated-unit test now
+- Five installer tests and Python compilation pass. The generated-unit test now
   verifies the actual shell command, captured bottom/fixed settings commands and
   user-directory initialization before writing the shell service.
+  Review added full command-prefix assertions (dedicated user, runtime directory,
+  and D-Bus address) plus missing-XDG-command rejection before account lookup or
+  any system command. Isolated-copy mutations that remove the Dock user prefix
+  or omit the new dependency check fail these tests; the unmodified copy passes.
 - The retained desktop was restarted with the generated unit. D-Bus reports shell
   mode `ubuntu`; all seven installed extensions from Ubuntu's mode definition are
   active, including Ubuntu Dock and desktop icons. Settings reports `BOTTOM` and
