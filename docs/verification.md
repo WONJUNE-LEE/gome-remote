@@ -260,3 +260,99 @@ and failed. No per-user extension enable list or copied mode definition is neede
 
 This selects Ubuntu's shell mode within the existing headless architecture; a
 full machine reboot and every Ubuntu extension feature remain untested.
+
+## Standard Ubuntu Remote Login (0.1.3)
+
+This replaces the legacy bare-shell lifecycle above. Production has **not** been
+cut over. The following evidence comes from a disposable monitorless QEMU guest,
+through the real browser client, gateway, pinned guacd and guest system GRD/GDM.
+Native Windows/macOS execution and the production host's reboot remain unverified.
+
+### Recorded environment and compatibility
+
+- Ubuntu 26.04 cloud image `release-20260927`, SHA256
+  `8800651811af9a85465ad1d552add729947bb16488dddb4a9b5305a3d97332b2`.
+  The published SHA256SUMS signature was verified with Ubuntu's cloud image keyring.
+- QEMU KVM, 4 CPUs/8 GiB, `-vga none -display none`; isolated user networking with
+  only host-loopback SSH/RDP forwards. Synthetic accounts/passwords/data only.
+- `ubuntu-desktop-minimal` 1.570.4, GDM 50.1-0ubuntu0.1,
+  GRD 50.2-0ubuntu0.1, GNOME Shell 50.1-0ubuntu1.3,
+  libpam-gnome-keyring 50.0-1. Complete Ubuntu desktop packages matter: the initial
+  hand-picked shell packages lacked themes/wallpaper. Inspection now requires the
+  desktop metapackage rather than treating a runnable shell as a complete desktop.
+- guacd 1.6.0 image digest
+  `8974eaa9ba32f713daf311e7cc8cd7e4cdfba1edea39eed75524e78ef4b08f4f`,
+  containing FreeRDP 2.11.7. **No FreeRDP replacement was necessary.**
+- Initial readonly-container negotiation failed because FreeRDP could not create
+  its certificate store under `/home/guacd`. Adding an ephemeral UID1000 mode0700
+  tmpfs there resolved it while preserving the readonly root/capability restrictions.
+  The repeated real login/handover/reconnect tests used those restrictions.
+
+### Actual UI and lifecycle outcomes
+
+- The app displayed the stock GDM greeter; Linux password authentication created
+  a logind `Service=gdm-password`, `Type=wayland`, `Remote=yes` session. A fresh
+  login keyring reported `Locked=false` without a manual unlock.
+- Settings opened, Snap Firefox opened and navigated to example.com, Ubuntu
+  wallpaper and the existing bottom dock appeared. Keyboard and pointer operated
+  these apps. Both GNOME portal services were active; Text Editor's save dialog
+  worked. Explicit Korean paste was saved through the UI and independently read
+  as `한글 붙여넣기 — GDM PAM remote login` from the guest's file.
+- Disconnect/reconnect and a test-gateway process restart returned through GDM
+  and preserved session84, leader41030, shell41347 and terminal bash42918. The
+  terminal's unsaved scrollback marker remained visible after the gateway restart.
+- Normal locking produced `LockedHint=yes`. A wrong password left it locked;
+  correct password authentication changed it to `no`, preserving the session.
+  A separate wrong system-RDP-password attempt failed before a desktop appeared.
+  Wrong account authentication at GDM also remained at the password prompt.
+- Explicit `gnome-session-quit --logout --no-prompt` ended session84 and its
+  processes. The next GDM login created session113/leader49652.
+- After a guest reboot there was no automatic desktop session. The app reached
+  GDM and logged in to a new session4/leader7043 using the normal PAM/Wayland path.
+  Legacy app units stayed disabled. User files/keyrings survived the reboot.
+
+### Migration/recovery and refusal evidence
+
+- A second synthetic account reproduced the previous installer's units and
+  locked-password lifecycle. The retired installer's credential helper had an
+  existing PTY-completion race: it reported failure although the synthetic stored
+  credential matched. The fixture completed only the original post-credential
+  installation steps to obtain the old baseline; the new migration does not use
+  that credential helper or reset shared RDP credentials.
+- Forced exits immediately after durable `stopping`, `stopped`, `configuring`,
+  `ready` and rollback `restoring` phases were resumed successfully. A discovered
+  logind timing race was fixed by bounded quiescence polling; it does not kill
+  unknown processes. Both delayed-exit and refusal cases have regression tests.
+- Recovery receipt and consistent home archive were root-owned mode0600 under
+  a mode0700 directory. Rollback restored the old password lock, linger and
+  active old RDP/socket. A file written after migration and the Korean saved
+  document survived; the new login.keyring hash stayed exactly unchanged.
+- A different account's session44/leader16147 survived migration, interruptions,
+  rollback and the second migration. The deliberate whole-guest reboot came later.
+- Starting another attempt preserved the previous recovery directory. The second
+  migration deliberately used a different OS password from the existing synthetic
+  keyring's password. Login succeeded, but that keyring remained locked with its
+  identical SHA256. Requesting access displayed the standard password-mismatch
+  prompt. The tool did not erase, decrypt, rekey or change the default alias.
+- The production account was inspected read-only successfully. Its GDM/GRD,
+  desktop, credentials, Serve routes and gateway were not changed by rehearsal.
+  Guest listeners showed the pre-existing system RDP3389; the legacy33490 listener
+  was absent after migration/reboot. Shared system RDP exposure remains host policy.
+
+### Automated checks and remaining scope
+
+- 20 Node tests pass, including real HTTP/WebSocket/guacd-wire profile assertions,
+  malicious caller routing/security overrides, generic RDP/VNC behavior, native
+  menu/fullscreen, encrypted vault and gateway-revision credential boundaries.
+- 13 Python tests pass, covering legacy refusal/collision behavior, receipt and
+  intermediate symlinks, changed resources, explicit SSH exclusion, secret-safe
+  command errors, no-op prepared rollback and bounded account quiescence.
+- TypeScript check, production build and `git diff --check` pass.
+- Windows x64 ZIP is cross-built with executable editing/signing disabled. It
+  contains the new two-stage credential guidance. This is packaging evidence,
+  not proof of native Windows menus, OS credential storage or the full login flow.
+- Sanitized screenshots, source and package checksums are delivered separately.
+  Synthetic private credentials, VM disks and browser logs are excluded.
+- The retained 0.1.2 Windows client's new-login compatibility is **not certified**.
+  Use 0.1.3 for owner-device testing. Mac targets and native UI behavior were not
+  changed; a real Mac control session is still part of the outstanding device matrix.

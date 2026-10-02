@@ -30,10 +30,10 @@ Review engine remains Codex 3. This is the author's execution document.
 ## Progress
 
 - [x] Design approval and isolated author worktree restored.
-- [ ] Compatibility rehearsal.
+- [x] Compatibility rehearsal (pinned FreeRDP 2 works with writable ephemeral home).
 - [x] Client/gateway profile (20 Node tests, type check and build passed).
-- [ ] Account setup, migration and rollback.
-- [ ] End-to-end rehearsal and failure checks.
+- [x] Account setup, migration and rollback.
+- [x] End-to-end rehearsal and failure checks (including reboot and mismatched keyring).
 - [ ] Documentation, required checks and implementation review.
 - [ ] Concrete production cutover ready for owner approval.
 

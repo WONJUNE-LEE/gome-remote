@@ -94,6 +94,42 @@ class RemoteLoginTests(unittest.TestCase):
             m.rollback(SimpleNamespace(pw_name="remote"), state)
         save.assert_called_once_with(state, "restored")
 
+    def test_stop_waits_for_logind_children_without_killing_unknown_processes(self):
+        user = SimpleNamespace(pw_name="remote", pw_uid=1234)
+        polls = iter(["123 S", "123 Z", ""])
+        commands = []
+
+        def run(args, **kwargs):
+            commands.append(args)
+            if args[0] == "ps":
+                return next(polls)
+            if args[:2] == ["systemctl", "is-active"]:
+                return "inactive"
+            return ""
+
+        with patch.object(m, "run", side_effect=run), \
+             patch.object(m, "sessions", return_value=[]), \
+             patch.object(m.time, "sleep") as sleep:
+            m.stop_account(user)
+        sleep.assert_called_once_with(0.2)
+        self.assertEqual(sum(args[0] == "ps" for args in commands), 2)
+        self.assertEqual([args for args in commands if args[0] == "loginctl"],
+                         [["loginctl", "terminate-user", "remote"]])
+        self.assertFalse(any(args[0] in ("kill", "pkill", "killall") for args in commands))
+
+    def test_stop_refuses_when_unknown_work_does_not_exit(self):
+        user = SimpleNamespace(pw_name="remote", pw_uid=1234)
+
+        def run(args, **kwargs):
+            return "123 S" if args[0] == "ps" else "inactive"
+
+        with patch.object(m, "run", side_effect=run), \
+             patch.object(m, "sessions", return_value=[]), \
+             patch.object(m.time, "monotonic", side_effect=[0, 11]), \
+             patch.object(m.time, "sleep", side_effect=AssertionError("Unbounded wait")):
+            with self.assertRaisesRegex(m.Refuse, "unknown work"):
+                m.stop_account(user)
+
     def test_retired_installer_refuses_new_installations(self):
         result = subprocess.run([sys.executable, str(Path(__file__).parents[1] /
             "scripts/setup-headless.py"), "--user", "do-not-create"], text=True, capture_output=True)
