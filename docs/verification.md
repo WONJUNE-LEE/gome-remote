@@ -68,16 +68,38 @@ review applies to the pushed implementation branch before merging.
   combinations require owner-device checks. A real Mac VNC service was found
   reachable, but no existing Mac VNC password was read or changed, and Mac host
   authentication/control has not been tested.
-- Full-machine reboot, OS sleep/wake, real tailnet HTTPS access and access-policy
-  enforcement, installer signing/notarization, and the native build workflow
-  have not been tested. The shared server was not rebooted, and its existing
-  Tailscale Serve routes were not changed.
+- Tailnet HTTPS was subsequently verified from a Mac peer and with browser
+  authentication, WebSocket connection, and desktop display. A separate Serve
+  port was added while existing port-443 routes were preserved.
+- Full-machine reboot, OS sleep/wake, access-policy enforcement, installer
+  signing/notarization, and the CI native build workflow have not been tested.
+  The shared server was not rebooted.
 - A user-manager restart is evidence for service startup, not a substitute for
   a complete reboot test. The new installer no longer relies on nftables rules;
   a separate physical LAN peer probe remains unperformed.
 - Software rendering is functional; latency, frame rate, and hardware encoding
   have not been benchmarked. The Linux desktop uses a separate account and home.
 
-The test accounts, containers, local listeners, and remote build scratch are
-temporary and are removed after retaining the source, packages, and evidence.
-Production installation awaits review and the owner-device checks above.
+The dedicated test desktop, gateway, and guacd container remain available for
+owner testing. Build and review scratch are removed after preserving artifacts.
+Production installation awaits the owner-device checks above.
+
+## Viewer correction (0.1.1)
+
+The owner reported oversized application chrome and no obvious Windows
+fullscreen escape. The connection view now hides home navigation, uses the full
+viewport, and offers a collapsible overlay plus an always-visible fullscreen exit.
+F11 is intercepted in Electron before page key events and menu accelerators.
+Native enter/leave events keep the button label synchronized; the explicit exit
+requests windowed mode rather than toggling stale renderer state.
+
+- Node regression checks exercise the actual main-process IPC/input registrations
+  with a delayed native transition: F11 down/up intercepted, repeat ignored,
+  unrelated keys preserved, native state notifications, explicit exit.
+- Browser checks used the real gateway and Guacamole client with a synthetic
+  1920×1080 desktop: 1280×720, 1920×1080, and 900×620 windows allocate the full
+  viewport to the remote view and hide navigation. Tools expand/collapse; F11
+  enters/exits while the remote surface is focused; the persistent exit button
+  works with tools collapsed; returning to the list restores navigation.
+- All 11 Node tests, TypeScript checks, and the production build pass on Linux.
+- Native Windows interaction still needs owner confirmation with the new ZIP.

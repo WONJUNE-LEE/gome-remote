@@ -13,6 +13,8 @@ The gateway decrypts desktop traffic and must be a trusted machine.
 
 - Named server list with a TCP service availability check.
 - Mouse, keyboard, explicit text paste, full screen, RDP resolution changes.
+- Edge-to-edge viewer with a collapsible Tools overlay. Fullscreen always has a
+  visible exit button; F11 is handled locally before remote keyboard input.
 - Disconnect and reconnect without logging out of the remote desktop.
 - A dedicated Ubuntu desktop with no physical monitor or HDMI dummy plug.
 - OS-backed encrypted credential storage in the Electron app. Browser access is
@@ -23,6 +25,19 @@ The gateway decrypts desktop traffic and must be a trusted machine.
 The first version does not include audio, file transfer, automatic discovery,
 or unattended Mac login after a FileVault-protected reboot. Changing the VNC
 display resolution must be done in the remote Mac's display settings.
+
+## Viewer controls
+
+While connected, the sidebar, page header, and footer are hidden. The remote
+image fits the entire available window while preserving its aspect ratio; it is
+never stretched or cropped. Click **도구** in the upper-left corner for resolution,
+text input, fullscreen, disconnect/reconnect, and the server list.
+
+In fullscreen, **전체화면 나가기 · F11** always remains visible in the upper-right
+corner even with Tools collapsed. F11 is reserved for the local app and is not
+sent to the remote desktop. Escape remains a remote key in the desktop app.
+Returning to the server list also leaves fullscreen. Browser fullscreen uses
+the browser's fullscreen API and its usual native exit controls.
 
 ## Development
 

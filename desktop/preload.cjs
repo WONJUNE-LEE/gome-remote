@@ -7,6 +7,13 @@ contextBridge.exposeInMainWorld(
     targets: () => ipcRenderer.invoke("remote:targets"),
     connect: (input) => ipcRenderer.invoke("remote:connect", input),
     forget: (targetId) => ipcRenderer.invoke("remote:forget", targetId),
-    fullscreen: () => ipcRenderer.invoke("remote:fullscreen"),
+    fullscreen: (enabled) => ipcRenderer.invoke("remote:fullscreen", enabled),
+    fullscreenState: () => ipcRenderer.invoke("remote:fullscreen-state"),
+    onFullscreenChange: (callback) => {
+      const listener = (_event, enabled) => callback(enabled);
+      ipcRenderer.on("remote:fullscreen-state", listener);
+      return () =>
+        ipcRenderer.removeListener("remote:fullscreen-state", listener);
+    },
   }),
 );

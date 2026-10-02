@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import vm from "node:vm";
+import { EventEmitter } from "node:events";
 import { createRequire } from "node:module";
 import vaultModule from "../desktop/vault.cjs";
 
@@ -22,6 +23,9 @@ async function desktop() {
   const handlers = new Map();
   const requests = [];
   const writes = [];
+  const fullscreenRequests = [];
+  const notifications = [];
+  let fullscreen = false;
   let window, vault;
   let availability = async () => true;
   let response = async () => ({
@@ -41,15 +45,22 @@ async function desktop() {
       writes.push(JSON.parse(JSON.stringify(this.value)));
     }
   }
-  class BrowserWindow {
+  class BrowserWindow extends EventEmitter {
     constructor() {
+      super();
       window = this;
-      this.webContents = {
+      this.webContents = Object.assign(new EventEmitter(), {
         mainFrame: { url: "app://gome-remote/" },
-        on() {},
+        send: (...args) => notifications.push(args),
         setWindowOpenHandler() {},
         session: { setPermissionRequestHandler() {} },
-      };
+      });
+    }
+    isFullScreen() {
+      return fullscreen;
+    }
+    setFullScreen(value) {
+      fullscreenRequests.push(value);
     }
     async loadURL() {
       ready.resolve();
@@ -104,6 +115,25 @@ async function desktop() {
     );
   return {
     invoke,
+    fullscreenRequests,
+    notifications,
+    finishFullscreen(value) {
+      fullscreen = value;
+      window.emit(value ? "enter-full-screen" : "leave-full-screen");
+    },
+    input(input) {
+      let prevented = false;
+      window.webContents.emit(
+        "before-input-event",
+        {
+          preventDefault() {
+            prevented = true;
+          },
+        },
+        input,
+      );
+      return prevented;
+    },
     requests,
     writes,
     vault,
@@ -183,4 +213,53 @@ test("stale server lists and connection requests are rejected across gateway cha
   assert.equal(result.ticket, "current-ticket");
   assert.equal(result.websocket, "wss://b.tail123.ts.net/tunnel");
   assert.equal(f.vault.value.credentials.ubuntu.password, "original-secret");
+});
+
+test("F11 is intercepted before the remote keyboard and both exit controls use native fullscreen state", async () => {
+  const f = await desktop();
+  assert.equal(await f.invoke("fullscreen-state"), false);
+  await f.invoke("fullscreen", true);
+  assert.deepEqual(f.fullscreenRequests, [true]);
+  assert.equal(
+    await f.invoke("fullscreen-state"),
+    false,
+    "OS transition is asynchronous",
+  );
+  f.finishFullscreen(true);
+  assert.equal(await f.invoke("fullscreen-state"), true);
+  assert.deepEqual(f.notifications.at(-1), ["remote:fullscreen-state", true]);
+  assert.equal(
+    f.input({ key: "F11", type: "keyDown", isAutoRepeat: false }),
+    true,
+  );
+  assert.deepEqual(f.fullscreenRequests, [true, false]);
+  assert.equal(
+    f.input({ key: "F11", type: "keyDown", isAutoRepeat: true }),
+    true,
+  );
+  assert.equal(f.input({ key: "F11", type: "keyUp" }), true);
+  assert.equal(
+    f.fullscreenRequests.length,
+    2,
+    "repeat and keyup must not toggle again",
+  );
+  f.finishFullscreen(false);
+  assert.deepEqual(f.notifications.at(-1), ["remote:fullscreen-state", false]);
+  assert.equal(
+    f.input({ key: "Escape", type: "keyDown" }),
+    false,
+    "remote Escape remains available",
+  );
+  assert.equal(f.input({ key: "a", type: "keyDown" }), false);
+  f.finishFullscreen(true);
+  await f.invoke("fullscreen", false);
+  assert.equal(
+    f.fullscreenRequests.at(-1),
+    false,
+    "visible exit explicitly requests windowed mode",
+  );
+  await assert.rejects(
+    f.invoke("fullscreen", "false"),
+    /Invalid fullscreen state/,
+  );
 });

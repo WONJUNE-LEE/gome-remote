@@ -450,17 +450,80 @@ h1 {
   line-height: 1.7;
   font-size: 12px;
 }
+.viewing {
+  overflow: hidden;
+}
+.viewing .sidebar,
+.viewing .topbar {
+  display: none;
+}
+.viewing main {
+  width: 100vw;
+  height: 100dvh;
+}
 .session {
-  height: calc(100vh - 83px);
+  position: relative;
+  height: 100dvh;
   display: flex;
   flex-direction: column;
 }
+.viewer-toggle,
+.viewer-exit {
+  position: fixed;
+  top: 8px;
+  z-index: 30;
+  border: 1px solid #596451;
+  border-radius: 7px;
+  padding: 8px 12px;
+  background: #1b211bf2;
+  box-shadow: 0 2px 10px #0005;
+  color: #e1e8db;
+  font-size: 12px;
+}
+.viewer-toggle {
+  left: 8px;
+}
+.viewer-exit {
+  right: 8px;
+}
 .session-toolbar {
+  position: absolute;
+  top: 48px;
+  left: 8px;
+  z-index: 20;
+  max-width: calc(100vw - 16px);
+  width: max-content;
   display: flex;
-  gap: 10px;
+  flex-wrap: wrap;
+  gap: 8px;
   align-items: center;
-  padding: 14px 22px;
-  border-bottom: 1px solid #2b322b;
+  padding: 10px;
+  border: 1px solid #46533e;
+  border-radius: 9px;
+  background: #192019f5;
+  box-shadow: 0 8px 30px #0005;
+}
+#session-title {
+  font-size: 12px;
+}
+.session-hint {
+  width: 100%;
+  color: #b2bea9;
+  font-size: 11px;
+  line-height: 1.6;
+}
+.viewer-notice {
+  position: fixed;
+  bottom: 12px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 40;
+  max-width: calc(100vw - 24px);
+  padding: 12px 16px;
+  background: #332e20;
+  border: 1px solid #5f5230;
+  color: #d7c494;
+  border-radius: 8px;
 }
 .toolbar-spacer {
   flex: 1;
@@ -481,8 +544,8 @@ h1 {
   display: flex;
   align-items: center;
   justify-content: center;
-  overflow: auto;
-  padding: 16px;
+  overflow: hidden;
+  padding: 0;
 }
 .display {
   display: flex;
@@ -506,16 +569,6 @@ h1 {
   line-height: 1.8;
   text-align: center;
   font-size: 13px;
-}
-.session-footer {
-  display: flex;
-  justify-content: space-between;
-  padding: 11px 24px;
-  color: #7f8d7c;
-  font-size: 10px;
-}
-.session-footer span:last-child {
-  letter-spacing: 1.5px;
 }
 select {
   padding: 9px;
@@ -660,9 +713,6 @@ input[type="checkbox"] {
   .topbar {
     height: 64px;
     padding: 0 20px;
-  }
-  .session {
-    height: calc(100vh - 64px);
   }
   .page-heading {
     display: block;

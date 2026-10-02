@@ -46,8 +46,17 @@ export const api: DesktopAPI = window.desktop || {
     };
   },
   async forget() {},
-  async fullscreen() {
-    if (document.fullscreenElement) await document.exitFullscreen();
-    else await document.documentElement.requestFullscreen();
+  async fullscreen(enabled) {
+    if (!enabled && document.fullscreenElement) await document.exitFullscreen();
+    else if (enabled && !document.fullscreenElement)
+      await document.documentElement.requestFullscreen();
+  },
+  async fullscreenState() {
+    return !!document.fullscreenElement;
+  },
+  onFullscreenChange(callback) {
+    const listener = () => callback(!!document.fullscreenElement);
+    document.addEventListener("fullscreenchange", listener);
+    return () => document.removeEventListener("fullscreenchange", listener);
   },
 };

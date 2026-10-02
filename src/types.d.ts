@@ -38,7 +38,9 @@ interface DesktopAPI {
   targets(): Promise<{ targets: Target[]; revision: number }>;
   connect(input: ConnectInput): Promise<{ ticket: string; websocket: string }>;
   forget(targetId: string): Promise<void>;
-  fullscreen(): Promise<void>;
+  fullscreen(enabled: boolean): Promise<void>;
+  fullscreenState(): Promise<boolean>;
+  onFullscreenChange(callback: (enabled: boolean) => void): () => void;
 }
 interface Window {
   desktop?: DesktopAPI;

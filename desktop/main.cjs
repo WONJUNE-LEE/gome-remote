@@ -190,9 +190,12 @@ app
       delete vault.value.credentials[targetId];
       await vault.save();
     });
-    handle("fullscreen", () => {
-      window.setFullScreen(!window.isFullScreen());
+    handle("fullscreen", (enabled) => {
+      if (typeof enabled !== "boolean")
+        throw new Error("Invalid fullscreen state.");
+      window.setFullScreen(enabled);
     });
+    handle("fullscreen-state", () => window.isFullScreen());
     Menu.setApplicationMenu(
       Menu.buildFromTemplate([
         ...(process.platform === "darwin" ? [{ role: "appMenu" }] : []),
@@ -218,6 +221,17 @@ app
         sandbox: true,
         webSecurity: true,
       },
+    });
+    const publishFullscreen = () =>
+      window.webContents.send("remote:fullscreen-state", window.isFullScreen());
+    window.on("enter-full-screen", publishFullscreen);
+    window.on("leave-full-screen", publishFullscreen);
+    window.webContents.on("before-input-event", (event, input) => {
+      if (input.key !== "F11") return;
+      // Intercept both edges before Guacamole or a menu accelerator can receive F11.
+      event.preventDefault();
+      if (input.type === "keyDown" && !input.isAutoRepeat)
+        window.setFullScreen(!window.isFullScreen());
     });
     window.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
     window.webContents.on("will-navigate", (event) => event.preventDefault());
