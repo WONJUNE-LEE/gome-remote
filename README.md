@@ -31,6 +31,7 @@ Use Node.js 24+ and npm. No production credentials are required for the tests.
 ```sh
 npm ci
 npm test
+python3 -m unittest discover -s test -p '*_test.py'
 npm run check
 npm run build
 npm start
@@ -39,7 +40,10 @@ npm start
 `npm test` exercises the real HTTP/WebSocket/TCP boundary with an independent
 guacd wire fixture, including RDP and VNC authentication parameters, Unicode
 split across TCP chunks, wrong origins, forbidden destinations, expired tickets,
-replay rejection, and encrypted vault persistence. It does not assert that a
+replay rejection, and encrypted vault persistence. Desktop IPC tests delay OS
+storage and HTTP responses while changing gateways, and verify old credentials
+never reach the new gateway. Python tests check installer collision refusal and
+exclusive writes without changing the host. It does not assert that a
 physical Windows or Mac client successfully controls a real Mac.
 
 `npm run dev` previews the UI only. For an end-to-end development session, build
@@ -48,9 +52,10 @@ the UI and run the gateway with a loopback `publicOrigin`.
 ## Ubuntu headless desktop
 
 The installer is for Ubuntu 26.04 with GNOME 50, `gnome-remote-desktop`, `openssl`,
-`nftables`, and systemd. It creates a **new, dedicated Linux user** with its own
+systemd with network namespaces, and `systemd-socket-proxyd`. It creates a **new, dedicated Linux user** with its own
 home and applications. It does not reuse or expose your existing login session.
-It refuses existing users and an existing `/etc/gome-remote` installation.
+It refuses existing users, homes, state directories, and unit files (including
+dangling symlinks). New files are created exclusively, never overwritten.
 
 ```sh
 sudo python3 scripts/setup-headless.py --user gome-remote --port 33490
@@ -58,16 +63,21 @@ sudo python3 scripts/setup-headless.py --user gome-remote --port 33490
 
 The installer creates:
 
-- A dedicated user and a lingering systemd user manager.
-- A headless GNOME shell and an RDP service started by that user manager.
+- A dedicated user and a lingering systemd user manager for the GNOME shell.
+- A headless GNOME shell and a system RDP service running as that user in its
+  own private network namespace. The stock user RDP services are masked.
 - A local TLS certificate and random RDP credentials, with the private key
   readable only by that user. The credential receipt is
   `/etc/gome-remote/headless.json`, mode `0600`, owned by root.
-- A dedicated nftables table that drops traffic to this RDP port unless it
-  arrives over loopback or `tailscale0`. Existing firewall tables are untouched.
-- A systemd dependency requiring that firewall before the dedicated user manager
-  starts. Existing desktops, display managers, and remote-login ports are left
-  in place.
+- A socket bound only to `127.0.0.1`, forwarded into the RDP namespace by
+  `systemd-socket-proxyd`. Host firewall reloads cannot expose the isolated RDP
+  listener. This installer does not modify any host firewall rules.
+
+Run `guacd` and the gateway on **the same Ubuntu host** as this dedicated desktop.
+The RDP port itself is not reachable over Tailscale or the LAN; remote clients
+reach it through the authenticated gateway. For a second Ubuntu host, deploy a
+separate gateway there. The GNOME desktop's applications retain normal host
+networking; only the RDP daemon and its socket proxy are isolated.
 
 Do **not** add `--virtual-monitor` to the GNOME shell. GNOME Remote Desktop creates
 the display when a client connects; pre-creating another monitor can select an
@@ -178,10 +188,12 @@ listener (`tailscale serve --https=8449 off`). Do not reset all Serve routes.
 Stop the compose project with its own compose file.
 
 For headless removal, first preserve the dedicated user's work. Stop and disable
-its `gome-remote-rdp.service`, stop its shell and user manager, and disable linger.
-Only then remove the associated `user@UID.service.d/gome-remote.conf` and firewall
-service/table. Review the dedicated home and `/etc/gome-remote` before deleting
-anything. There is intentionally no destructive one-command uninstall.
+`gome-remote-rdp-proxy.socket` and `gome-remote-rdp.service` with system `systemctl`,
+and stop `gome-remote-rdp-proxy.service`. Stop the dedicated user's
+`gome-remote-shell.service` and user manager, then disable linger. Remove only
+those three system unit files and their enablement links after reviewing them.
+Review the dedicated home and `/etc/gome-remote` before deleting anything.
+There is intentionally no destructive one-command uninstall.
 
 ## Upstream
 
@@ -194,3 +206,5 @@ only the authenticated WebSocket tunnel and guacd handshake adapter.
 - [GNOME headless configuration](https://github.com/GNOME/gnome-remote-desktop/blob/main/docs/configuration.md)
 - [Apple VNC access](https://support.apple.com/en-au/guide/remote-desktop/apde0dd523e/mac)
 - [Electron credential storage](https://www.electronjs.org/docs/latest/api/safe-storage)
+
+The isolated socket design follows [systemd socket proxy documentation](https://www.freedesktop.org/software/systemd/man/latest/systemd-socket-proxyd.html).

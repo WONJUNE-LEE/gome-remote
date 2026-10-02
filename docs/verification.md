@@ -5,7 +5,9 @@ claim that all four physical client/host combinations have been tested.
 
 ## Observed passes
 
-- `npm test`: 8 tests pass on Linux (Node 24.21.0) and macOS (Node 26.0.0).
+- Initial `npm test`: 8 tests passed on Linux (Node 24.21.0) and macOS (Node 26.0.0).
+  After review fixes, all 10 tests pass on Linux, including delayed IPC credential
+  and server-list responses across gateway changes. The updated Mac run is pending.
   The integration fixture records the actual TCP handshake received from the
   HTTP/WebSocket gateway, rather than asserting a settings-builder mock.
 - `npm run check` and `npm run build`: pass on Linux and macOS.
@@ -20,9 +22,20 @@ claim that all four physical client/host combinations have been tested.
 - Mouse clicks reach the editor and its Save button. A file saved through the
   remote UI was independently read on the server and checked for all three
   expected markers (English typing, Korean paste, and mouse/keyboard proof).
-- The actual headless installer runs successfully for a separate temporary
-  account. Its dedicated firewall table is installed, and systemd shows the
-  firewall as a dependency of that account's user manager.
+- The initial installer was exercised with a temporary account. Review exposed
+  a firewall-reload weakness; that firewall mechanism has been removed.
+- The revised installer was exercised with a fresh temporary account. RDP runs
+  in a distinct network namespace and systemd forwards only a host loopback
+  socket. Namespace inode comparison and actual connection probes confirm
+  loopback success and rejection through the host's Tailscale IP. The host's
+  firewall was not flushed or reloaded.
+- Real guacd/browser screen, mouse/keyboard, English and Korean text paste work
+  with the isolated RDP daemon. The stock user daemons are masked before startup.
+  GRD needs FUSE clipboard support, so NoNewPrivileges is not applied to GRD;
+  it remains enabled for the socket proxy.
+- Python collision tests pass for all six reserved paths, including dangling
+  links, before any system command runs. Exclusive-write tests preserve existing
+  files and symlink targets. `systemd-analyze verify` passes for all three units.
 - Restarting that dedicated user manager automatically starts the shell and RDP
   services; the browser reconnects and launches Text Editor again.
 - Changing resolution to 1920×1080 updates the remote display's unscaled layer
@@ -45,7 +58,9 @@ review applies to the pushed implementation branch before merging.
 
 ## Still required
 
-- The user must choose the independent review engine. No review has run yet.
+- The owner chose Codex 3. The first review found configuration races, missing
+  collision checks, firewall reload exposure, and two test gaps. Fixes are
+  implemented and awaiting the next review round.
 - Windows native execution, DPAPI persistence, and all four physical connection
   combinations require owner-device checks. A real Mac VNC service was found
   reachable, but no existing Mac VNC password was read or changed, and Mac host
@@ -55,8 +70,8 @@ review applies to the pushed implementation branch before merging.
   have not been tested. The shared server was not rebooted, and its existing
   Tailscale Serve routes were not changed.
 - A user-manager restart is evidence for service startup, not a substitute for
-  a complete reboot test. The installer's nftables rules were inspected and
-  syntax-checked, but an independent non-Tailscale network probe was not run.
+  a complete reboot test. The new installer no longer relies on nftables rules;
+  a separate physical LAN peer probe remains unperformed.
 - Software rendering is functional; latency, frame rate, and hardware encoding
   have not been benchmarked. The Linux desktop uses a separate account and home.
 

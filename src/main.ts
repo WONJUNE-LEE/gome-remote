@@ -45,12 +45,15 @@ const errorText = (error: unknown) =>
       )
     : "요청을 처리할 수 없습니다.";
 let settings: Settings = {
+  revision: 0,
   gateway: "",
   configured: false,
   secureStorage: false,
   remembered: [],
 };
 let targets: Target[] = [];
+let listGeneration = 0;
+let configuring = false;
 let selected: Target | undefined;
 let generation = 0;
 let client: any;
@@ -68,25 +71,35 @@ async function loadSettings() {
   settings = await api.settings();
 }
 async function refresh() {
+  if (configuring) return;
+  const current = ++listGeneration;
   const button = el<HTMLButtonElement>("refresh");
   button.disabled = true;
   try {
-    await loadSettings();
+    const nextSettings = await api.settings();
+    if (current !== listGeneration) return;
+    settings = nextSettings;
     if (!settings.configured) return;
     const result = await api.targets();
-    targets = result.targets;
+    if (current !== listGeneration || result.revision !== settings.revision)
+      return;
+    targets = result.targets.map((t: Target) => ({
+      ...t,
+      revision: result.revision,
+    }));
     el("network-label").textContent = "워크스페이스 연결됨";
     el("network-label").classList.add("connected");
     renderTargets();
     notice("");
   } catch (error) {
+    if (current !== listGeneration) return;
     el("network-label").textContent = "게이트웨이 연결 실패";
     el("network-label").classList.remove("connected");
     targets = [];
     renderTargets();
     notice(errorText(error));
   } finally {
-    button.disabled = false;
+    if (current === listGeneration) button.disabled = false;
   }
 }
 function renderTargets() {
@@ -133,6 +146,12 @@ async function openSettings() {
   el<HTMLDialogElement>("settings-dialog").showModal();
 }
 function openLogin(target: Target) {
+  if (
+    configuring ||
+    !targets.includes(target) ||
+    target.revision !== settings.revision
+  )
+    return;
   selected = target;
   const remembered = settings.remembered.includes(target.id);
   el("login-title").textContent = target.name;
@@ -346,6 +365,13 @@ el<HTMLFormElement>("settings-form").onsubmit = async (event) => {
     el("settings-form").querySelector<HTMLButtonElement>("[type=submit]")!;
   button.disabled = true;
   try {
+    configuring = true;
+    listGeneration++;
+    targets = [];
+    selected = undefined;
+    renderTargets();
+    el<HTMLDialogElement>("login-dialog").close();
+    el<HTMLInputElement>("password").value = "";
     back();
     await api.configure({
       gateway: el<HTMLInputElement>("gateway").value,
@@ -353,11 +379,14 @@ el<HTMLFormElement>("settings-form").onsubmit = async (event) => {
     });
     el<HTMLInputElement>("gateway-token").value = "";
     el<HTMLDialogElement>("settings-dialog").close();
+    configuring = false;
     await refresh();
   } catch (error) {
     el("settings-error").textContent = errorText(error);
   } finally {
+    configuring = false;
     button.disabled = false;
+    el<HTMLButtonElement>("refresh").disabled = false;
   }
 };
 el<HTMLFormElement>("login-form").onsubmit = (event) => {
@@ -367,6 +396,7 @@ el<HTMLFormElement>("login-form").onsubmit = (event) => {
     .value.split("x")
     .map(Number);
   const input: ConnectInput = {
+    revision: selected.revision,
     targetId: selected.id,
     username: el<HTMLInputElement>("username").value,
     password: el<HTMLInputElement>("password").value,

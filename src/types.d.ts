@@ -3,6 +3,7 @@ declare module "*vendor/guacamole.js" {
   export default Guacamole;
 }
 interface Target {
+  revision: number;
   id: string;
   name: string;
   platform: "linux" | "mac" | "windows";
@@ -12,12 +13,14 @@ interface Target {
   online: boolean;
 }
 interface Settings {
+  revision: number;
   gateway: string;
   configured: boolean;
   secureStorage: boolean;
   remembered: string[];
 }
 interface ConnectInput {
+  revision: number;
   targetId: string;
   username: string;
   password: string;
@@ -32,7 +35,7 @@ interface DesktopAPI {
     gateway: string;
     token: string;
   }): Promise<{ gateway: string; secureStorage: boolean }>;
-  targets(): Promise<{ targets: Target[] }>;
+  targets(): Promise<{ targets: Target[]; revision: number }>;
   connect(input: ConnectInput): Promise<{ ticket: string; websocket: string }>;
   forget(targetId: string): Promise<void>;
   fullscreen(): Promise<void>;

@@ -26,6 +26,11 @@ protocol.registerSchemesAsPrivileged([
 ]);
 let window;
 let vault;
+let revision = 0;
+function assertCurrent(expected) {
+  if (expected !== revision)
+    throw new Error("연결 설정이 변경되었습니다. 다시 연결해주세요.");
+}
 
 function handle(name, callback) {
   ipcMain.handle(`remote:${name}`, async (event, ...args) => {
@@ -42,17 +47,17 @@ function handle(name, callback) {
   });
 }
 
-async function request(route, payload) {
-  if (!vault.value.gateway || !vault.value.token)
+async function request(route, payload, context = vault.value) {
+  if (!context.gateway || !context.token)
     throw new Error("먼저 게이트웨이에 연결해주세요.");
   let response;
   try {
-    response = await fetch(`${gatewayOrigin(vault.value.gateway)}${route}`, {
+    response = await fetch(`${gatewayOrigin(context.gateway)}${route}`, {
       method: payload ? "POST" : "GET",
       redirect: "error",
       signal: AbortSignal.timeout(12_000),
       headers: {
-        Authorization: `Bearer ${vault.value.token}`,
+        Authorization: `Bearer ${context.token}`,
         "Content-Type": "application/json",
       },
       ...(payload ? { body: JSON.stringify(payload) } : {}),
@@ -93,12 +98,19 @@ app
         return new Response("Not found", { status: 404 });
       return net.fetch(pathToFileURL(file).toString());
     });
-    handle("settings", async () => ({
-      gateway: vault.value.gateway,
-      configured: !!vault.value.token,
-      secureStorage: await vault.available(),
-      remembered: Object.keys(vault.value.credentials),
-    }));
+    handle("settings", async () => {
+      const current = revision;
+      const context = vault.value;
+      const secureStorage = await vault.available();
+      assertCurrent(current);
+      return {
+        gateway: context.gateway,
+        configured: !!context.token,
+        secureStorage,
+        remembered: Object.keys(context.credentials),
+        revision: current,
+      };
+    });
     handle("configure", async (input) => {
       if (
         !input ||
@@ -111,15 +123,23 @@ app
       const token = input.token || (!changed ? vault.value.token : "");
       if (!/^[A-Za-z0-9_-]{43,128}$/.test(token))
         throw new Error("올바른 접속 키를 입력해주세요.");
+      const current = ++revision;
       vault.value = {
         gateway,
         token,
         credentials: changed ? {} : vault.value.credentials,
       };
       await vault.save();
-      return { gateway, secureStorage: await vault.available() };
+      const secureStorage = await vault.available();
+      assertCurrent(current);
+      return { gateway, secureStorage };
     });
-    handle("targets", () => request("/api/targets"));
+    handle("targets", async () => {
+      const current = revision;
+      const result = await request("/api/targets");
+      assertCurrent(current);
+      return { ...result, revision: current };
+    });
     handle("connect", async (input) => {
       if (
         !input ||
@@ -127,32 +147,39 @@ app
         !/^[a-z0-9-]{1,64}$/.test(input.targetId)
       )
         throw new Error("Invalid target.");
+      assertCurrent(input.revision);
+      const current = revision;
+      const context = vault.value;
       const saved = input.useSaved
-        ? vault.value.credentials[input.targetId]
+        ? context.credentials[input.targetId]
         : undefined;
-      const gateway = vault.value.gateway;
-      const gatewayToken = vault.value.token;
+      const gateway = context.gateway;
       const username = saved?.username ?? input.username;
       const password = saved?.password ?? input.password;
       if (typeof username !== "string" || typeof password !== "string")
         throw new Error("로그인 정보를 입력해주세요.");
-      const result = await request("/api/sessions", {
-        targetId: input.targetId,
-        username,
-        password,
-        width: input.width,
-        height: input.height,
-      });
-      if (gateway !== vault.value.gateway || gatewayToken !== vault.value.token)
-        throw new Error("연결 설정이 변경되었습니다. 다시 연결해주세요.");
+      const result = await request(
+        "/api/sessions",
+        {
+          targetId: input.targetId,
+          username,
+          password,
+          width: input.width,
+          height: input.height,
+        },
+        context,
+      );
+      assertCurrent(current);
       if (input.remember) {
         if (!(await vault.available()))
           throw new Error(
             "OS 보안 저장소를 사용할 수 없어 암호를 저장할 수 없습니다.",
           );
-        vault.value.credentials[input.targetId] = { username, password };
+        assertCurrent(current);
+        context.credentials[input.targetId] = { username, password };
         await vault.save();
       }
+      assertCurrent(current);
       return {
         ...result,
         websocket: gateway.replace(/^http/, "ws") + "/tunnel",

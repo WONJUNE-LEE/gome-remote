@@ -130,6 +130,20 @@ async function fixture(t, protocol = "rdp", clock = Date.now) {
             ]),
           );
         if (parts[0] === "connect") {
+          assert.deepEqual(
+            received.find((p) => p[0] === "size"),
+            ["size", "1920", "1080", "96"],
+          );
+          assert.deepEqual(
+            received.find((p) => p[0] === "image"),
+            ["image", "image/png", "image/jpeg"],
+          );
+          assert.ok(
+            received.findIndex((p) => p[0] === "size") < received.length - 1,
+          );
+          assert.ok(
+            received.findIndex((p) => p[0] === "image") < received.length - 1,
+          );
           socket.write(wire(["ready", "$test"]));
           // Deliberately split a multibyte name across TCP writes.
           const name = Buffer.from(wire(["name", "원격 🖥️"]));
@@ -176,7 +190,17 @@ async function fixture(t, protocol = "rdp", clock = Date.now) {
 
 test("HTTP rejects missing authorization and unregistered targets before dialing guacd", async (t) => {
   const f = await fixture(t);
-  assert.equal((await f.post({ targetId: "linux" }, "wrong")).status, 401);
+  for (const token of ["wrong", "y".repeat(43)]) {
+    assert.equal((await f.post({ targetId: "linux" }, token)).status, 401);
+    assert.equal(
+      (
+        await fetch(`${f.origin}/api/targets`, {
+          headers: { Authorization: `Bearer ${token}` },
+        })
+      ).status,
+      401,
+    );
+  }
   assert.equal(
     (await f.post({ targetId: "other", hostname: "8.8.8.8" })).status,
     404,

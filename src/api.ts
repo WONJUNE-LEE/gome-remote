@@ -1,4 +1,5 @@
 let token = "";
+let revision = 0;
 async function request(path: string, input?: unknown) {
   const response = await fetch(path, {
     method: input ? "POST" : "GET",
@@ -17,6 +18,7 @@ async function request(path: string, input?: unknown) {
 export const api: DesktopAPI = window.desktop || {
   async settings() {
     return {
+      revision,
       gateway: location.origin,
       configured: !!token,
       secureStorage: false,
@@ -24,11 +26,19 @@ export const api: DesktopAPI = window.desktop || {
     };
   },
   async configure(input) {
-    token = input.token;
+    revision++;
+    token = input.token || token;
     return { gateway: location.origin, secureStorage: false };
   },
-  targets: () => request("/api/targets"),
+  async targets() {
+    const current = revision;
+    const result = await request("/api/targets");
+    if (current !== revision) throw new Error("연결 설정이 변경되었습니다.");
+    return { ...result, revision: current };
+  },
   async connect(input) {
+    if (input.revision !== revision)
+      throw new Error("연결 설정이 변경되었습니다.");
     const result = await request("/api/sessions", input);
     return {
       ...result,
