@@ -1,0 +1,20 @@
+[Unit]
+Description=Gome Remote isolated RDP daemon
+Requires=user@{uid}.service
+After=user@{uid}.service
+PartOf=user@{uid}.service
+
+[Service]
+Type=exec
+User={user}
+Environment=HOME={home}
+Environment=XDG_RUNTIME_DIR=/run/user/{uid}
+Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/{uid}/bus
+ExecStartPre=/usr/bin/systemctl --user start gome-remote-shell.service
+ExecStart=/usr/libexec/gnome-remote-desktop-daemon --headless
+PrivateNetwork=yes
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=user@{uid}.service
