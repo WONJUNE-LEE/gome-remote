@@ -109,7 +109,15 @@ class InstallerTests(unittest.TestCase):
             proxy.parent.mkdir(parents=True)
             proxy.write_text("#!/bin/sh\nexit 0\n")
             proxy.chmod(0o700)
+            settings = []
+            initialized_user_dirs = False
             def simulate(args, **kwargs):
+                nonlocal initialized_user_dirs
+                if "xdg-user-dirs-update" in args:
+                    self.assertIn("gome-test", args)
+                    initialized_user_dirs = True
+                if "gsettings" in args:
+                    settings.append(args[args.index("gsettings") + 1:])
                 if args[0] == "useradd":
                     home.mkdir(parents=True)
                 elif "mkdir" in args:
@@ -119,6 +127,7 @@ class InstallerTests(unittest.TestCase):
             captured = {}
             def capture(path, content, *args):
                 if path.name == "gome-remote-shell.service":
+                    self.assertTrue(initialized_user_dirs)
                     captured["shell"] = content
                     raise ShellCaptured()
             account = SimpleNamespace(pw_uid=os.getuid(), pw_gid=os.getgid(), pw_dir=str(home))
@@ -148,6 +157,10 @@ class InstallerTests(unittest.TestCase):
             self.assertEqual(set(export[1:]), {"--systemd", "XDG_CURRENT_DESKTOP", "XDG_SESSION_TYPE"})
             self.assertEqual(unit["Service"]["Type"], "dbus")
             self.assertEqual(unit["Service"]["BusName"], "org.gnome.Shell")
+            self.assertEqual(unit["Service"]["ExecStart"].split(),
+                             ["/usr/bin/gnome-shell", "--headless", "--no-x11", "--mode=ubuntu"])
+            self.assertIn(["set", "org.gnome.shell.extensions.dash-to-dock", "dock-position", "BOTTOM"], settings)
+            self.assertIn(["set", "org.gnome.shell.extensions.dash-to-dock", "dock-fixed", "true"], settings)
 
 
 if __name__ == "__main__":

@@ -77,7 +77,7 @@ def main():
         parser.error("Run with sudo")
     if not re.fullmatch(r"[a-z][a-z0-9-]{1,30}", args.user) or not 1024 <= args.port <= 65535:
         parser.error("Invalid user or port")
-    for binary in ["gnome-shell", "grdctl", "openssl", "runuser", "loginctl", "unshare", "dbus-update-activation-environment"]:
+    for binary in ["gnome-shell", "grdctl", "openssl", "runuser", "loginctl", "unshare", "dbus-update-activation-environment", "xdg-user-dirs-update"]:
         if not shutil.which(binary):
             parser.error(f"Missing required command: {binary}")
     try:
@@ -124,6 +124,8 @@ def main():
     run(["loginctl", "enable-linger", args.user])
     run(["systemctl", "start", f"user@{uid}.service"])
     prefix = ["runuser", "-u", args.user, "--", "env", "LC_ALL=C", f"XDG_RUNTIME_DIR=/run/user/{uid}", f"DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/{uid}/bus"]
+    # Ubuntu's desktop icons extension needs the user's Desktop directory.
+    run(prefix + ["xdg-user-dirs-update"])
     tls = home / ".local/share/gnome-remote-desktop"
     run(prefix + ["mkdir", "-p", str(tls)])
     run(prefix + ["openssl", "req", "-new", "-newkey", "rsa:2048", "-days", "730", "-nodes", "-x509", "-subj", f"/CN={args.user}", "-out", str(tls / "tls.crt"), "-keyout", str(tls / "tls.key")], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -134,6 +136,8 @@ def main():
     set_credentials(prefix, args.user, password)
     run(prefix + ["gsettings", "set", "org.gnome.desktop.session", "idle-delay", "0"])
     run(prefix + ["gsettings", "set", "org.gnome.desktop.screensaver", "lock-enabled", "false"])
+    run(prefix + ["gsettings", "set", "org.gnome.shell.extensions.dash-to-dock", "dock-position", "BOTTOM"])
+    run(prefix + ["gsettings", "set", "org.gnome.shell.extensions.dash-to-dock", "dock-fixed", "true"])
     private_write(units / "gome-remote-shell.service", """[Unit]
 Description=Gome Remote dedicated headless GNOME desktop
 BindsTo=graphical-session.target
@@ -146,7 +150,7 @@ Environment=XDG_SESSION_TYPE=wayland
 Environment=XDG_CURRENT_DESKTOP=ubuntu:GNOME
 # D-Bus/systemd-launched applications must see the same desktop as the shell.
 ExecStartPre=/usr/bin/dbus-update-activation-environment --systemd XDG_SESSION_TYPE XDG_CURRENT_DESKTOP
-ExecStart=/usr/bin/gnome-shell --headless --no-x11
+ExecStart=/usr/bin/gnome-shell --headless --no-x11 --mode=ubuntu
 Restart=on-failure
 RestartSec=3
 

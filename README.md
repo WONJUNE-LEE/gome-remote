@@ -75,7 +75,8 @@ the UI and run the gateway with a loopback `publicOrigin`.
 
 ## Ubuntu headless desktop
 
-The installer is for Ubuntu 26.04 with GNOME 50, `gnome-remote-desktop`, `openssl`,
+The installer is for Ubuntu 26.04 with GNOME 50, the Ubuntu session and Ubuntu Dock
+extension (`ubuntu-session`, `gnome-shell-extension-ubuntu-dock`), `xdg-user-dirs`, `gnome-remote-desktop`, `openssl`,
 systemd with network namespaces, and `systemd-socket-proxyd`. It creates a **new, dedicated Linux user** with its own
 home under `/home/<user>` and applications, including Snap-installed Firefox.
 It does not reuse or expose your existing login session.
@@ -94,6 +95,10 @@ The installer creates:
   `ubuntu:GNOME` selects Ubuntu's installed default wallpaper and theme instead
   of upstream GNOME wallpaper paths that may not exist on Ubuntu.
 - A graphical session target tied to the shell, allowing desktop portals to start.
+- The shell's Ubuntu mode (Yaru theme and the installed Ubuntu default extensions),
+  with Ubuntu Dock fixed at the bottom. Desktop identity alone does not select
+  shell mode; the headless shell explicitly starts with `--mode=ubuntu`.
+- Standard user directories initialized before Ubuntu's desktop icons extension starts.
 - A headless GNOME shell and a system RDP service running as that user in its
   own private network namespace. The stock user RDP services are masked.
 - A local TLS certificate and random RDP credentials, with the private key

@@ -226,3 +226,33 @@ Validation:
 The client UI is unchanged at 0.1.2; this correction requires server updates and
 reconnection, not a replacement Windows ZIP. Full host reboot and native Windows
 execution remain separate verification limits.
+
+## Ubuntu shell mode and bottom dock
+
+The owner approved using Ubuntu shell mode and placing its dock at the bottom.
+The headless shell now starts with `--mode=ubuntu`, selecting the installed Yaru
+theme and Ubuntu default extensions, while retaining its dedicated account and
+isolated RDP service. Ubuntu Dock is configured as fixed and bottom-positioned.
+The installer initializes standard XDG user directories before the shell starts:
+without a Desktop directory, the newly enabled desktop-icons extension retried
+and failed. No per-user extension enable list or copied mode definition is needed.
+
+- Four installer tests and Python compilation pass. The generated-unit test now
+  verifies the actual shell command, captured bottom/fixed settings commands and
+  user-directory initialization before writing the shell service.
+- The retained desktop was restarted with the generated unit. D-Bus reports shell
+  mode `ubuntu`; all seven installed extensions from Ubuntu's mode definition are
+  active, including Ubuntu Dock and desktop icons. Settings reports `BOTTOM` and
+  `dock-fixed=true`. The real RDP/browser screen shows the bottom dock, wallpaper
+  and home icon outside the overview, after a dedicated user-manager restart.
+- Settings still opens via D-Bus activation. A click on the bottom Firefox icon
+  launches Firefox. No extension JavaScript error was found in the final shell
+  invocation after initializing user directories; existing headless GDM/session
+  and software-rendering warnings are not claimed to be resolved.
+- systemd unit verification passes with the previously noted host spice-vdagent
+  warning. This change is confined to the installer and dedicated desktop settings;
+  client/gateway source, credentials, other accounts and RDP network isolation are
+  unchanged. Previous shell/dock settings were backed up before application.
+
+This selects Ubuntu's shell mode within the existing headless architecture; a
+full machine reboot and every Ubuntu extension feature remain untested.
