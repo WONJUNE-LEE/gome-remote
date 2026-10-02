@@ -357,7 +357,7 @@ function back() {
   stop();
   document.body.classList.remove("viewing");
   el("viewer-notice").hidden = true;
-  if (fullscreen) void setFullscreen(false);
+  void setFullscreen(false);
   lastInput = undefined;
   el("home").hidden = false;
   el("session").hidden = true;

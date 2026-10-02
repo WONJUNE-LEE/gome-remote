@@ -25,6 +25,18 @@ protocol.registerSchemesAsPrivileged([
   },
 ]);
 let window;
+let fullscreenTarget = false;
+let fullscreenTransition = false;
+function applyFullscreenTarget() {
+  if (fullscreenTransition || window.isFullScreen() === fullscreenTarget)
+    return;
+  fullscreenTransition = true;
+  window.setFullScreen(fullscreenTarget);
+}
+function requestFullscreen(enabled) {
+  fullscreenTarget = enabled;
+  applyFullscreenTarget();
+}
 let vault;
 let revision = 0;
 function assertCurrent(expected) {
@@ -193,7 +205,7 @@ app
     handle("fullscreen", (enabled) => {
       if (typeof enabled !== "boolean")
         throw new Error("Invalid fullscreen state.");
-      window.setFullScreen(enabled);
+      requestFullscreen(enabled);
     });
     handle("fullscreen-state", () => window.isFullScreen());
     Menu.setApplicationMenu(
@@ -222,8 +234,14 @@ app
         webSecurity: true,
       },
     });
-    const publishFullscreen = () =>
+    const publishFullscreen = () => {
+      const requested = fullscreenTransition;
+      fullscreenTransition = false;
+      if (!requested) fullscreenTarget = window.isFullScreen();
       window.webContents.send("remote:fullscreen-state", window.isFullScreen());
+      // Serialize OS transitions so a pending entry cannot swallow an exit request.
+      applyFullscreenTarget();
+    };
     window.on("enter-full-screen", publishFullscreen);
     window.on("leave-full-screen", publishFullscreen);
     window.webContents.on("before-input-event", (event, input) => {
@@ -231,7 +249,9 @@ app
       // Intercept both edges before Guacamole or a menu accelerator can receive F11.
       event.preventDefault();
       if (input.type === "keyDown" && !input.isAutoRepeat)
-        window.setFullScreen(!window.isFullScreen());
+        requestFullscreen(
+          fullscreenTransition ? !fullscreenTarget : !window.isFullScreen(),
+        );
     });
     window.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
     window.webContents.on("will-navigate", (event) => event.preventDefault());

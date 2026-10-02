@@ -251,15 +251,47 @@ test("F11 is intercepted before the remote keyboard and both exit controls use n
     "remote Escape remains available",
   );
   assert.equal(f.input({ key: "a", type: "keyDown" }), false);
+  // F11 must also enter from windowed mode, with exactly one request.
+  const beforeEntry = f.fullscreenRequests.length;
+  assert.equal(
+    f.input({ key: "F11", type: "keyDown", isAutoRepeat: false }),
+    true,
+  );
+  assert.equal(f.input({ key: "F11", type: "keyUp" }), true);
+  assert.deepEqual(f.fullscreenRequests.slice(beforeEntry), [true]);
   f.finishFullscreen(true);
+  const beforeExit = f.fullscreenRequests.length;
+  await f.invoke("fullscreen", false);
+  assert.deepEqual(f.fullscreenRequests.slice(beforeExit), [false]);
+  f.finishFullscreen(false);
   await f.invoke("fullscreen", false);
   assert.equal(
-    f.fullscreenRequests.at(-1),
-    false,
-    "visible exit explicitly requests windowed mode",
+    f.fullscreenRequests.length,
+    beforeExit + 1,
+    "exit while windowed never enters fullscreen",
   );
   await assert.rejects(
     f.invoke("fullscreen", "false"),
     /Invalid fullscreen state/,
   );
+});
+
+test("windowed intent during a native entry is applied after that entry completes", async () => {
+  const f = await desktop();
+  await f.invoke("fullscreen", true);
+  await f.invoke("fullscreen", false);
+  assert.deepEqual(
+    f.fullscreenRequests,
+    [true],
+    "serialize transitions instead of losing the exit",
+  );
+  f.finishFullscreen(true);
+  assert.deepEqual(f.fullscreenRequests, [true, false]);
+  f.finishFullscreen(false);
+  assert.equal(await f.invoke("fullscreen-state"), false);
+  assert.deepEqual(f.notifications.at(-1), ["remote:fullscreen-state", false]);
+  // OS/menu transitions remain authoritative when no app request is pending.
+  f.finishFullscreen(true);
+  assert.deepEqual(f.fullscreenRequests, [true, false]);
+  assert.equal(await f.invoke("fullscreen-state"), true);
 });

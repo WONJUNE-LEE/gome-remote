@@ -91,7 +91,9 @@ fullscreen escape. The connection view now hides home navigation, uses the full
 viewport, and offers a collapsible overlay plus an always-visible fullscreen exit.
 F11 is intercepted in Electron before page key events and menu accelerators.
 Native enter/leave events keep the button label synchronized; the explicit exit
-requests windowed mode rather than toggling stale renderer state.
+requests windowed mode rather than toggling stale renderer state. Native
+transitions are serialized, so returning to the list during entry queues an exit
+that is applied when entry completes.
 
 - Node regression checks exercise the actual main-process IPC/input registrations
   with a delayed native transition: F11 down/up intercepted, repeat ignored,
@@ -101,5 +103,18 @@ requests windowed mode rather than toggling stale renderer state.
   viewport to the remote view and hide navigation. Tools expand/collapse; F11
   enters/exits while the remote surface is focused; the persistent exit button
   works with tools collapsed; returning to the list restores navigation.
-- All 11 Node tests, TypeScript checks, and the production build pass on Linux.
+- Additional geometry checks measured the actual remote display bounds: a
+  1920×1080 desktop in a 1920×900 viewport renders centered at 1600×900 (height
+  constraint), and in a 2560×1440 viewport it fills 2560×1440 (upscaling).
+- A renderer check with delayed native state notification enters a real fixture
+  session, requests fullscreen, and immediately returns to the list. It observes
+  the exact IPC intent sequence `[true, false]` before any entry notification.
+  The main-process regression completes the delayed entry and verifies the
+  queued exit request, then the final windowed state.
+- All 12 Node tests, TypeScript checks, and the production build pass on Linux.
+  Mac tests/check/build and packaged startup/secure-storage/IPC smoke passed
+  before the review follow-up. Native Mac fullscreen automation was inconclusive:
+  IPC entry did not complete within the wait; direct native entry after focusing
+  the app reached fullscreen but the expected renderer notification timed out.
+  This is not counted as a native fullscreen pass.
 - Native Windows interaction still needs owner confirmation with the new ZIP.
