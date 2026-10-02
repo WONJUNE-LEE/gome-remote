@@ -1,0 +1,65 @@
+# Verification record — 2026-10-03
+
+This records the initial implementation before independent review. It is not a
+claim that all four physical client/host combinations have been tested.
+
+## Observed passes
+
+- `npm test`: 8 tests pass on Linux (Node 24.21.0) and macOS (Node 26.0.0).
+  The integration fixture records the actual TCP handshake received from the
+  HTTP/WebSocket gateway, rather than asserting a settings-builder mock.
+- `npm run check` and `npm run build`: pass on Linux and macOS.
+- `npm audit --omit=dev`: zero reported runtime vulnerabilities.
+- `python3 -m py_compile scripts/setup-headless.py`: pass.
+- Real headless Ubuntu 26.04.1 / GNOME 50.1 / GNOME Remote Desktop 50.2:
+  no HDMI/DP connector attached. A dedicated user runs a headless GNOME shell.
+- The app's browser client displays that desktop through the real guacd 1.6.0
+  RDP backend. Keyboard input launches Text Editor, English typing reaches the
+  editor, and explicit clipboard-based text paste inserts Korean.
+- Disconnect/reconnect preserves the same editor and unsaved document.
+- Mouse clicks reach the editor and its Save button. A file saved through the
+  remote UI was independently read on the server and checked for all three
+  expected markers (English typing, Korean paste, and mouse/keyboard proof).
+- The actual headless installer runs successfully for a separate temporary
+  account. Its dedicated firewall table is installed, and systemd shows the
+  firewall as a dependency of that account's user manager.
+- Restarting that dedicated user manager automatically starts the shell and RDP
+  services; the browser reconnects and launches Text Editor again.
+- Changing resolution to 1920×1080 updates the remote display's unscaled layer
+  to exactly 1920×1080 while its outer container remains scaled to the viewport.
+- After the vendored image-decoder cleanup fix, the fresh installer-rehearsal
+  browser reported zero console errors or warnings during the live connection.
+- macOS 26.4.1 / Apple Silicon: an actual native ZIP build and hidden app startup
+  pass. `--smoke-test` reports the correct title, working preload IPC bridge, and
+  OS secret-storage availability. The older synchronous Electron storage API
+  reported false; the asynchronous API reports true and is now used by the app.
+- Windows x64 ZIP and Linux unpacked application packaging succeed on Linux.
+  The final Windows ZIP is cross-built without executable resource editing or
+  signing. No signing credentials were used.
+
+## Publication
+
+The owner authorized the public repository `WONJUNE-LEE/gome-remote` on
+2026-10-03. Test fixtures use synthetic addresses and credentials. Independent
+review applies to the pushed implementation branch before merging.
+
+## Still required
+
+- The user must choose the independent review engine. No review has run yet.
+- Windows native execution, DPAPI persistence, and all four physical connection
+  combinations require owner-device checks. A real Mac VNC service was found
+  reachable, but no existing Mac VNC password was read or changed, and Mac host
+  authentication/control has not been tested.
+- Full-machine reboot, OS sleep/wake, real tailnet HTTPS access and access-policy
+  enforcement, installer signing/notarization, and the native build workflow
+  have not been tested. The shared server was not rebooted, and its existing
+  Tailscale Serve routes were not changed.
+- A user-manager restart is evidence for service startup, not a substitute for
+  a complete reboot test. The installer's nftables rules were inspected and
+  syntax-checked, but an independent non-Tailscale network probe was not run.
+- Software rendering is functional; latency, frame rate, and hardware encoding
+  have not been benchmarked. The Linux desktop uses a separate account and home.
+
+The test accounts, containers, local listeners, and remote build scratch are
+temporary and are removed after retaining the source, packages, and evidence.
+Production installation awaits review and the owner-device checks above.

@@ -1,0 +1,18 @@
+[Unit]
+Description=Gome Remote gateway
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/remote
+Environment=GOME_REMOTE_CONFIG=%h/.config/gome-remote/gateway.json
+ExecStart=/usr/bin/node server/index.js
+Restart=on-failure
+RestartSec=3
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=default.target

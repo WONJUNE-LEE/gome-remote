@@ -1,0 +1,13 @@
+[
+  {
+    "id": "ubuntu",
+    "name": "Ubuntu Server",
+    "platform": "linux",
+    "protocol": "rdp",
+    "hostname": "127.0.0.1",
+    "port": 33490,
+    "security": "nla",
+    "ignoreCertificate": true,
+    "persistent": true
+  }
+]
