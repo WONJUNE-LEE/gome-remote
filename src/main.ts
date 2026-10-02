@@ -225,7 +225,9 @@ function openLogin(target: Target) {
 function releaseInput() {
   keyboard?.reset();
   releaseMouse?.();
-  client?.getDisplay().showCursor(false);
+  el("display")
+    .querySelector(".remote-surface")
+    ?.classList.remove("remote-pointer-active");
 }
 function stop() {
   generation++;
@@ -286,6 +288,9 @@ async function connect(input: ConnectInput) {
     surface.tabIndex = 0;
     surface.className = "remote-surface";
     surface.setAttribute("aria-label", "원격 데스크톱 화면");
+    // Incoming server mouse instructions can reattach the cursor layer. CSS owns
+    // final visibility so delayed messages cannot steal local cursor ownership.
+    display.getCursorLayer().getElement().classList.add("remote-cursor");
     surface.append(display.getElement());
     el("display").append(surface);
     const fit = () => {
@@ -307,12 +312,16 @@ async function connect(input: ConnectInput) {
       mouse.onmousemove =
         (state: any) => {
           if (!active) return;
-          display.showCursor(true);
+          surface.classList.add("remote-pointer-active");
           mouseState = state;
           surface.focus({ preventScroll: true });
           connection.sendMouseState(state, true);
         };
-    mouse.onmouseout = () => display.showCursor(false);
+    mouse.onmouseout = () => surface.classList.remove("remote-pointer-active");
+    // Guacamole deduplicates moves to the last coordinate, including re-entry.
+    surface.addEventListener("mouseenter", () => {
+      if (active) surface.classList.add("remote-pointer-active");
+    });
     releaseMouse = () => {
       if (active && mouseState)
         connection.sendMouseState(

@@ -407,3 +407,16 @@ test("native remote menu enables valid commands and forwards exact actions", asy
   view.submenu[0].click();
   assert.deepEqual(f.fullscreenRequests, [true, false]);
 });
+
+test("native fullscreen menu preserves a second click during entry", async () => {
+  const f = await desktop();
+  const fullscreen = f.menu.template.find((item) => item.label === "View")
+    .submenu[0];
+  fullscreen.click();
+  fullscreen.click();
+  assert.deepEqual(f.fullscreenRequests, [true]);
+  f.finishFullscreen(true);
+  assert.deepEqual(f.fullscreenRequests, [true, false]);
+  f.finishFullscreen(false);
+  assert.equal(await f.invoke("fullscreen-state"), false);
+});

@@ -159,4 +159,22 @@ The new design supersedes the overlay and persistent exit button described above
   1920×1080. Browser fullscreen/F11 exit with remote focus passed.
 - Preload regression checks exact action forwarding without Electron event
   exposure, viewer-state invocation, and listener removal.
-- All 17 Node tests, TypeScript check, and production build pass on Linux.
+- All 18 Node tests, TypeScript check, and production build pass on Linux. The
+  native fullscreen menu is also clicked twice before entry completes, proving
+  that the queued exit survives the pending transition.
+- Review found that incoming Guacamole mouse instructions can reattach a cursor
+  hidden via showCursor(false). That mechanism was removed. The cursor layer's
+  final CSS visibility now depends on connected state and local pointer ownership,
+  which server instructions cannot change. The layer may remain attached while
+  hidden. Mouse re-entry restores ownership even at the same coordinate, which
+  Guacamole otherwise deduplicates.
+- Repeated the browser probe while the synthetic server sends a changing mouse
+  position every 100 ms. Hover is visible; leaving into letterbox space is hidden;
+  a subsequent server-driven transform change stays hidden; re-entry at the same
+  coordinate is visible. Opening the text dialog hides it, another server update
+  keeps it hidden, and renewed remote mouse movement restores it. Each transition
+  asserts computed visibility, not just layer presence or local cursor CSS.
+- Mac native startup/bridge/storage-availability smoke passed at the first menu
+  build. A later native menu connection probe encountered a safeStorage encryption
+  error in its isolated test profile before connecting; it is not counted as a
+  native menu interaction pass or as proof that credential encryption works.
