@@ -157,6 +157,7 @@ async function fixture(t, protocol = "rdp", clock = Date.now, overrides = {}) {
               "enable-drive",
               "disable-copy",
               "enable-wallpaper",
+              "security",
             ]),
           );
         if (parts[0] === "connect") {
@@ -255,6 +256,7 @@ test("Remote Login advertises its server profile and ignores caller routing over
     "entry-user",
     "entry-password",
   ]);
+  assert.equal(f.received.find((p) => p[0] === "connect").at(-1), "nla");
   ws.close();
   await once(ws, "close");
 });
@@ -322,6 +324,7 @@ for (const protocol of ["rdp", "vnc"])
         protocol === "rdp" ? "false" : "",
         "true",
         protocol === "rdp" ? "true" : "",
+        protocol === "rdp" ? "nla" : "",
       ],
     );
     assert.ok(messages.includes("0.,5.$test;"));

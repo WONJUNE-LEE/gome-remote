@@ -6,6 +6,8 @@ services:
     entrypoint: ["/opt/guacamole/sbin/guacd"]
     command: ["-f", "-b", "127.0.0.1", "-l", "4822", "-L", "warning"]
     read_only: true
-    tmpfs: ["/tmp"]
+    # FreeRDP initializes its certificate store even when a target explicitly
+    # accepts a self-signed certificate. Keep that writable state ephemeral.
+    tmpfs: ["/tmp", "/home/guacd:rw,uid=1000,gid=1000,mode=0700"]
     cap_drop: ["ALL"]
     security_opt: ["no-new-privileges:true"]

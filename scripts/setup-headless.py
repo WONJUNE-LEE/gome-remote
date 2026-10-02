@@ -212,4 +212,8 @@ NoNewPrivileges=yes
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(
+        "Direct-shell installation is retired. Configure Ubuntu Remote Login "
+        "and use setup-remote-login.py inspect --user USER. See README.md. "
+        "Existing desktops are not changed by this command."
+    )
