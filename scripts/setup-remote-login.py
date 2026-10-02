@@ -164,7 +164,7 @@ def ssh_excluded(name, config=Path("/etc/ssh/sshd_config")):
 def prerequisites():
     for binary in ("systemctl", "loginctl", "busctl", "grdctl", "runuser", "dconf",
                    "dbus-run-session", "xdg-user-dirs-update", "openssl", "chpasswd", "chage", "tar",
-                   "ps", "id", "getent", "dpkg-query"):
+                   "ps", "id", "getent", "dpkg-query", "systemd-analyze"):
         require(shutil.which(binary), f"Missing command: {binary}")
     require(run(["dpkg-query", "-W", "-f=${db:Status-Status}", "ubuntu-desktop-minimal"], ok=(0, 1)) == "installed",
             "Install ubuntu-desktop-minimal to provide the complete Ubuntu session, theme and wallpaper")
@@ -208,12 +208,56 @@ def legacy_resources(user):
     paths[str(shell)] = fingerprint(shell, user.pw_uid)
     handover_mask = shell.parent / "gnome-remote-desktop-handover.service"
     require(not os.path.lexists(handover_mask), "Unexpected user override of the stock handover service")
-    # The root-owned receipt and units bind this migration to the old installer.
-    rdp = base64.b64decode(paths[str(Path('/etc/systemd/system') / UNITS[0])]["data"]).decode()
-    require(f"User={user.pw_name}\n" in rdp and f"HOME={user.pw_dir}\n" in rdp and
-            "ExecStart=/usr/libexec/gnome-remote-desktop-daemon --headless\n" in rdp,
-            "Legacy RDP unit does not match this account")
+    require(type(receipt.get("port")) is int and 1024 <= receipt["port"] <= 65535,
+            "Invalid legacy receipt port")
+    # Exact frozen compatibility templates: never accept an arbitrary systemd
+    # definition merely because a few familiar directives appear in its text.
+    for path, resource in paths.items():
+        if path == str(RECEIPT):
+            continue
+        template = Path(__file__).with_name("legacy-units") / (Path(path).name + ".in")
+        expected = template.read_text().format(user=user.pw_name, uid=user.pw_uid,
+                                               home=user.pw_dir, port=receipt["port"])
+        require(base64.b64decode(resource["data"]).decode() == expected,
+                f"Unsupported legacy unit definition: {path}")
+    verify_loaded_units(user)
     return paths
+
+
+def verify_loaded_units(user):
+    allowed = set(UNITS) | {f"user@{user.pw_uid}.service"}
+    properties = "Id,FragmentPath,DropInPaths,NeedDaemonReload,PropagatesStopTo,ConsistsOf,BoundBy"
+    for unit in (*UNITS, f"user@{user.pw_uid}.service"):
+        values = dict(line.split("=", 1) for line in run(
+            ["systemctl", "show", unit, f"--property={properties}"]).splitlines())
+        require(values.get("Id") == unit and values.get("NeedDaemonReload") == "no",
+                f"Unexpected or stale loaded unit: {unit}")
+        if unit in UNITS:
+            require(values.get("FragmentPath") == f"/etc/systemd/system/{unit}" and
+                    values.get("DropInPaths") == "", f"Unsupported unit override: {unit}")
+        for key in ("PropagatesStopTo", "ConsistsOf", "BoundBy"):
+            require(set(values.get(key, "").split()) <= allowed,
+                    f"Unit stop would propagate outside this account: {unit}")
+    # A stopped user manager has no loaded unit to inspect. Examine all its
+    # search paths as well, including runtime/global and dash-prefix drop-ins.
+    prefix = ["runuser", "-u", user.pw_name, "--", "env", f"HOME={user.pw_dir}",
+              f"XDG_RUNTIME_DIR=/run/user/{user.pw_uid}"]
+    paths = run(prefix + ["systemd-analyze", "--user", "unit-paths"]).splitlines()
+    expected = Path(user.pw_dir) / ".config/systemd/user/gome-remote-shell.service"
+    for directory in map(Path, paths):
+        candidate = directory / expected.name
+        require(candidate == expected or not os.path.lexists(candidate),
+                f"Unexpected shell unit override: {candidate}")
+        for name in ("service.d", "gome-.service.d", "gome-remote-.service.d",
+                     "gome-remote-shell.service.d"):
+            dropins = directory / name
+            require(not os.path.lexists(dropins), f"Unsupported user unit drop-in: {dropins}")
+    if run(["systemctl", "is-active", f"user@{user.pw_uid}.service"], ok=(0, 3)) == "active":
+        values = dict(line.split("=", 1) for line in run(prefix + [
+            "systemctl", "--user", "show", expected.name,
+            "--property=FragmentPath,DropInPaths,NeedDaemonReload"]).splitlines())
+        require(values == {"FragmentPath": str(expected), "DropInPaths": "", "NeedDaemonReload": "no"},
+                "Unexpected loaded shell definition")
 
 
 def state_dir(name):
@@ -224,7 +268,7 @@ def read_state(name):
     trusted_directory(STATE_ROOT)
     trusted_directory(state_dir(name))
     state = read_private(state_dir(name) / "receipt.json")
-    require(state.get("version") == 1 and state.get("user") == name,
+    require(state.get("version") == 2 and state.get("user") == name,
             "Unknown migration receipt")
     user = account(name)
     require(user.pw_uid == state["uid"] and user.pw_dir == state["home"],
@@ -241,6 +285,71 @@ def verify_resources(state):
     for path, expected in state["resources"].items():
         require(fingerprint(Path(path), expected["uid"]) == expected,
                 f"Resource changed since preparation: {path}")
+    verify_loaded_units(account(state["user"]))
+
+
+def metadata(user):
+    link = shell_enablement(user)
+    require(not os.path.lexists(link) or link.is_symlink(), "Shell enablement is not a symlink")
+    linger = Path("/var/lib/systemd/linger") / user.pw_name
+    require(not linger.is_symlink(), "Unexpected linger symlink")
+    shadow = run(["getent", "shadow", user.pw_name]).split(":")
+    require(len(shadow) == 9 and shadow[0] == user.pw_name, "Invalid account metadata")
+    return {"shadow": shadow, "linger": "yes" if linger.exists() else "no",
+            "enabled": {u: run(["systemctl", "is-enabled", u], ok=(0, 1)) for u in UNITS},
+            "preferences": {p: preference(user, p) for p in ("Session", "SessionType")},
+            "dconf": {k: run(user_command(user, ["dconf", "read", k])) for k in DCONF_KEYS},
+            "shell_link": os.readlink(link) if os.path.lexists(link) else None}
+
+
+def verify_metadata(user, state):
+    current = metadata(user)
+    before = state["before"]
+    phase = state["phase"]
+    if phase in ("prepared", "stopping", "stopped", "restored"):
+        require(current == before, "Account or enablement changed since preparation")
+        return
+    if phase == "ready":
+        require(current == state["configured"], "Configured account state changed; inspect before recovery")
+        return
+    # An interrupted configuration/rollback can contain a mixture of its before
+    # and intended after values. Anything else belongs to an unknown writer.
+    after = state.get("configured", state["desired"])
+    for key in ("linger", "shell_link"):
+        require(current[key] in (before[key], after[key]), f"Unexpected account setting: {key}")
+    for section in ("enabled", "preferences", "dconf"):
+        for key, value in current[section].items():
+            require(value in (before[section][key], after[section][key]),
+                    f"Unexpected account setting: {section}/{key}")
+    shadow = current["shadow"]
+    old = before["shadow"]
+    # chpasswd changes the hash and last-change day together. A retry on a later
+    # day is legitimate; other aging changes and foreign hashes are not.
+    new_password = (shadow[1] in (old[1], state["new_hash"]) and shadow[:1] == old[:1] and
+                    shadow[3:] == old[3:] and shadow[2].isdigit() and
+                    state["password_day"] <= int(shadow[2]) <= int(time.time() // 86400))
+    require(shadow == old or new_password, "Account password or aging changed outside this migration")
+
+
+def publish_prepared(state, previous):
+    trusted_directory(STATE_ROOT, create=True)
+    staging = Path(tempfile.mkdtemp(prefix=f".{state['user']}-prepare-", dir=STATE_ROOT))
+    # Build and fsync the entire initial receipt before publishing its directory.
+    # An interrupted private staging directory never blocks a new prepare.
+    state["phase"] = "prepared"
+    if previous is not None:
+        archive = STATE_ROOT / f"{state['user']}-restored-{secrets.token_hex(8)}"
+        require(not os.path.lexists(archive), "Archive destination already exists")
+        state["previous_recovery"] = str(archive)
+    private_json(staging / "receipt.json", state)
+    if previous is not None:
+        state_dir(state["user"]).rename(archive)
+    staging.rename(state_dir(state["user"]))
+    fd = os.open(STATE_ROOT, os.O_DIRECTORY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
 
 
 def prepare(user):
@@ -254,27 +363,17 @@ def prepare(user):
     if os.path.lexists(state_dir(user.pw_name)):
         _, previous = read_state(user.pw_name)
         require(previous["phase"] == "restored", "Recovery directory already exists; inspect/resume it")
-    state = {"version": 1, "user": user.pw_name, "uid": user.pw_uid, "home": user.pw_dir,
-             "resources": resources, "shadow": shadow,
-             "linger": run(["loginctl", "show-user", user.pw_name, "-p", "Linger", "--value"]),
-             "enabled": {u: run(["systemctl", "is-enabled", u], ok=(0, 1)) for u in UNITS},
-             "preferences": {p: preference(user, p) for p in ("Session", "SessionType")},
-             "dconf": {k: run(user_command(user, ["dconf", "read", k])) for k in DCONF_KEYS}}
-    require(all(x in ("enabled", "disabled", "static") for x in state["enabled"].values()),
+    before = metadata(user)
+    require(before["shadow"] == shadow, "Account changed during preparation")
+    state = {"version": 2, "user": user.pw_name, "uid": user.pw_uid, "home": user.pw_dir,
+             "resources": resources, "before": before}
+    require(all(x in ("enabled", "disabled", "static") for x in before["enabled"].values()),
             "Unexpected legacy service enablement")
     shell_link = shell_enablement(user)
     require(shell_link.is_symlink() and shell_link.resolve() ==
             Path(user.pw_dir) / ".config/systemd/user/gome-remote-shell.service",
             "Unexpected legacy shell enablement")
-    state["shell_link"] = os.readlink(shell_link)
-    trusted_directory(STATE_ROOT, create=True)
-    if previous is not None:
-        archive = STATE_ROOT / f"{user.pw_name}-restored-{secrets.token_hex(8)}"
-        require(not os.path.lexists(archive), "Archive destination already exists")
-        state_dir(user.pw_name).rename(archive)
-        state["previous_recovery"] = str(archive)
-    state_dir(user.pw_name).mkdir(mode=0o700)
-    save(state, "prepared")
+    publish_prepared(state, previous)
 
 
 def stop_account(user):
@@ -309,17 +408,26 @@ def password_hash(stdin):
 def migrate(user, state, stdin):
     require(state["phase"] in ("prepared", "stopping", "stopped", "configuring", "ready"),
             "This migration is in rollback; finish rollback first")
-    if state["phase"] == "ready":
-        return
     ssh_excluded(user.pw_name)
     verify_resources(state)
+    verify_metadata(user, state)
+    if state["phase"] == "ready":
+        return
     require(not sessions(user.pw_uid), "Unexpected login session; preserve it and inspect before resuming")
     if state["phase"] == "prepared":
         state["new_hash"] = password_hash(stdin)
+        state["password_day"] = int(time.time() // 86400)
+        state["desired"] = {"linger": "no", "shell_link": None,
+            "enabled": {u: "static" if v == "static" else "disabled"
+                        for u, v in state["before"]["enabled"].items()},
+            "preferences": {"Session": "ubuntu", "SessionType": "wayland"},
+            "dconf": {k: "" for k in DCONF_KEYS}}
+        verify_metadata(user, state)
         save(state, "stopping")
     if state["phase"] == "stopping":
         stop_account(user)
         verify_resources(state)
+        verify_metadata(user, state)
         backup = state_dir(user.pw_name) / "home.tar"
         require(not backup.is_symlink(), "Unexpected backup symlink")
         # A partial archive from this operation can be replaced before completion.
@@ -335,11 +443,12 @@ def migrate(user, state, stdin):
         # Resume must reestablish quiescence after a host reboot or interrupted run.
         stop_account(user)
         verify_resources(state)
+        verify_metadata(user, state)
         for unit in UNITS:
             run(["systemctl", "disable", unit])
         link = shell_enablement(user)
         if os.path.lexists(link):
-            require(link.is_symlink() and os.readlink(link) == state["shell_link"],
+            require(link.is_symlink() and os.readlink(link) == state["before"]["shell_link"],
                     "Shell enablement changed")
             link.unlink()
         run(["loginctl", "disable-linger", user.pw_name])
@@ -349,6 +458,8 @@ def migrate(user, state, stdin):
         preference(user, "Session", "ubuntu")
         preference(user, "SessionType", "wayland")
         run(["chpasswd", "--encrypted"], input=f"{user.pw_name}:{state['new_hash']}\n")
+        verify_metadata(user, state)
+        state["configured"] = metadata(user)
         save(state, "ready")
 
 
@@ -361,15 +472,18 @@ def rollback(user, state):
         save(state, "restored")
         return
     verify_resources(state)
+    verify_metadata(user, state)
     save(state, "restoring")
     stop_account(user)
     verify_resources(state)
+    verify_metadata(user, state)
     # Restore service/account settings, never overwrite the home or keyrings.
-    for key, value in state["dconf"].items():
+    before = state["before"]
+    for key, value in before["dconf"].items():
         run(user_command(user, ["dconf", "write", key, value] if value else ["dconf", "reset", key]))
-    for prop, value in state["preferences"].items():
+    for prop, value in before["preferences"].items():
         preference(user, prop, value)
-    old = state["shadow"]
+    old = before["shadow"]
     run(["chpasswd", "--encrypted"], input=f"{user.pw_name}:{old[1]}\n")
     args = ["chage"]
     for flag, value in zip(("-d", "-m", "-M", "-W", "-I", "-E"), old[2:8]):
@@ -377,16 +491,17 @@ def rollback(user, state):
     run(args + [user.pw_name])
     link = shell_enablement(user)
     if os.path.lexists(link):
-        require(link.is_symlink() and os.readlink(link) == state["shell_link"], "Shell enablement changed")
+        require(link.is_symlink() and os.readlink(link) == before["shell_link"], "Shell enablement changed")
     else:
-        os.symlink(state["shell_link"], link)
+        os.symlink(before["shell_link"], link)
         os.lchown(link, user.pw_uid, user.pw_gid)
-    run(["loginctl", "enable-linger" if state["linger"] == "yes" else "disable-linger", user.pw_name])
-    for unit, enabled in state["enabled"].items():
+    run(["loginctl", "enable-linger" if before["linger"] == "yes" else "disable-linger", user.pw_name])
+    for unit, enabled in before["enabled"].items():
         if enabled in ("enabled", "disabled"):
             run(["systemctl", "enable" if enabled == "enabled" else "disable", unit])
     run(["systemctl", "start", f"user@{user.pw_uid}.service"])
     run(["systemctl", "start", UNITS[0], UNITS[1]])
+    require(metadata(user) == before, "Restored metadata differs; recovery state retained")
     save(state, "restored")
 
 

@@ -344,7 +344,7 @@ Native Windows/macOS execution and the production host's reboot remain unverifie
 - 20 Node tests pass, including real HTTP/WebSocket/guacd-wire profile assertions,
   malicious caller routing/security overrides, generic RDP/VNC behavior, native
   menu/fullscreen, encrypted vault and gateway-revision credential boundaries.
-- 13 Python tests pass, covering legacy refusal/collision behavior, receipt and
+- 17 Python tests pass, covering legacy refusal/collision behavior, receipt and
   intermediate symlinks, changed resources, explicit SSH exclusion, secret-safe
   command errors, no-op prepared rollback and bounded account quiescence.
 - TypeScript check, production build and `git diff --check` pass.
@@ -356,3 +356,28 @@ Native Windows/macOS execution and the production host's reboot remain unverifie
 - The retained 0.1.2 Windows client's new-login compatibility is **not certified**.
   Use 0.1.3 for owner-device testing. Mac targets and native UI behavior were not
   changed; a real Mac control session is still part of the outstanding device matrix.
+
+### Implementation review corrections (round 1)
+
+- A-001/C-001 accepted: legacy recognition now compares all four unit bodies to
+  frozen supported templates, checks actual loaded fragments/drop-ins/reload state,
+  rejects user-unit search-path overrides and checks outgoing/incoming stop
+  propagation outside this account. This is intentionally conservative.
+- A-002 accepted: before/desired/configured account metadata is recorded and
+  revalidated before interruption and recovery. Unexpected password/aging,
+  enablement, linger, owned preferences or shell-link changes stop the operation.
+  Partial configuration/rollback accepts only the recorded before/after values.
+- A-003 accepted: the initial private receipt is fully written/fsynced in staging
+  before its directory is published. A first-write interruption cannot leave an
+  empty active recovery directory. Previous completed recovery archives remain.
+- B-001 accepted: process-free manager/session blockers now have independent wait
+  and timeout cases. In a disposable test copy, deleting both manager/session
+  conditions caused all four new subcases to fail. The copy was removed.
+- An actual guest rehearsal changed the proxy to another user before prepare,
+  added a loaded PropagatesStopTo=gdm.service drop-in after prepare, changed the
+  shell enablement link, and changed account password-aging metadata. Each was
+  refused before stopping the account; GDM and user-manager PIDs stayed unchanged.
+  Restoring the synthetic baseline made validation pass again.
+- Injecting the first receipt-write failure left no active recovery directory;
+  the next prepare succeeded. The revised migration was then interrupted and
+  resumed again at every durable migration phase, followed by rollback recovery.

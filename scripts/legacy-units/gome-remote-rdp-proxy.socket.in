@@ -1,0 +1,9 @@
+[Unit]
+Description=Gome Remote loopback-only RDP socket
+
+[Socket]
+ListenStream=127.0.0.1:{port}
+NoDelay=true
+
+[Install]
+WantedBy=sockets.target

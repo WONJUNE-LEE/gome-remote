@@ -147,7 +147,9 @@ sudo python3 scripts/setup-remote-login.py migrate --user gome-remote --stop-ses
 ```
 
 `prepare` checks the old root-owned receipt, UID/home, units and account policy,
-then stores private recovery state without stopping the desktop. `migrate` prompts
+then stores private recovery state without stopping the desktop. It supports the
+known legacy unit definitions; modified definitions, extra systemd overrides,
+stale loaded units or dependencies that stop unrelated services are refused. `migrate` prompts
 for a new Ubuntu password (16+ characters), stops only that account's old desktop,
 waits for it to quiesce, and takes a consistent home backup. It disables the old
 startup path, restores normal locking/idle defaults and selects Ubuntu Wayland
@@ -158,6 +160,10 @@ Each durable phase is recorded under `/var/lib/gome-remote-login/USER`, root-onl
 The receipt includes protected password hashes/account settings; treat it and the
 home archive as sensitive. If interrupted, inspect and rerun the same migration
 command. Unexpected sessions or resource changes stop the operation for review.
+Changes to the prepared account password/aging, enablement, linger or owned
+preferences are checked before interruption. Partial configuration accepts only
+the recorded before/after values. Initial receipt creation is published atomically;
+an interrupted private staging directory does not block another preparation.
 Do not delete recovery state or blindly run the legacy installer again.
 
 After real GDM login, keyring and reconnect checks pass, replace the gateway's old

@@ -1,0 +1,12 @@
+[Unit]
+Description=Forward the loopback RDP socket into the isolated daemon
+Requires=gome-remote-rdp.service
+After=gome-remote-rdp.service
+JoinsNamespaceOf=gome-remote-rdp.service
+PartOf=gome-remote-rdp.service
+
+[Service]
+User={user}
+ExecStart=/usr/lib/systemd/systemd-socket-proxyd 127.0.0.1:{port}
+PrivateNetwork=yes
+NoNewPrivileges=yes
