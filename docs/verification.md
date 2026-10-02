@@ -344,7 +344,7 @@ Native Windows/macOS execution and the production host's reboot remain unverifie
 - 20 Node tests pass, including real HTTP/WebSocket/guacd-wire profile assertions,
   malicious caller routing/security overrides, generic RDP/VNC behavior, native
   menu/fullscreen, encrypted vault and gateway-revision credential boundaries.
-- 17 Python tests pass, covering legacy refusal/collision behavior, receipt and
+- 18 Python tests pass, covering legacy refusal/collision behavior, receipt and
   intermediate symlinks, changed resources, explicit SSH exclusion, secret-safe
   command errors, no-op prepared rollback and bounded account quiescence.
 - TypeScript check, production build and `git diff --check` pass.
@@ -381,3 +381,19 @@ Native Windows/macOS execution and the production host's reboot remain unverifie
 - Injecting the first receipt-write failure left no active recovery directory;
   the next prepare succeeded. The revised migration was then interrupted and
   resumed again at every durable migration phase, followed by rollback recovery.
+
+### Implementation review corrections (round 2)
+
+- B-002 accepted: the systemctl fixture returns only requested properties, matching
+  the real command contract. Production validation also refuses missing dependency
+  information instead of interpreting it as an empty relationship. Omitting the
+  PropagatesStopTo request in a disposable copy now fails the positive-control test.
+- C-002 accepted: RequiredBy and RequisiteOf join the stop-propagation census.
+  Actual guest transient services with Requires/Requisite on the old RDP service
+  were each refused before password entry or stopping; their PIDs were preserved.
+  Removing only those synthetic services restored successful validation.
+- Author follow-up: resources and loaded definitions are rechecked after the
+  interactive password prompt, which can remain open during administrator edits.
+  A regression changes a real temporary unit from the password callback and proves
+  refusal before phase publication or session stop. Creation of the recovery root
+  also fsyncs its parent directory before any account mutation.

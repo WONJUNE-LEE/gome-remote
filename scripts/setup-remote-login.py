@@ -31,6 +31,7 @@ UNITS = ("gome-remote-rdp.service", "gome-remote-rdp-proxy.socket",
 DCONF_KEYS = ("/org/gnome/desktop/session/idle-delay",
               "/org/gnome/desktop/screensaver/lock-enabled",
               "/org/gnome/desktop/remote-desktop/rdp/headless/enable")
+STOP_RELATIONS = ("PropagatesStopTo", "ConsistsOf", "BoundBy", "RequiredBy", "RequisiteOf")
 
 
 class Refuse(RuntimeError):
@@ -53,6 +54,11 @@ def require(condition, message):
 def trusted_directory(path, *, create=False):
     if create and not os.path.lexists(path):
         path.mkdir(mode=0o700)
+        fd = os.open(path.parent, os.O_DIRECTORY)
+        try:
+            os.fsync(fd)
+        finally:
+            os.close(fd)
     info = path.lstat()
     require(stat.S_ISDIR(info.st_mode) and info.st_uid == 0 and
             stat.S_IMODE(info.st_mode) == 0o700,
@@ -226,7 +232,7 @@ def legacy_resources(user):
 
 def verify_loaded_units(user):
     allowed = set(UNITS) | {f"user@{user.pw_uid}.service"}
-    properties = "Id,FragmentPath,DropInPaths,NeedDaemonReload,PropagatesStopTo,ConsistsOf,BoundBy"
+    properties = "Id,FragmentPath,DropInPaths,NeedDaemonReload," + ",".join(STOP_RELATIONS)
     for unit in (*UNITS, f"user@{user.pw_uid}.service"):
         values = dict(line.split("=", 1) for line in run(
             ["systemctl", "show", unit, f"--property={properties}"]).splitlines())
@@ -235,8 +241,9 @@ def verify_loaded_units(user):
         if unit in UNITS:
             require(values.get("FragmentPath") == f"/etc/systemd/system/{unit}" and
                     values.get("DropInPaths") == "", f"Unsupported unit override: {unit}")
-        for key in ("PropagatesStopTo", "ConsistsOf", "BoundBy"):
-            require(set(values.get(key, "").split()) <= allowed,
+        for key in STOP_RELATIONS:
+            require(key in values, f"Missing stop-dependency information: {unit}/{key}")
+            require(set(values[key].split()) <= allowed,
                     f"Unit stop would propagate outside this account: {unit}")
     # A stopped user manager has no loaded unit to inspect. Examine all its
     # search paths as well, including runtime/global and dash-prefix drop-ins.
@@ -416,6 +423,9 @@ def migrate(user, state, stdin):
     require(not sessions(user.pw_uid), "Unexpected login session; preserve it and inspect before resuming")
     if state["phase"] == "prepared":
         state["new_hash"] = password_hash(stdin)
+        # The interactive password prompt may remain open while an administrator
+        # changes units. Revalidate files and loaded definitions before stopping.
+        verify_resources(state)
         state["password_day"] = int(time.time() // 86400)
         state["desired"] = {"linger": "no", "shell_link": None,
             "enabled": {u: "static" if v == "static" else "disabled"

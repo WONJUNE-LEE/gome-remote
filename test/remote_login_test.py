@@ -184,6 +184,28 @@ class RemoteLoginTests(unittest.TestCase):
                     with self.assertRaisesRegex(m.Refuse, "changed since preparation"):
                         m.migrate(SimpleNamespace(pw_name="remote"), state, False)
 
+    def test_resource_change_during_password_prompt_is_refused_before_stop(self):
+        with tempfile.TemporaryDirectory() as directory:
+            unit = Path(directory) / "unit"
+            unit.write_text("original definition")
+            user = SimpleNamespace(pw_name="remote", pw_uid=1234)
+            state = {"user": "remote", "phase": "prepared", "resources": {
+                str(unit): m.fingerprint(unit, os.getuid())}}
+
+            def password(stdin):
+                unit.write_text("administrator changed definition while prompt was open")
+                return "synthetic-hash"
+
+            with patch.object(m, "ssh_excluded"), patch.object(m, "account", return_value=user), \
+                 patch.object(m, "verify_loaded_units"), patch.object(m, "verify_metadata"), \
+                 patch.object(m, "sessions", return_value=[]), \
+                 patch.object(m, "password_hash", side_effect=password), \
+                 patch.object(m, "stop_account", side_effect=AssertionError("Stopped after resource drift")), \
+                 patch.object(m, "save", side_effect=AssertionError("Published stopping phase after drift")):
+                with self.assertRaisesRegex(m.Refuse, "changed since preparation"):
+                    m.migrate(user, state, False)
+            self.assertEqual(state["phase"], "prepared")
+
     def test_initial_receipt_failure_never_publishes_an_empty_recovery_directory(self):
         for previous in (None, {"phase": "restored"}):
             with self.subTest(previous=previous), tempfile.TemporaryDirectory() as directory:
@@ -213,7 +235,8 @@ class RemoteLoginTests(unittest.TestCase):
         variants = [(None, None), ("DropInPaths", "/etc/systemd/system/gome-remote-rdp.service.d/override.conf"),
                     ("FragmentPath", "/run/systemd/transient/other.service"),
                     ("NeedDaemonReload", "yes"), ("PropagatesStopTo", "gdm.service"),
-                    ("ConsistsOf", "unrelated.service"), ("BoundBy", "unrelated.service")]
+                    ("ConsistsOf", "unrelated.service"), ("BoundBy", "unrelated.service"),
+                    ("RequiredBy", "unrelated.service"), ("RequisiteOf", "unrelated.service")]
         with tempfile.TemporaryDirectory() as directory:
             for key, value in variants:
                 with self.subTest(property=key):
@@ -222,10 +245,14 @@ class RemoteLoginTests(unittest.TestCase):
                             unit = args[2]
                             props = {"Id": unit, "FragmentPath": "/etc/systemd/system/" + unit,
                                      "DropInPaths": "", "NeedDaemonReload": "no",
-                                     "PropagatesStopTo": "", "ConsistsOf": "", "BoundBy": ""}
+                                     "PropagatesStopTo": "", "ConsistsOf": "", "BoundBy": "",
+                                     "RequiredBy": "", "RequisiteOf": ""}
                             if key and unit == m.UNITS[0]:
                                 props[key] = value
-                            return "\n".join(f"{k}={v}" for k, v in props.items())
+                            self.assertEqual(len(args), 4)
+                            self.assertTrue(args[3].startswith("--property="))
+                            requested = args[3].removeprefix("--property=").split(",")
+                            return "\n".join(f"{k}={v}" for k, v in props.items() if k in requested)
                         if args[:2] == ["systemctl", "is-active"]:
                             return "inactive"
                         self.assertEqual(args[-3:], ["systemd-analyze", "--user", "unit-paths"])
