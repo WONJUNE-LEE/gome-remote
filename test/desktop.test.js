@@ -26,7 +26,7 @@ async function desktop() {
   const fullscreenRequests = [];
   const notifications = [];
   let fullscreen = false;
-  let window, vault;
+  let window, vault, menu;
   let availability = async () => true;
   let response = async () => ({
     ticket: "test-ticket",
@@ -84,8 +84,23 @@ async function desktop() {
         ready.resolve(Promise.reject(new Error(message))),
     },
     Menu: {
-      buildFromTemplate: (template) => template,
-      setApplicationMenu() {},
+      buildFromTemplate: (template) => {
+        const items = new Map();
+        function collect(entries) {
+          for (const item of entries) {
+            if (item.id) items.set(item.id, item);
+            if (item.submenu) collect(item.submenu);
+          }
+        }
+        collect(template);
+        return { items, template, getMenuItemById: (id) => items.get(id) };
+      },
+      setApplicationMenu(value) {
+        menu = value;
+      },
+      getApplicationMenu() {
+        return menu;
+      },
     },
   };
   vm.runInNewContext(source, {
@@ -115,6 +130,7 @@ async function desktop() {
     );
   return {
     invoke,
+    menu,
     fullscreenRequests,
     notifications,
     finishFullscreen(value) {
@@ -310,4 +326,84 @@ test("a second F11 during entry queues exit instead of repeating entry", async (
   assert.deepEqual(f.fullscreenRequests, [true, false]);
   f.finishFullscreen(false);
   assert.equal(await f.invoke("fullscreen-state"), false);
+});
+
+test("native remote menu enables valid commands and forwards exact actions", async () => {
+  const f = await desktop();
+  const item = (id) => f.menu.getMenuItemById(id);
+  for (const id of [
+    "back",
+    "disconnect",
+    "text-input",
+    "reconnect",
+    "resolution",
+  ])
+    assert.equal(item(id).enabled, false, `home: ${id}`);
+  await f.invoke("viewer-state", {
+    open: true,
+    connected: false,
+    protocol: "rdp",
+    resolution: "1440x900",
+  });
+  assert.equal(item("back").enabled, true);
+  assert.equal(item("disconnect").enabled, true);
+  assert.equal(item("reconnect").enabled, true);
+  assert.equal(item("text-input").enabled, false);
+  assert.equal(item("resolution").enabled, false);
+  await f.invoke("viewer-state", {
+    open: true,
+    connected: true,
+    protocol: "rdp",
+    resolution: "1920x1080",
+  });
+  assert.equal(item("reconnect").enabled, false);
+  assert.equal(item("text-input").enabled, true);
+  assert.equal(item("resolution").enabled, true);
+  assert.equal(item("resolution:1920x1080").checked, true);
+  assert.equal(item("resolution:1440x900").checked, false);
+  for (const id of [
+    "back",
+    "disconnect",
+    "text-input",
+    "reconnect",
+    "resolution:2560x1440",
+  ]) {
+    const before = f.notifications.length;
+    item(id).click();
+    assert.deepEqual(f.notifications.slice(before), [
+      ["remote:viewer-action", id],
+    ]);
+  }
+  await f.invoke("viewer-state", {
+    open: true,
+    connected: true,
+    protocol: "vnc",
+    resolution: "1920x1080",
+  });
+  assert.equal(item("resolution").enabled, false);
+  assert.equal(item("text-input").enabled, true);
+  await f.invoke("viewer-state", {
+    open: false,
+    connected: false,
+    protocol: null,
+    resolution: "1920x1080",
+  });
+  for (const id of [
+    "back",
+    "disconnect",
+    "text-input",
+    "reconnect",
+    "resolution",
+  ])
+    assert.equal(item(id).enabled, false, `returned home: ${id}`);
+  await assert.rejects(
+    f.invoke("viewer-state", { open: true }),
+    /Invalid viewer state/,
+  );
+  const view = f.menu.template.find((item) => item.label === "View");
+  view.submenu[0].click();
+  assert.deepEqual(f.fullscreenRequests, [true]);
+  f.finishFullscreen(true);
+  view.submenu[0].click();
+  assert.deepEqual(f.fullscreenRequests, [true, false]);
 });

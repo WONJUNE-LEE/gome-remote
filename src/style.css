@@ -467,41 +467,18 @@ h1 {
   display: flex;
   flex-direction: column;
 }
-.viewer-toggle,
-.viewer-exit {
-  position: fixed;
-  top: 8px;
-  z-index: 30;
-  border: 1px solid #596451;
-  border-radius: 7px;
-  padding: 8px 12px;
-  background: #1b211bf2;
-  box-shadow: 0 2px 10px #0005;
-  color: #e1e8db;
-  font-size: 12px;
-}
-.viewer-toggle {
-  left: 8px;
-}
-.viewer-exit {
-  right: 8px;
+.native-client .session-toolbar {
+  display: none;
 }
 .session-toolbar {
-  position: absolute;
-  top: 48px;
-  left: 8px;
-  z-index: 20;
-  max-width: calc(100vw - 16px);
-  width: max-content;
+  flex-shrink: 0;
   display: flex;
   flex-wrap: wrap;
-  gap: 8px;
+  gap: 6px;
   align-items: center;
-  padding: 10px;
-  border: 1px solid #46533e;
-  border-radius: 9px;
-  background: #192019f5;
-  box-shadow: 0 8px 30px #0005;
+  padding: 6px 10px;
+  border-bottom: 1px solid #46533e;
+  background: #192019;
 }
 #session-title {
   font-size: 12px;
@@ -511,19 +488,6 @@ h1 {
   color: #b2bea9;
   font-size: 11px;
   line-height: 1.6;
-}
-.viewer-notice {
-  position: fixed;
-  bottom: 12px;
-  left: 50%;
-  transform: translateX(-50%);
-  z-index: 40;
-  max-width: calc(100vw - 24px);
-  padding: 12px 16px;
-  background: #332e20;
-  border: 1px solid #5f5230;
-  color: #d7c494;
-  border-radius: 8px;
 }
 .toolbar-spacer {
   flex: 1;
@@ -555,8 +519,9 @@ h1 {
 .remote-surface {
   outline: none;
 }
-.remote-surface:focus-visible {
-  outline: 1px solid #6d815e;
+.remote-surface.remote-connected,
+.remote-surface.remote-connected * {
+  cursor: none !important;
 }
 .session-message {
   position: absolute;

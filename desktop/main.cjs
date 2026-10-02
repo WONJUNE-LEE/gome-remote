@@ -208,12 +208,79 @@ app
       requestFullscreen(enabled);
     });
     handle("fullscreen-state", () => window.isFullScreen());
+    const resolutions = ["1440x900", "1920x1080", "2560x1440"];
+    const command = (id, label) => ({
+      id,
+      label,
+      enabled: false,
+      click: () => window.webContents.send("remote:viewer-action", id),
+    });
+    handle("viewer-state", (state) => {
+      if (
+        !state ||
+        typeof state.open !== "boolean" ||
+        typeof state.connected !== "boolean" ||
+        ![null, "rdp", "vnc"].includes(state.protocol) ||
+        !resolutions.includes(state.resolution)
+      )
+        throw new Error("Invalid viewer state.");
+      const menu = Menu.getApplicationMenu();
+      for (const id of ["back", "disconnect"])
+        menu.getMenuItemById(id).enabled = state.open;
+      menu.getMenuItemById("reconnect").enabled =
+        state.open && !state.connected;
+      menu.getMenuItemById("text-input").enabled =
+        state.open && state.connected;
+      menu.getMenuItemById("resolution").enabled =
+        state.open && state.connected && state.protocol === "rdp";
+      for (const size of resolutions)
+        menu.getMenuItemById(`resolution:${size}`).checked =
+          size === state.resolution;
+    });
     Menu.setApplicationMenu(
       Menu.buildFromTemplate([
         ...(process.platform === "darwin" ? [{ role: "appMenu" }] : []),
         {
           label: "View",
-          submenu: [{ role: "togglefullscreen" }, { role: "resetZoom" }],
+          submenu: [
+            {
+              label: "전체 화면",
+              accelerator: "F11",
+              click: () =>
+                requestFullscreen(
+                  fullscreenTransition
+                    ? !fullscreenTarget
+                    : !window.isFullScreen(),
+                ),
+            },
+            { role: "resetZoom" },
+          ],
+        },
+        {
+          label: "원격",
+          submenu: [
+            command("back", "서버 목록"),
+            { type: "separator" },
+            {
+              id: "resolution",
+              label: "해상도",
+              enabled: false,
+              submenu: resolutions.map((size) => ({
+                id: `resolution:${size}`,
+                label: size.replace("x", " × "),
+                type: "radio",
+                checked: size === resolutions[0],
+                click: () =>
+                  window.webContents.send(
+                    "remote:viewer-action",
+                    `resolution:${size}`,
+                  ),
+              })),
+            },
+            command("text-input", "텍스트 입력"),
+            command("reconnect", "다시 연결"),
+            command("disconnect", "연결 종료"),
+          ],
         },
         { role: "windowMenu" },
       ]),

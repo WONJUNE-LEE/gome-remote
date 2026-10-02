@@ -1,6 +1,6 @@
 {
   "name": "gome-remote",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "private": true,
   "description": "A Tailscale-only remote desktop for your machines",
   "type": "module",

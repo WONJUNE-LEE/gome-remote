@@ -41,6 +41,13 @@ interface DesktopAPI {
   fullscreen(enabled: boolean): Promise<void>;
   fullscreenState(): Promise<boolean>;
   onFullscreenChange(callback: (enabled: boolean) => void): () => void;
+  viewerState(state: {
+    open: boolean;
+    connected: boolean;
+    protocol: "rdp" | "vnc" | null;
+    resolution: string;
+  }): Promise<void>;
+  onViewerAction(callback: (action: string) => void): () => void;
 }
 interface Window {
   desktop?: DesktopAPI;

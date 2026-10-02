@@ -123,3 +123,40 @@ that is applied when entry completes.
   the app reached fullscreen but the expected renderer notification timed out.
   This is not counted as a native fullscreen pass.
 - Native Windows interaction still needs owner confirmation with the new ZIP.
+
+
+## Native menu and cursor correction (0.1.2)
+
+The owner rejected the 0.1.1 overlay because it intercepted corner clicks, and
+reported a duplicate local pointer over the software-rendered remote cursor.
+The new design supersedes the overlay and persistent exit button described above.
+
+- Desktop actions move into a native Remote menu beside View/Window. No tools or
+  fullscreen-exit button remains over the remote surface. F11 remains local.
+- Only connected remote surfaces suppress the OS cursor. Guacamole's software
+  cursor is hidden on mouse leave/input release and restored with remote mouse
+  input. Dialogs and disconnected views retain a local cursor.
+- Browser tools reserve normal layout space above the viewport instead of
+  overlaying it. Native clients hide that toolbar entirely.
+- Main-process regression inspects the actual menu template and IPC handlers:
+  home/connecting/connected/disconnected state, RDP versus VNC resolution
+  availability, current resolution radio selection, exact action forwarding,
+  invalid state rejection, and the View fullscreen controller.
+- Existing fullscreen, input ownership, gateway and storage regressions remain.
+- Native Windows menu rendering/input still requires the owner's device. Browser
+  testing with a simulated desktop bridge does not prove Windows native chrome.
+
+- Browser checks used the actual gateway/Guacamole client with a synthetic
+  1920×1080 desktop and 12×18 remote cursor, plus a simulated desktop bridge.
+  All four corner points (2,2), (1917,2), (2,1077), (1917,1077) hit the remote
+  surface with computed cursor:none; the receiver recorded exact press/release
+  coordinates. The cursor layer remained present while hovering remotely.
+- Menu actions reached renderer handlers for text input, resolution, disconnect,
+  reconnect, and back. Receiver records independently confirmed the text payload
+  and 2560×1440 resize. Local text dialog cursor was not hidden; disconnect
+  removed the cursor-suppression class and back restored home/menu state.
+- Browser-only toolbar bounds stayed above the viewport at 900×620 and
+  1920×1080. Browser fullscreen/F11 exit with remote focus passed.
+- Preload regression checks exact action forwarding without Electron event
+  exposure, viewer-state invocation, and listener removal.
+- All 17 Node tests, TypeScript check, and production build pass on Linux.

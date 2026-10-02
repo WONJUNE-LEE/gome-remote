@@ -48,6 +48,10 @@ export const api: DesktopAPI = window.desktop || {
     };
   },
   async forget() {},
+  async viewerState() {},
+  onViewerAction() {
+    return () => {};
+  },
   fullscreen(enabled) {
     fullscreenTarget = enabled;
     if (!fullscreenTransition) {

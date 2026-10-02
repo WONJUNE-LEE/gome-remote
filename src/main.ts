@@ -22,8 +22,7 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
       <div class="info-strip"><span class="info-symbol">◈</span><div><strong>모니터가 없어도 괜찮아요.</strong><p>전용 가상 데스크톱은 연결을 끊어도 작업을 유지합니다.</p></div><span class="info-caption">HEADLESS READY</span></div>
     </section>
     <section id="session" class="session" hidden>
-      <button id="tools-toggle" class="viewer-toggle" aria-expanded="false" aria-controls="session-tools">도구 ▾</button>
-      <div id="session-tools" class="session-toolbar" hidden><button id="back" class="secondary">← 서버 목록</button><span class="session-status"><span class="dot"></span><span id="session-state">연결 중</span></span><span id="session-title"></span><div class="toolbar-spacer"></div>
+      <div id="session-tools" class="session-toolbar"><button id="back" class="secondary">← 서버 목록</button><span class="session-status"><span class="dot"></span><span id="session-state">연결 중</span></span><span id="session-title"></span><div class="toolbar-spacer"></div>
         <label class="sr-only" for="resolution">해상도</label><select id="resolution"><option value="1440x900">1440 × 900</option><option value="1920x1080">1920 × 1080</option><option value="2560x1440">2560 × 1440</option></select>
         <button id="text-input" class="secondary" disabled>텍스트 입력</button><button id="fullscreen" class="secondary">전체 화면</button><button id="reconnect" class="primary" hidden>다시 연결</button><button id="disconnect" class="danger">연결 종료</button>
         <span id="session-hint" class="session-hint"></span>
@@ -32,8 +31,7 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
 
     </section>
   </main>
-  <button id="exit-fullscreen" class="viewer-exit" hidden>전체화면 나가기 · F11</button>
-  <div id="viewer-notice" class="viewer-notice" role="status" hidden></div>
+  <dialog id="viewer-error"><p id="viewer-error-text"></p><button class="secondary" data-close="viewer-error">닫기</button></dialog>
   <dialog id="settings-dialog"><form id="settings-form"><div class="dialog-heading"><div><div class="eyebrow">PRIVATE CONNECTION</div><h2>워크스페이스 연결</h2></div><button type="button" class="close-button" data-close="settings-dialog" aria-label="닫기">×</button></div><p class="muted">Tailscale에 연결한 상태에서 서버 주소와 접속 키를 입력하세요.</p><label>게이트웨이 주소<input id="gateway" type="url" placeholder="https://your-server.tailnet.ts.net:8449" required autocomplete="off"></label><label>접속 키<input id="gateway-token" type="password" placeholder="서버에서 발급한 접속 키" autocomplete="off"></label><p id="storage-note" class="field-note"></p><p id="settings-error" class="form-error" role="alert"></p><button class="primary wide" type="submit">워크스페이스 연결 <span>→</span></button></form></dialog>
   <dialog id="login-dialog"><form id="login-form"><div class="dialog-heading"><div><div class="eyebrow">REMOTE DESKTOP</div><h2 id="login-title">서버에 연결</h2></div><button type="button" class="close-button" data-close="login-dialog" aria-label="닫기">×</button></div><p id="login-description" class="muted"></p><div id="credential-fields"><label id="username-label">사용자 이름<input id="username" autocomplete="username"></label><label>암호<input id="password" type="password" autocomplete="current-password"></label></div><label class="checkbox"><input id="remember" type="checkbox">이 기기의 보안 저장소에 로그인 정보 저장</label><button id="forget" type="button" class="text-button" hidden>저장된 로그인 정보 지우기</button><p id="login-error" class="form-error" role="alert"></p><button class="primary wide" type="submit">데스크톱 열기 <span>→</span></button></form></dialog>
   <dialog id="text-dialog"><form id="text-form"><div class="dialog-heading"><h2>원격 화면에 텍스트 입력</h2><button type="button" class="close-button" data-close="text-dialog" aria-label="닫기">×</button></div><p class="muted">원격 앱의 입력 위치를 먼저 선택해주세요. 한글도 입력할 수 있습니다.</p><textarea id="remote-text" rows="5" maxlength="4000" aria-label="보낼 텍스트"></textarea><button class="primary wide" type="submit">입력하기 →</button></form></dialog>
@@ -67,28 +65,39 @@ let releaseMouse: (() => void) | undefined;
 let active = false;
 let lastInput: ConnectInput | undefined;
 let fullscreen = false;
-function showTools(open: boolean) {
-  el("session-tools").hidden = !open;
-  el("tools-toggle").setAttribute("aria-expanded", String(open));
-  el("tools-toggle").textContent = open ? "도구 ▴" : "도구 ▾";
+document.body.classList.toggle("native-client", !!window.desktop);
+function syncViewerMenu() {
+  void api
+    .viewerState({
+      open: !el("session").hidden,
+      connected: active,
+      protocol: selected?.protocol || null,
+      resolution: el<HTMLSelectElement>("resolution").value,
+    })
+    .catch(() =>
+      showViewerError("원격 메뉴를 갱신하지 못했습니다. 앱을 다시 열어주세요."),
+    );
+}
+function showViewerError(message: string) {
+  releaseInput();
+  el("viewer-error-text").textContent = message;
+  const dialog = el<HTMLDialogElement>("viewer-error");
+  if (!dialog.open) dialog.showModal();
 }
 function fullscreenChanged(enabled: boolean) {
   releaseInput();
   fullscreen = enabled;
-  el("exit-fullscreen").hidden = !enabled;
   el("fullscreen").textContent = enabled
     ? "전체화면 나가기 · F11"
     : "전체 화면 · F11";
 }
 async function setFullscreen(enabled: boolean) {
   releaseInput();
-  el("viewer-notice").hidden = true;
+  el<HTMLDialogElement>("viewer-error").close();
   try {
     await api.fullscreen(enabled);
   } catch {
-    el("viewer-notice").textContent =
-      "전체화면을 변경하지 못했습니다. 다시 시도해주세요.";
-    el("viewer-notice").hidden = false;
+    showViewerError("전체화면을 변경하지 못했습니다. 다시 시도해주세요.");
   }
 }
 api.onFullscreenChange(fullscreenChanged);
@@ -216,6 +225,7 @@ function openLogin(target: Target) {
 function releaseInput() {
   keyboard?.reset();
   releaseMouse?.();
+  client?.getDisplay().showCursor(false);
 }
 function stop() {
   generation++;
@@ -241,7 +251,10 @@ function sessionFailed(message: string) {
   el("session-message").textContent = message;
   el("session-message").hidden = false;
   el("reconnect").hidden = false;
-  showTools(true);
+  el("display")
+    .querySelector(".remote-surface")
+    ?.classList.remove("remote-connected");
+  syncViewerMenu();
   el<HTMLButtonElement>("text-input").disabled = true;
 }
 async function connect(input: ConnectInput) {
@@ -249,11 +262,11 @@ async function connect(input: ConnectInput) {
   const current = generation;
   lastInput = { ...input };
   document.body.classList.add("viewing");
-  showTools(false);
-  el("viewer-notice").hidden = true;
+  el<HTMLDialogElement>("viewer-error").close();
   el("session-title").textContent = selected?.name || "원격 데스크톱";
   el("home").hidden = true;
   el("session").hidden = false;
+  syncViewerMenu();
   el("breadcrumb-title").textContent = selected?.name || "원격 데스크톱";
   el("session-state").textContent = "연결 중";
   el("session-message").textContent = "데스크톱에 연결하고 있습니다…";
@@ -294,10 +307,12 @@ async function connect(input: ConnectInput) {
       mouse.onmousemove =
         (state: any) => {
           if (!active) return;
+          display.showCursor(true);
           mouseState = state;
           surface.focus({ preventScroll: true });
           connection.sendMouseState(state, true);
         };
+    mouse.onmouseout = () => display.showCursor(false);
     releaseMouse = () => {
       if (active && mouseState)
         connection.sendMouseState(
@@ -337,6 +352,8 @@ async function connect(input: ConnectInput) {
       if (current !== generation) return;
       if (state === 3) {
         active = true;
+        surface.classList.add("remote-connected");
+        syncViewerMenu();
         el("session-state").textContent = "연결됨";
         el("session-message").hidden = true;
         el<HTMLButtonElement>("text-input").disabled = false;
@@ -356,11 +373,12 @@ async function connect(input: ConnectInput) {
 function back() {
   stop();
   document.body.classList.remove("viewing");
-  el("viewer-notice").hidden = true;
+  el<HTMLDialogElement>("viewer-error").close();
   void setFullscreen(false);
   lastInput = undefined;
   el("home").hidden = false;
   el("session").hidden = true;
+  syncViewerMenu();
   el("breadcrumb-title").textContent = "내 서버";
 }
 el("settings-button").onclick = el("setup").onclick = () => {
@@ -374,20 +392,15 @@ el("disconnect").onclick = () => {
   stop();
   sessionFailed("연결을 종료했습니다. 필요할 때 다시 접속하세요.");
 };
-el("tools-toggle").onclick = () => {
-  releaseInput();
-  showTools(el("session-tools").hidden);
-};
 el("fullscreen").onclick = () => {
   void setFullscreen(!fullscreen);
-};
-el("exit-fullscreen").onclick = () => {
-  void setFullscreen(false);
 };
 el("reconnect").onclick = () => {
   if (lastInput) void connect(lastInput);
 };
 el<HTMLSelectElement>("resolution").onchange = () => {
+  releaseInput();
+  syncViewerMenu();
   const [width, height] = el<HTMLSelectElement>("resolution")
     .value.split("x")
     .map(Number);
@@ -467,6 +480,7 @@ el<HTMLFormElement>("login-form").onsubmit = (event) => {
   void connect(input);
 };
 el("text-input").onclick = () => {
+  if (!active) return;
   releaseInput();
   el<HTMLDialogElement>("text-dialog").showModal();
   el("remote-text").focus();
@@ -492,6 +506,24 @@ el<HTMLFormElement>("text-form").onsubmit = (event) => {
   el<HTMLTextAreaElement>("remote-text").value = "";
   el<HTMLDialogElement>("text-dialog").close();
 };
+api.onViewerAction((action) => {
+  if (el("session").hidden) return;
+  releaseInput();
+  if (action.startsWith("resolution:")) {
+    if (!active || selected?.protocol !== "rdp") return;
+    const select = el<HTMLSelectElement>("resolution");
+    const size = action.slice("resolution:".length);
+    if (!Array.from(select.options).some((option) => option.value === size))
+      return;
+    select.value = size;
+    select.dispatchEvent(new Event("change"));
+  } else if (
+    ["back", "disconnect", "reconnect", "text-input"].includes(action)
+  ) {
+    if (action === "reconnect" && active) return;
+    el<HTMLButtonElement>(action).click();
+  }
+});
 window.addEventListener("blur", releaseInput);
 window.addEventListener("beforeunload", stop);
 void refresh();
