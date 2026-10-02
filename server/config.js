@@ -69,6 +69,19 @@ export function validateConfig(value) {
       throw new Error("Invalid target name.");
     if (!["linux", "mac", "windows"].includes(target.platform))
       throw new Error("Invalid target platform.");
+    if (target.profile !== undefined && target.profile !== "gnome-remote-login")
+      throw new Error("Invalid desktop profile.");
+    if (
+      target.profile === "gnome-remote-login" &&
+      (target.protocol !== "rdp" ||
+        target.platform !== "linux" ||
+        target.hostname !== "127.0.0.1" ||
+        target.persistent !== true ||
+        (target.security !== undefined && target.security !== "nla"))
+    )
+      throw new Error(
+        "GNOME Remote Login requires local Linux RDP with NLA and session persistence.",
+      );
     if (target.hostname !== "127.0.0.1" && !isTailnetAddress(target.hostname))
       throw new Error("Targets must use a Tailscale IP or loopback.");
     if (

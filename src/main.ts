@@ -173,9 +173,12 @@ function renderTargets() {
       linux: "Ubuntu",
       windows: "Windows",
     }[target.platform];
-    card.querySelector(".mode-tag")!.textContent = target.persistent
-      ? "가상 데스크톱"
-      : "화면 공유";
+    card.querySelector(".mode-tag")!.textContent =
+      target.profile === "gnome-remote-login"
+        ? "Ubuntu 로그인"
+        : target.persistent
+          ? "가상 데스크톱"
+          : "화면 공유";
     card.querySelector(".availability span:last-child")!.textContent =
       target.online ? "서비스 응답" : "응답 없음";
     card
@@ -207,11 +210,16 @@ function openLogin(target: Target) {
   selected = target;
   const remembered = settings.remembered.includes(target.id);
   el("login-title").textContent = target.name;
-  el("login-description").textContent = remembered
-    ? "이 기기에 저장한 로그인 정보를 사용합니다."
-    : target.protocol === "vnc"
-      ? "맥의 화면 공유 설정에 지정한 VNC 암호를 입력하세요."
-      : "전용 원격 데스크톱의 로그인 정보를 입력하세요.";
+  el("login-description").textContent =
+    target.profile === "gnome-remote-login"
+      ? remembered
+        ? "저장한 원격 로그인 접속 정보를 사용합니다. 다음 Ubuntu 로그인 화면에서 Ubuntu 계정 암호를 입력하세요."
+        : "Ubuntu 원격 로그인 설정의 접속 정보를 입력하세요. 다음 로그인 화면에서 Ubuntu 계정 암호를 입력합니다."
+      : remembered
+        ? "이 기기에 저장한 로그인 정보를 사용합니다."
+        : target.protocol === "vnc"
+          ? "맥의 화면 공유 설정에 지정한 VNC 암호를 입력하세요."
+          : "전용 원격 데스크톱의 로그인 정보를 입력하세요.";
   el("credential-fields").hidden = remembered;
   el("username-label").hidden = target.protocol === "vnc";
   el<HTMLInputElement>("username").value = "";

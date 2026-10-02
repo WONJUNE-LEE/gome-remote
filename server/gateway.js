@@ -155,6 +155,7 @@ export function createGateway(
               name: t.name,
               platform: t.platform,
               protocol: t.protocol,
+              ...(t.profile ? { profile: t.profile } : {}),
               persistent: t.persistent === true,
               address: t.hostname,
               online: await reachable(t),

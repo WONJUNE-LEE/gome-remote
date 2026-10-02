@@ -21,6 +21,35 @@ const base = {
   targets: [target],
 };
 
+test("Remote Login is restricted to the colocated Linux authentication boundary", () => {
+  const login = {
+    ...target,
+    hostname: "127.0.0.1",
+    persistent: true,
+    profile: "gnome-remote-login",
+  };
+  assert.equal(
+    validateConfig({ ...base, targets: [login] }).targets[0].profile,
+    "gnome-remote-login",
+  );
+  for (const change of [
+    { hostname: "100.64.0.10" },
+    { protocol: "vnc" },
+    { platform: "windows" },
+    { persistent: false },
+    { persistent: undefined },
+    { security: "tls" },
+    { security: "any" },
+    { profile: "autologin" },
+  ]) {
+    assert.throws(() =>
+      validateConfig({ ...base, targets: [{ ...login, ...change }] }),
+    );
+  }
+  // Existing direct RDP and VNC profiles remain valid without this opt-in.
+  assert.doesNotThrow(() => validateConfig(base));
+});
+
 test("configuration rejects public network exposure and arbitrary destinations", () => {
   for (const hostname of [
     "192.168.1.1",
@@ -100,7 +129,7 @@ function decode(buffer) {
   return null;
 }
 
-async function fixture(t, protocol = "rdp", clock = Date.now) {
+async function fixture(t, protocol = "rdp", clock = Date.now, overrides = {}) {
   const received = [];
   const connections = new Set();
   const daemon = net.createServer((socket) => {
@@ -160,7 +189,7 @@ async function fixture(t, protocol = "rdp", clock = Date.now) {
   const config = validateConfig({
     ...base,
     guacdPort: daemon.address().port,
-    targets: [{ ...target, protocol }],
+    targets: [{ ...target, protocol, ...overrides }],
   });
   const gateway = createGateway(config, { now: clock });
   gateway.server.listen(0, "127.0.0.1");
@@ -188,6 +217,47 @@ async function fixture(t, protocol = "rdp", clock = Date.now) {
     );
   return { received, connections, post, open, origin };
 }
+
+test("Remote Login advertises its server profile and ignores caller routing overrides", async (t) => {
+  const f = await fixture(t, "rdp", Date.now, {
+    profile: "gnome-remote-login",
+    hostname: "127.0.0.1",
+    persistent: true,
+  });
+  const response = await fetch(`${f.origin}/api/targets`, {
+    headers: { Authorization: `Bearer ${TOKEN}` },
+  });
+  const { targets } = await response.json();
+  assert.equal(targets[0].profile, "gnome-remote-login");
+  assert.equal(targets[0].address, "127.0.0.1");
+  const ticket = await (
+    await f.post({
+      targetId: "linux",
+      username: "entry-user",
+      password: "entry-password",
+      width: 1920,
+      height: 1080,
+      profile: "direct",
+      hostname: "100.64.0.99",
+      port: 22,
+      security: "tls",
+    })
+  ).json();
+  const ws = f.open(ticket.ticket);
+  await new Promise((resolve) =>
+    ws.on("message", (data) => {
+      if (data.toString().includes("원격")) resolve();
+    }),
+  );
+  assert.deepEqual(f.received.find((p) => p[0] === "connect").slice(2, 6), [
+    "127.0.0.1",
+    "3390",
+    "entry-user",
+    "entry-password",
+  ]);
+  ws.close();
+  await once(ws, "close");
+});
 
 test("HTTP rejects missing authorization and unregistered targets before dialing guacd", async (t) => {
   const f = await fixture(t);

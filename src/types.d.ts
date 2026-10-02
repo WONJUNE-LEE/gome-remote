@@ -8,6 +8,7 @@ interface Target {
   name: string;
   platform: "linux" | "mac" | "windows";
   protocol: "rdp" | "vnc";
+  profile?: "gnome-remote-login";
   persistent: boolean;
   address: string;
   online: boolean;

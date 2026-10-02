@@ -1,11 +1,12 @@
 [
   {
-    "id": "ubuntu",
+    "id": "ubuntu-login",
     "name": "Ubuntu Server",
     "platform": "linux",
     "protocol": "rdp",
+    "profile": "gnome-remote-login",
     "hostname": "127.0.0.1",
-    "port": 33490,
+    "port": 3389,
     "security": "nla",
     "ignoreCertificate": true,
     "persistent": true
