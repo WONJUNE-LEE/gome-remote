@@ -61,7 +61,7 @@ daemons and sends routing tokens, replacement credentials and certificate data.
 Its system D-Bus name and GDM integration are shared host infrastructure. A second
 system GRD instance on another TCP port is not a supported isolation strategy.
 
-## Decisions common to both service ownership options
+## Login architecture
 
 ### Login and session ownership
 
