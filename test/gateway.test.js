@@ -80,6 +80,10 @@ function decode(buffer) {
   return null;
 }
 
+// A deterministic, order-checkable burst of ~6 MiB of valid instructions.
+const FLOOD_BLOBS = 1500;
+const floodBlob = (i) => wire(["blob", String(i), String(i % 10).repeat(4096)]);
+
 // `stats.opened` counts every connection ever accepted, so "no guacd connection was
 // opened" cannot be satisfied by a connection that already closed again.
 // `mode` makes the fixture fail like a real guacd: "args-error" answers `select` with an
@@ -151,7 +155,12 @@ function fakeGuacd(received, connections, stats, mode = "ok") {
           const name = Buffer.from(wire(["name", "원격 🖥️"]));
           const cut = name.indexOf(Buffer.from("원")) + 1;
           socket.write(name.subarray(0, cut));
-          setImmediate(() => socket.write(name.subarray(cut)));
+          setImmediate(() => {
+            socket.write(name.subarray(cut));
+            // A 4K display: a burst of frame data right after `ready`.
+            if (mode === "flood")
+              for (let i = 0; i < FLOOD_BLOBS; i++) socket.write(floodBlob(i));
+          });
         }
       }
     });
@@ -855,6 +864,47 @@ for (const [mode, text, code] of [
     },
   );
 }
+
+test(
+  "a slow browser does not kill the tunnel: a ~6 MiB burst from guacd is held back and delivered in order",
+  { skip: !posix },
+  async (t) => {
+    const f = await fixture(t, { guacd: "flood" });
+    const { json } = await f.post({
+      targetId: "linux",
+      width: 1920,
+      height: 1080,
+    });
+    const ws = f.open(json.ticket);
+    let closed = false;
+    ws.on("close", () => (closed = true));
+    ws.on("error", () => {});
+    const blobs = [];
+    ws.on("message", (data) => {
+      const text = data.toString();
+      if (text.startsWith("4.blob")) blobs.push(text);
+    });
+    await once(ws, "open");
+    // The browser reads nothing for a while, as when the app is busy decoding.
+    ws.pause();
+    await new Promise((resolve) => setTimeout(resolve, 600));
+    assert.equal(closed, false, "the tunnel survives a slow reader");
+    ws.resume();
+    const deadline = Date.now() + 15_000;
+    while (blobs.length < FLOOD_BLOBS && !closed && Date.now() < deadline)
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    assert.equal(closed, false, "the tunnel is still open after the burst");
+    assert.equal(blobs.length, FLOOD_BLOBS);
+    for (let i = 0; i < FLOOD_BLOBS; i++)
+      assert.equal(
+        blobs[i],
+        floodBlob(i),
+        `instruction ${i} arrives intact and in order`,
+      );
+    ws.close();
+    await once(ws, "close");
+  },
+);
 
 test(
   "a finished session is not reopened by the gateway: the ticket is spent and nothing is redialed",
