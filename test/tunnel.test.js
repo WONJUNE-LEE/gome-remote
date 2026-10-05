@@ -16,6 +16,8 @@ const blob = (i, size = 4096) =>
 
 // A browser-side WebSocket whose send queue the test controls: bytes stay "buffered"
 // until the test completes the send callbacks, like a client that reads slowly.
+// Like `ws`, a callback fires after its own frame left the queue, so bufferedAmount still
+// counts every later frame at that moment; flushOne() overrides that to pin an exact backlog.
 class FakeWs extends EventEmitter {
   readyState = 1;
   bufferedAmount = 0;
@@ -25,28 +27,34 @@ class FakeWs extends EventEmitter {
   autoDrain = false;
   closeCall = null;
   send(data, callback) {
+    const size = Buffer.byteLength(data);
     this.sent.push(data);
-    this.sentBytes += Buffer.byteLength(data);
-    this.bufferedAmount += Buffer.byteLength(data);
-    if (this.autoDrain) {
-      this.bufferedAmount = 0;
-      setImmediate(() => callback?.());
-    } else this.pending.push(callback);
+    this.sentBytes += size;
+    this.bufferedAmount += size;
+    if (this.autoDrain)
+      setImmediate(() => {
+        this.bufferedAmount -= size;
+        callback?.();
+      });
+    else this.pending.push({ size, callback });
   }
   close(code, reason) {
     this.readyState = 3;
     this.closeCall = { code, reason };
     this.emit("close");
   }
-  // Complete one send, leaving `buffered` bytes queued, as the OS accepts a frame.
-  flushOne(buffered) {
+  // Complete the oldest send, leaving `buffered` bytes queued, as the OS accepts a frame.
+  // With `error`, the send fails instead.
+  flushOne(buffered, error) {
     this.bufferedAmount = buffered;
-    this.pending.shift()?.();
+    this.pending.shift()?.callback?.(error);
   }
-  drainAll() {
-    this.autoDrain = true;
-    this.bufferedAmount = 0;
-    for (const callback of this.pending.splice(0)) callback?.();
+  // Complete every send in flight, oldest first, each leaving the later frames queued.
+  flushAll() {
+    for (const { size, callback } of this.pending.splice(0)) {
+      this.bufferedAmount -= size;
+      callback?.();
+    }
   }
 }
 
@@ -100,6 +108,15 @@ async function until(condition, ms = 15_000) {
   assert.ok(condition(), "condition not reached in time");
 }
 const blobs = (ws) => ws.sent.filter((s) => s.startsWith("4.blob"));
+// A client that drains everything it is given, yet does so in the open (unlike autoDrain).
+async function drainUntil(ws, condition) {
+  const deadline = Date.now() + 15_000;
+  while (!condition() && Date.now() < deadline) {
+    ws.flushAll();
+    await sleep(5);
+  }
+  assert.ok(condition(), "condition not reached in time");
+}
 
 test("a client that stops draining pauses guacd, instead of closing the tunnel", async (t) => {
   const BLOBS = 1500; // ~6 MiB, above the old 4 MiB limit
@@ -126,8 +143,7 @@ test("a client that stops draining pauses guacd, instead of closing the tunnel",
   await sleep(200);
   assert.equal(ws.sentBytes, stalled, "nothing more is read while paused");
 
-  ws.drainAll();
-  await until(() => blobs(ws).length === BLOBS);
+  await drainUntil(ws, () => blobs(ws).length === BLOBS);
   assert.equal(upstream().isPaused(), false, "the guacd socket is resumed");
   assert.deepEqual(blobs(ws), payload, "every instruction arrives, in order");
   assert.equal(ws.readyState, 1);
@@ -183,4 +199,91 @@ test("a single instruction larger than the hard cap closes the tunnel", async (t
   assert.match(logs[0], /ws-queue-cap/);
   assert.ok(!logs[0].includes("xxxx"), "no instruction content is logged");
   assert.equal(blobs(ws).length, 0);
+});
+
+test("a second burst after a full drain pauses guacd again, with the queue still bounded", async (t) => {
+  const BLOBS = 1500;
+  const first = Array.from({ length: BLOBS }, (_, i) => blob(i));
+  const second = Array.from({ length: BLOBS }, (_, i) => blob(BLOBS + i));
+  const daemon = await guacd(t, first);
+  const upstream = captureUpstream(t);
+  const ws = new FakeWs();
+  t.after(bridge(ws, structuredClone(connection), daemon.address().port));
+  await until(() => upstream()?.isPaused());
+  await drainUntil(
+    ws,
+    () => blobs(ws).length === BLOBS && ws.pending.length === 0,
+  );
+  await until(() => !upstream().isPaused());
+  assert.equal(ws.bufferedAmount, 0, "the first burst is fully drained");
+
+  // The client stalls again while guacd sends another burst: backpressure must re-engage.
+  for (const part of second) daemon.socket.write(part);
+  await until(() => upstream().isPaused());
+  await sleep(300);
+  assert.equal(upstream().isPaused(), true, "the guacd socket is paused again");
+  assert.equal(ws.readyState, 1);
+  assert.ok(
+    ws.bufferedAmount < HIGH_WATER + 512 * 1024,
+    `queued ${ws.bufferedAmount}, growing toward the ${HARD_CAP} cap`,
+  );
+  const stalled = ws.sent.length;
+  await sleep(200);
+  assert.equal(ws.sent.length, stalled, "nothing more is read while paused");
+
+  await drainUntil(ws, () => blobs(ws).length === 2 * BLOBS);
+  assert.deepEqual(blobs(ws), [...first, ...second]);
+});
+
+test("guacd is resumed when the last pending send completes, even if bufferedAmount is still above the low-water mark", async (t) => {
+  const payload = Array.from({ length: 1500 }, (_, i) => blob(i));
+  const daemon = await guacd(t, payload);
+  const upstream = captureUpstream(t);
+  const ws = new FakeWs();
+  t.after(bridge(ws, structuredClone(connection), daemon.address().port));
+  await until(() => upstream()?.isPaused());
+  await sleep(200);
+  const stalled = ws.sent.length;
+  // Complete the sends one by one, each leaving 500 KiB queued (above the low-water mark).
+  while (ws.pending.length > 1) ws.flushOne(500 * 1024);
+  await sleep(200);
+  assert.equal(
+    upstream().isPaused(),
+    true,
+    "still paused while a send is in flight",
+  );
+  assert.equal(ws.sent.length, stalled);
+  // No callback is left to wait for, so waiting any longer would stall guacd forever.
+  ws.flushOne(500 * 1024);
+  await until(() => ws.sent.length > stalled);
+  assert.equal(ws.readyState, 1);
+});
+
+test("an instruction above the old 4 MiB limit but under the hard cap is delivered", async (t) => {
+  const big = wire(["blob", "0", "x".repeat(7 * MiB)]);
+  const daemon = await guacd(t, [big]);
+  const ws = new FakeWs();
+  ws.autoDrain = true;
+  const logs = [];
+  t.after(
+    bridge(ws, structuredClone(connection), daemon.address().port, {
+      log: (line) => logs.push(line),
+    }),
+  );
+  await until(() => blobs(ws).length === 1);
+  assert.equal(blobs(ws)[0], big);
+  assert.equal(ws.readyState, 1);
+  assert.deepEqual(logs, []);
+});
+
+test("a failed ws.send closes the tunnel", async (t) => {
+  const daemon = await guacd(t, [blob(0), blob(1)]);
+  const upstream = captureUpstream(t);
+  const ws = new FakeWs();
+  bridge(ws, structuredClone(connection), daemon.address().port);
+  await until(() => blobs(ws).length === 2);
+  ws.flushOne(0, new Error("write EPIPE"));
+  assert.notEqual(ws.readyState, 1);
+  assert.equal(ws.closeCall.code, 1000);
+  await until(() => upstream().destroyed);
 });
