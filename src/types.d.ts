@@ -3,53 +3,39 @@ declare module "*vendor/guacamole.js" {
   export default Guacamole;
 }
 interface Target {
-  revision: number;
   id: string;
   name: string;
   platform: "linux" | "mac" | "windows";
   protocol: "rdp" | "vnc";
   profile?: "gnome-remote-login";
   persistent: boolean;
-  address: string;
   online: boolean;
-}
-interface Settings {
-  revision: number;
-  gateway: string;
-  configured: boolean;
-  secureStorage: boolean;
-  remembered: string[];
+  ready: boolean;
 }
 interface ConnectInput {
-  revision: number;
   targetId: string;
-  username: string;
-  password: string;
-  remember: boolean;
-  useSaved: boolean;
   width: number;
   height: number;
 }
-interface DesktopAPI {
-  settings(): Promise<Settings>;
-  configure(input: {
-    gateway: string;
-    token: string;
-  }): Promise<{ gateway: string; secureStorage: boolean }>;
-  targets(): Promise<{ targets: Target[]; revision: number }>;
-  connect(input: ConnectInput): Promise<{ ticket: string; websocket: string }>;
-  forget(targetId: string): Promise<void>;
+interface ViewerState {
+  open: boolean;
+  connected: boolean;
+  protocol: "rdp" | "vnc" | null;
+  resolution: string;
+}
+// Functions the desktop app contributes to the page it shows. Version 1 is the first
+// and only version so far; later versions only add members.
+interface NativeBridge {
   fullscreen(enabled: boolean): Promise<void>;
   fullscreenState(): Promise<boolean>;
   onFullscreenChange(callback: (enabled: boolean) => void): () => void;
-  viewerState(state: {
-    open: boolean;
-    connected: boolean;
-    protocol: "rdp" | "vnc" | null;
-    resolution: string;
-  }): Promise<void>;
+  viewerState(state: ViewerState): Promise<void>;
   onViewerAction(callback: (action: string) => void): () => void;
 }
+interface DesktopBridge extends NativeBridge {
+  bridgeVersion?: number;
+  openSetup(): Promise<void>;
+}
 interface Window {
-  desktop?: DesktopAPI;
+  desktop?: DesktopBridge;
 }

@@ -1,53 +1,69 @@
-let token = "";
-let revision = 0;
+// The page is served by the gateway, so every request is same-origin. Tailscale Serve
+// adds the caller's identity; the page sends no token and no credentials of its own.
+export const REQUIRED_BRIDGE_VERSION = 1;
+export const FORBIDDEN_TEXT = "이 기기의 Tailscale 계정으로는 쓸 수 없습니다";
+export const UNREACHABLE_TEXT = "서버에 연결할 수 없습니다";
+
+export class ApiError extends Error {
+  kind: "unreachable" | "forbidden" | "failed";
+  status: number;
+  constructor(
+    kind: "unreachable" | "forbidden" | "failed",
+    message: string,
+    status = 0,
+  ) {
+    super(message);
+    this.name = "ApiError";
+    this.kind = kind;
+    this.status = status;
+  }
+}
+
+// Bridge version 1 or later means the page runs inside the desktop app. Anything else,
+// including an older app without a version, is treated as an ordinary browser.
+export const appMode =
+  (window.desktop?.bridgeVersion ?? 0) >= REQUIRED_BRIDGE_VERSION;
+
+async function request<T>(path: string, input?: unknown): Promise<T> {
+  let response: Response;
+  try {
+    response = await fetch(path, {
+      method: input ? "POST" : "GET",
+      credentials: "same-origin",
+      signal: AbortSignal.timeout(12_000),
+      ...(input
+        ? {
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(input),
+          }
+        : {}),
+    });
+  } catch {
+    throw new ApiError("unreachable", UNREACHABLE_TEXT);
+  }
+  let result: any;
+  try {
+    result = await response.json();
+  } catch {
+    result = undefined;
+  }
+  if (response.status === 403 && result?.code === "login")
+    throw new ApiError("forbidden", FORBIDDEN_TEXT, 403);
+  // A stopped gateway makes Tailscale Serve answer 502 with an HTML page.
+  if (!result || response.status >= 502)
+    throw new ApiError("unreachable", UNREACHABLE_TEXT, response.status);
+  if (!response.ok)
+    throw new ApiError(
+      "failed",
+      result.error || "연결 요청이 실패했습니다.",
+      response.status,
+    );
+  return result as T;
+}
+
 let fullscreenTarget = false;
 let fullscreenTransition: Promise<void> | undefined;
-async function request(path: string, input?: unknown) {
-  const response = await fetch(path, {
-    method: input ? "POST" : "GET",
-    signal: AbortSignal.timeout(12_000),
-    headers: {
-      Authorization: `Bearer ${token}`,
-      "Content-Type": "application/json",
-    },
-    ...(input ? { body: JSON.stringify(input) } : {}),
-  });
-  const result = await response.json();
-  if (!response.ok)
-    throw new Error(result.error || "연결 요청이 실패했습니다.");
-  return result;
-}
-export const api: DesktopAPI = window.desktop || {
-  async settings() {
-    return {
-      revision,
-      gateway: location.origin,
-      configured: !!token,
-      secureStorage: false,
-      remembered: [],
-    };
-  },
-  async configure(input) {
-    revision++;
-    token = input.token || token;
-    return { gateway: location.origin, secureStorage: false };
-  },
-  async targets() {
-    const current = revision;
-    const result = await request("/api/targets");
-    if (current !== revision) throw new Error("연결 설정이 변경되었습니다.");
-    return { ...result, revision: current };
-  },
-  async connect(input) {
-    if (input.revision !== revision)
-      throw new Error("연결 설정이 변경되었습니다.");
-    const result = await request("/api/sessions", input);
-    return {
-      ...result,
-      websocket: `${location.origin.replace(/^http/, "ws")}/tunnel`,
-    };
-  },
-  async forget() {},
+const browserNative: NativeBridge = {
   async viewerState() {},
   onViewerAction() {
     return () => {};
@@ -76,4 +92,25 @@ export const api: DesktopAPI = window.desktop || {
     document.addEventListener("fullscreenchange", listener);
     return () => document.removeEventListener("fullscreenchange", listener);
   },
+};
+const native: NativeBridge = appMode ? window.desktop! : browserNative;
+
+export const api = {
+  targets: () => request<{ targets: Target[] }>("/api/targets"),
+  async connect(input: ConnectInput) {
+    const result = await request<{ ticket: string }>("/api/sessions", input);
+    return {
+      ...result,
+      websocket: `${location.origin.replace(/^http/, "ws")}/tunnel`,
+    };
+  },
+  fullscreen: (enabled: boolean) => native.fullscreen(enabled),
+  fullscreenState: () => native.fullscreenState(),
+  onFullscreenChange: (callback: (enabled: boolean) => void) =>
+    native.onFullscreenChange(callback),
+  viewerState: (state: ViewerState) => native.viewerState(state),
+  onViewerAction: (callback: (action: string) => void) =>
+    native.onViewerAction(callback),
+  // Only the app has an address to change; in a browser the address bar is the setting.
+  openSetup: () => (appMode ? window.desktop!.openSetup() : Promise.resolve()),
 };

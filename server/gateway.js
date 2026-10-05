@@ -1,10 +1,13 @@
 import http from "node:http";
 import net from "node:net";
-import { randomBytes, timingSafeEqual } from "node:crypto";
+import { randomBytes } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { resolve, extname } from "node:path";
 import { WebSocketServer } from "ws";
 import { bridge } from "./tunnel.js";
+
+export const FORBIDDEN_LOGIN_MESSAGE =
+  "이 기기의 Tailscale 계정으로는 쓸 수 없습니다.";
 
 export class Tickets {
   #entries = new Map();
@@ -34,15 +37,12 @@ export class Tickets {
   }
 }
 
-export function connectionSettings(target, input) {
-  const { username = "", password = "", width = 1440, height = 900 } = input;
-  if (
-    typeof username !== "string" ||
-    username.length > 256 ||
-    typeof password !== "string" ||
-    password.length > 1024
-  )
-    throw new Error("Invalid credentials.");
+// `credentials` comes from the gateway's credential store, never from the caller.
+// VNC targets pass the stored username too (empty when there is none): guacd's VNC
+// arguments include `username`, which Apple Remote Desktop authentication needs.
+export function connectionSettings(target, credentials, size = {}) {
+  const { username = "", password = "" } = credentials;
+  const { width = 1440, height = 900 } = size;
   if (
     !Number.isInteger(width) ||
     width < 640 ||
@@ -84,12 +84,6 @@ export function connectionSettings(target, input) {
   };
 }
 
-function authorized(req, token) {
-  const actual = Buffer.from(req.headers.authorization || "");
-  const expected = Buffer.from(`Bearer ${token}`);
-  return actual.length === expected.length && timingSafeEqual(actual, expected);
-}
-
 async function body(req) {
   let size = 0;
   const chunks = [];
@@ -114,9 +108,28 @@ function reachable(target) {
   });
 }
 
+function loopbackOrigin(value) {
+  try {
+    const origin = new URL(value);
+    return (
+      origin.protocol === "http:" &&
+      origin.hostname === "127.0.0.1" &&
+      origin.port !== ""
+    );
+  } catch {
+    return false;
+  }
+}
+
+// `credentials.lookup(target)` resolves to {username, password} or undefined.
 export function createGateway(
   config,
-  { dist = resolve("dist"), now = Date.now } = {},
+  {
+    credentials,
+    probe = reachable,
+    dist = resolve("dist"),
+    now = Date.now,
+  } = {},
 ) {
   const tickets = new Tickets(now);
   const sockets = new WebSocketServer({
@@ -135,6 +148,21 @@ export function createGateway(
     });
     res.end(JSON.stringify(value));
   };
+  // Tailscale Serve sets this header from the authenticated tailnet identity and
+  // overwrites any value the client sent. Requests that reach the socket without
+  // passing through Serve carry no header, so they are refused. Only a development
+  // configuration (devLogin, loopback origin) may stand in for a missing header.
+  // Nothing else (no Authorization header, no token) ever identifies a caller.
+  // Same rule as validateConfig, repeated here so a caller that skipped validation
+  // still cannot enable devLogin on a real (tailnet) origin.
+  const standIn = loopbackOrigin(config.publicOrigin)
+    ? config.devLogin
+    : undefined;
+  const identify = (req) => {
+    const header = req.headers["tailscale-user-login"];
+    const login = typeof header === "string" && header ? header : standIn;
+    return config.allowedLogins.includes(login) ? login : undefined;
+  };
   const server = http.createServer(async (req, res) => {
     res.setHeader("Content-Security-Policy", csp);
     res.setHeader("X-Content-Type-Options", "nosniff");
@@ -144,22 +172,32 @@ export function createGateway(
       if (url.pathname === "/healthz" && req.method === "GET")
         return json(res, 200, { ok: true });
       if (url.pathname.startsWith("/api/")) {
-        if (!authorized(req, config.token))
-          return json(res, 401, { error: "접속 키를 확인해주세요." });
+        const login = identify(req);
+        if (!login)
+          return json(res, 403, {
+            error: FORBIDDEN_LOGIN_MESSAGE,
+            code: "login",
+          });
         if (req.headers.origin && req.headers.origin !== config.publicOrigin)
-          return json(res, 403, { error: "Origin rejected." });
+          return json(res, 403, { error: "Origin rejected.", code: "origin" });
         if (req.method === "GET" && url.pathname === "/api/targets") {
           const targets = await Promise.all(
-            config.targets.map(async (t) => ({
-              id: t.id,
-              name: t.name,
-              platform: t.platform,
-              protocol: t.protocol,
-              ...(t.profile ? { profile: t.profile } : {}),
-              persistent: t.persistent === true,
-              address: t.hostname,
-              online: await reachable(t),
-            })),
+            config.targets.map(async (t) => {
+              const [online, credential] = await Promise.all([
+                probe(t),
+                credentials.lookup(t),
+              ]);
+              return {
+                id: t.id,
+                name: t.name,
+                platform: t.platform,
+                protocol: t.protocol,
+                ...(t.profile ? { profile: t.profile } : {}),
+                persistent: t.persistent === true,
+                online,
+                ready: credential !== undefined,
+              };
+            }),
           );
           return json(res, 200, { targets });
         }
@@ -169,10 +207,28 @@ export function createGateway(
           const input = await body(req);
           if (!input || typeof input !== "object" || Array.isArray(input))
             throw new Error("Invalid body.");
+          // Credentials live only on the server; a client that sends them is
+          // either outdated or hostile, and the value must not travel further.
+          if (
+            Object.hasOwn(input, "username") ||
+            Object.hasOwn(input, "password")
+          )
+            return json(res, 400, {
+              error: "자격 증명은 서버에 저장되어 있어 보낼 수 없습니다.",
+            });
           const target = config.targets.find((t) => t.id === input.targetId);
           if (!target)
             return json(res, 404, { error: "등록된 서버를 찾을 수 없습니다." });
-          const ticket = tickets.issue(connectionSettings(target, input));
+          const credential = await credentials.lookup(target);
+          if (!credential)
+            return json(res, 409, {
+              error: "이 서버는 아직 설정되지 않았습니다.",
+            });
+          const settings = connectionSettings(target, credential, {
+            width: input.width,
+            height: input.height,
+          });
+          const ticket = tickets.issue({ login, settings });
           return json(res, 201, { ticket, expiresIn: 20 });
         }
         return json(res, 404, { error: "Not found." });
@@ -225,16 +281,18 @@ export function createGateway(
         [...url.searchParams.keys()].some((k) => k !== "ticket")
       )
         return reject();
-      if (
-        ![config.publicOrigin, "app://gome-remote"].includes(req.headers.origin)
-      )
-        return reject();
+      // Browsers always send Origin on WebSocket handshakes; a missing or foreign
+      // Origin is a non-browser or cross-site client.
+      if (req.headers.origin !== config.publicOrigin) return reject();
+      const login = identify(req);
+      if (!login) return reject();
       if (sockets.clients.size >= 8) return reject();
-      const settings = tickets.take(url.searchParams.get("ticket"));
-      if (!settings) return reject();
+      const pending = tickets.take(url.searchParams.get("ticket"));
+      // A ticket is bound to the login that requested it.
+      if (!pending || pending.login !== login) return reject();
       // Only server-generated settings reach guacd. Client query parameters cannot override them.
       sockets.handleUpgrade(req, socket, head, (ws) => {
-        bridge(ws, settings.connection, config.guacdPort);
+        bridge(ws, pending.settings.connection, config.guacdPort);
       });
     } catch {
       reject();

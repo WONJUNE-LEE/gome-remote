@@ -1,61 +1,71 @@
 import Guacamole from "../vendor/guacamole.js";
-import { api } from "./api";
+import { ApiError, api, appMode } from "./api";
+import {
+  connectingText,
+  platformClass,
+  stateLabel,
+  tileEnabled,
+  tileState,
+} from "./tiles";
 import "./style.css";
 
-const icon =
-  '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="4" width="18" height="13" rx="3"/><path d="M8 21h8M12 17v4"/></svg>';
+const monitor =
+  '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><rect x="3" y="4" width="18" height="13" rx="3"/><path d="M8 21h8M12 17v4"/></svg>';
 document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
-  <aside class="sidebar">
-    <div class="brand"><span class="brand-icon">${icon}</span><span>gome<span class="brand-light">remote</span></span><span class="beta">01</span></div>
-    <div class="workspace-label">YOUR WORKSPACE</div>
-    <button class="nav-item selected" id="all-servers">${icon}<span>내 서버</span><span id="server-count" class="count">0</span></button>
-    <div class="sidebar-bottom"><div class="private-badge"><span class="dot"></span> PRIVATE NETWORK</div><p>Tailscale로 연결된<br>나만의 작업 공간</p><button id="settings-button" class="text-button">연결 설정 <span>↗</span></button></div>
-  </aside>
-  <main>
-    <header class="topbar"><div class="breadcrumb">워크스페이스 <span>/</span> <strong id="breadcrumb-title">내 서버</strong></div><span class="network-label" id="network-label">연결 설정 필요</span></header>
-    <section id="home" class="home">
-      <div class="page-heading"><div><div class="eyebrow">YOUR MACHINES, ONE PLACE</div><h1>어디서든, 내 작업 그대로.</h1><p>서버를 선택하고 익숙한 데스크톱으로 돌아가세요.</p></div><button id="refresh" class="secondary">↻ 새로고침</button></div>
-      <div id="notice" class="notice" role="status" hidden></div>
-      <div class="section-title"><h2>내 서버 <span id="online-count"></span></h2><span>화면 보기 · 원격 조작</span></div>
-      <div id="server-grid" class="server-grid"></div>
-      <div id="empty" class="empty"><div class="empty-icon">${icon}</div><h2>내 서버를 연결하세요</h2><p>게이트웨이 주소와 접속 키로 시작할 수 있습니다.</p><button id="setup" class="primary">연결 설정하기 <span>↗</span></button></div>
-      <div class="info-strip"><span class="info-symbol">◈</span><div><strong>모니터가 없어도 괜찮아요.</strong><p>전용 가상 데스크톱은 연결을 끊어도 작업을 유지합니다.</p></div><span class="info-caption">HEADLESS READY</span></div>
-    </section>
-    <section id="session" class="session" hidden>
-      <div id="session-tools" class="session-toolbar"><button id="back" class="secondary">← 서버 목록</button><span class="session-status"><span class="dot"></span><span id="session-state">연결 중</span></span><span id="session-title"></span><div class="toolbar-spacer"></div>
-        <label class="sr-only" for="resolution">해상도</label><select id="resolution"><option value="1440x900">1440 × 900</option><option value="1920x1080">1920 × 1080</option><option value="2560x1440">2560 × 1440</option></select>
-        <button id="text-input" class="secondary" disabled>텍스트 입력</button><button id="fullscreen" class="secondary">전체 화면</button><button id="reconnect" class="primary" hidden>다시 연결</button><button id="disconnect" class="danger">연결 종료</button>
-        <span id="session-hint" class="session-hint"></span>
+  <section id="home" class="home" hidden>
+    <header class="home-bar">
+      <h1>Gome Remote</h1>
+      <div class="menu-wrap">
+        <button id="menu-button" class="icon-button" aria-label="메뉴" aria-haspopup="menu" aria-expanded="false">⋯</button>
+        <div id="menu" class="menu" role="menu" hidden>
+          <button id="menu-refresh" role="menuitem">새로고침</button>
+          <button id="menu-address" role="menuitem" hidden>서버 주소 바꾸기</button>
+        </div>
       </div>
-      <div id="viewport" class="viewport"><div id="session-message" class="session-message">데스크톱에 연결하고 있습니다…</div><div id="display" class="display"></div></div>
-
-    </section>
-  </main>
-  <dialog id="viewer-error"><p id="viewer-error-text"></p><button class="secondary" data-close="viewer-error">닫기</button></dialog>
-  <dialog id="settings-dialog"><form id="settings-form"><div class="dialog-heading"><div><div class="eyebrow">PRIVATE CONNECTION</div><h2>워크스페이스 연결</h2></div><button type="button" class="close-button" data-close="settings-dialog" aria-label="닫기">×</button></div><p class="muted">Tailscale에 연결한 상태에서 서버 주소와 접속 키를 입력하세요.</p><label>게이트웨이 주소<input id="gateway" type="url" placeholder="https://your-server.tailnet.ts.net:8449" required autocomplete="off"></label><label>접속 키<input id="gateway-token" type="password" placeholder="서버에서 발급한 접속 키" autocomplete="off"></label><p id="storage-note" class="field-note"></p><p id="settings-error" class="form-error" role="alert"></p><button class="primary wide" type="submit">워크스페이스 연결 <span>→</span></button></form></dialog>
-  <dialog id="login-dialog"><form id="login-form"><div class="dialog-heading"><div><div class="eyebrow">REMOTE DESKTOP</div><h2 id="login-title">서버에 연결</h2></div><button type="button" class="close-button" data-close="login-dialog" aria-label="닫기">×</button></div><p id="login-description" class="muted"></p><div id="credential-fields"><label id="username-label">사용자 이름<input id="username" autocomplete="username"></label><label>암호<input id="password" type="password" autocomplete="current-password"></label></div><label class="checkbox"><input id="remember" type="checkbox">이 기기의 보안 저장소에 로그인 정보 저장</label><button id="forget" type="button" class="text-button" hidden>저장된 로그인 정보 지우기</button><p id="login-error" class="form-error" role="alert"></p><button class="primary wide" type="submit">데스크톱 열기 <span>→</span></button></form></dialog>
-  <dialog id="text-dialog"><form id="text-form"><div class="dialog-heading"><h2>원격 화면에 텍스트 입력</h2><button type="button" class="close-button" data-close="text-dialog" aria-label="닫기">×</button></div><p class="muted">원격 앱의 입력 위치를 먼저 선택해주세요. 한글도 입력할 수 있습니다.</p><textarea id="remote-text" rows="5" maxlength="4000" aria-label="보낼 텍스트"></textarea><button class="primary wide" type="submit">입력하기 →</button></form></dialog>
+    </header>
+    <div id="tiles" class="tiles"></div>
+  </section>
+  <section id="state" class="state">
+    <div id="state-spinner" class="spinner" role="status" aria-label="불러오는 중"></div>
+    <h2 id="state-title" hidden></h2>
+    <div id="state-actions" class="actions" hidden>
+      <button id="state-retry" class="primary">다시 시도</button>
+      <button id="state-address" hidden>서버 주소 바꾸기</button>
+    </div>
+  </section>
+  <section id="session" class="session" hidden>
+    <div id="session-tools" class="session-toolbar browser-only">
+      <button id="back">← 목록</button>
+      <span id="session-title" class="session-title"></span>
+      <span id="session-state" class="session-state"></span>
+      <div class="toolbar-spacer"></div>
+      <label class="sr-only" for="resolution">해상도</label>
+      <select id="resolution"><option value="1440x900">1440 × 900</option><option value="1920x1080">1920 × 1080</option><option value="2560x1440">2560 × 1440</option></select>
+      <button id="text-input" disabled>텍스트 입력</button>
+      <button id="fullscreen">전체 화면</button>
+      <button id="disconnect" class="danger">연결 종료</button>
+    </div>
+    <div id="viewport" class="viewport">
+      <div id="overlay" class="overlay">
+        <div id="overlay-spinner" class="spinner"></div>
+        <h2 id="overlay-title"></h2>
+        <p id="overlay-detail" hidden>작업은 그대로 남아 있습니다</p>
+        <div id="overlay-actions" class="actions" hidden>
+          <button id="overlay-reconnect" class="primary">다시 연결</button>
+          <button id="overlay-back">목록으로</button>
+        </div>
+      </div>
+      <div id="display" class="display"></div>
+    </div>
+  </section>
+  <dialog id="viewer-error"><p id="viewer-error-text"></p><button data-close="viewer-error">닫기</button></dialog>
+  <dialog id="text-dialog"><form id="text-form"><div class="dialog-heading"><h2>원격 화면에 텍스트 입력</h2><button type="button" class="close-button" data-close="text-dialog" aria-label="닫기">×</button></div><p class="muted">원격 앱의 입력 위치를 먼저 선택하세요</p><textarea id="remote-text" rows="5" maxlength="4000" aria-label="보낼 텍스트"></textarea><button class="primary wide" type="submit">입력하기 →</button></form></dialog>
 `;
 function el<T extends HTMLElement = HTMLElement>(id: string) {
   return document.getElementById(id) as T;
 }
-const errorText = (error: unknown) =>
-  error instanceof Error
-    ? error.message.replace(
-        /^Error invoking remote method '[^']+': Error: /,
-        "",
-      )
-    : "요청을 처리할 수 없습니다.";
-let settings: Settings = {
-  revision: 0,
-  gateway: "",
-  configured: false,
-  secureStorage: false,
-  remembered: [],
-};
 let targets: Target[] = [];
 let listGeneration = 0;
-let configuring = false;
 let selected: Target | undefined;
 let generation = 0;
 let client: any;
@@ -65,7 +75,28 @@ let releaseMouse: (() => void) | undefined;
 let active = false;
 let lastInput: ConnectInput | undefined;
 let fullscreen = false;
-document.body.classList.toggle("native-client", !!window.desktop);
+document.body.classList.toggle("app-mode", appMode);
+el("menu-address").hidden = !appMode;
+el("state-address").hidden = !appMode;
+
+type Screen = "home" | "state" | "session";
+function showScreen(screen: Screen) {
+  for (const name of ["home", "state", "session"] as Screen[])
+    el(name).hidden = name !== screen;
+}
+function showState(kind: "loading" | "unreachable" | "forbidden") {
+  showScreen("state");
+  el("state-spinner").hidden = kind !== "loading";
+  el("state-title").hidden = kind === "loading";
+  el("state-actions").hidden = kind === "loading";
+  el("state-title").textContent =
+    kind === "forbidden"
+      ? "이 기기의 Tailscale 계정으로는 쓸 수 없습니다"
+      : "서버에 연결할 수 없습니다";
+  // Another attempt cannot fix a refused login, and the address is not the cause.
+  el("state-address").hidden = !appMode || kind !== "unreachable";
+}
+
 function syncViewerMenu() {
   void api
     .viewerState({
@@ -102,8 +133,8 @@ async function setFullscreen(enabled: boolean) {
 }
 api.onFullscreenChange(fullscreenChanged);
 void api.fullscreenState().then(fullscreenChanged);
-// Browser fallback: native clients reserve F11 in the main process instead.
-if (!window.desktop) {
+// Browser fallback: the desktop app reserves F11 in its main process instead.
+if (!appMode) {
   const localShortcut = (event: KeyboardEvent) => {
     if (event.key !== "F11") return;
     event.preventDefault();
@@ -115,120 +146,48 @@ if (!window.desktop) {
   window.addEventListener("keyup", localShortcut, true);
 }
 
-function notice(message: string) {
-  el("notice").textContent = message;
-  el("notice").hidden = !message;
-}
-async function loadSettings() {
-  settings = await api.settings();
-}
 async function refresh() {
-  if (configuring) return;
   const current = ++listGeneration;
-  const button = el<HTMLButtonElement>("refresh");
-  button.disabled = true;
+  closeMenu();
+  showState("loading");
   try {
-    const nextSettings = await api.settings();
-    if (current !== listGeneration) return;
-    settings = nextSettings;
-    if (!settings.configured) return;
     const result = await api.targets();
-    if (current !== listGeneration || result.revision !== settings.revision)
-      return;
-    targets = result.targets.map((t: Target) => ({
-      ...t,
-      revision: result.revision,
-    }));
-    el("network-label").textContent = "워크스페이스 연결됨";
-    el("network-label").classList.add("connected");
+    if (current !== listGeneration) return;
+    targets = result.targets;
     renderTargets();
-    notice("");
+    showScreen("home");
   } catch (error) {
     if (current !== listGeneration) return;
-    el("network-label").textContent = "게이트웨이 연결 실패";
-    el("network-label").classList.remove("connected");
     targets = [];
-    renderTargets();
-    notice(errorText(error));
-  } finally {
-    if (current === listGeneration) button.disabled = false;
+    showState(
+      error instanceof ApiError && error.kind === "forbidden"
+        ? "forbidden"
+        : "unreachable",
+    );
   }
 }
 function renderTargets() {
-  const grid = el("server-grid");
+  const grid = el("tiles");
   grid.replaceChildren();
-  el("server-count").textContent = String(targets.length);
-  el("online-count").textContent = targets.length
-    ? `${targets.filter((t) => t.online).length}대 응답 중`
-    : "";
-  el("empty").hidden = targets.length > 0;
   for (const target of targets) {
-    const card = document.createElement("article");
-    card.className = "server-card";
-    card.innerHTML = `<div class="card-top"><span class="machine-icon">${icon}</span><span class="availability"><span class="dot"></span><span></span></span></div><h3></h3><p class="address"></p><div class="card-tags"><span class="os-tag"></span><span class="mode-tag"></span></div><div class="card-divider"></div><button class="connect-button"><span>데스크톱 열기</span><span>↗</span></button>`;
-    card.querySelector("h3")!.textContent = target.name;
-    card.querySelector(".address")!.textContent = target.address;
-    card.querySelector(".os-tag")!.textContent = {
-      mac: "macOS",
-      linux: "Ubuntu",
-      windows: "Windows",
-    }[target.platform];
-    card.querySelector(".mode-tag")!.textContent =
-      target.profile === "gnome-remote-login"
-        ? "Ubuntu 로그인"
-        : target.persistent
-          ? "가상 데스크톱"
-          : "화면 공유";
-    card.querySelector(".availability span:last-child")!.textContent =
-      target.online ? "서비스 응답" : "응답 없음";
-    card
-      .querySelector(".availability")!
-      .classList.toggle("offline", !target.online);
-    card.querySelector("button")!.onclick = () => openLogin(target);
-    grid.append(card);
+    const state = tileState(target);
+    const tile = document.createElement("button");
+    tile.className = `tile is-${state}`;
+    tile.disabled = !tileEnabled(target);
+    tile.innerHTML = `<span class="tile-art platform-${platformClass(target.platform)}">${monitor}</span><span class="tile-meta"><span class="dot"></span><span class="tile-name"></span></span><span class="tile-state"></span>`;
+    tile.querySelector(".tile-name")!.textContent = target.name;
+    tile.querySelector(".tile-state")!.textContent = stateLabel[state];
+    tile.onclick = () => openTarget(target);
+    grid.append(tile);
   }
 }
-async function openSettings() {
-  await loadSettings();
-  el<HTMLInputElement>("gateway").value = settings.gateway;
-  el<HTMLInputElement>("gateway").readOnly = !window.desktop;
-  el<HTMLInputElement>("gateway-token").value = "";
-  el<HTMLInputElement>("gateway-token").required = !settings.configured;
-  el("storage-note").textContent = settings.secureStorage
-    ? "접속 키와 저장한 암호는 OS 보안 저장소로 암호화합니다."
-    : "접속 키는 이 실행 중에만 유지됩니다. 암호 저장은 보안 저장소가 있는 데스크톱 앱에서 가능합니다.";
-  el("settings-error").textContent = "";
-  el<HTMLDialogElement>("settings-dialog").showModal();
-}
-function openLogin(target: Target) {
-  if (
-    configuring ||
-    !targets.includes(target) ||
-    target.revision !== settings.revision
-  )
-    return;
+function openTarget(target: Target) {
+  if (!targets.includes(target) || !tileEnabled(target)) return;
   selected = target;
-  const remembered = settings.remembered.includes(target.id);
-  el("login-title").textContent = target.name;
-  el("login-description").textContent =
-    target.profile === "gnome-remote-login"
-      ? remembered
-        ? "저장한 원격 로그인 접속 정보를 사용합니다. 다음 Ubuntu 로그인 화면에서 Ubuntu 계정 암호를 입력하세요."
-        : "Ubuntu 원격 로그인 설정의 접속 정보를 입력하세요. 다음 로그인 화면에서 Ubuntu 계정 암호를 입력합니다."
-      : remembered
-        ? "이 기기에 저장한 로그인 정보를 사용합니다."
-        : target.protocol === "vnc"
-          ? "맥의 화면 공유 설정에 지정한 VNC 암호를 입력하세요."
-          : "전용 원격 데스크톱의 로그인 정보를 입력하세요.";
-  el("credential-fields").hidden = remembered;
-  el("username-label").hidden = target.protocol === "vnc";
-  el<HTMLInputElement>("username").value = "";
-  el<HTMLInputElement>("password").value = "";
-  el<HTMLInputElement>("remember").disabled = !settings.secureStorage;
-  el<HTMLInputElement>("remember").checked = remembered;
-  el("forget").hidden = !remembered;
-  el("login-error").textContent = "";
-  el<HTMLDialogElement>("login-dialog").showModal();
+  const [width, height] = el<HTMLSelectElement>("resolution")
+    .value.split("x")
+    .map(Number);
+  void connect({ targetId: target.id, width, height });
 }
 function releaseInput() {
   keyboard?.reset();
@@ -254,13 +213,21 @@ function stop() {
   el("display").replaceChildren();
   el<HTMLButtonElement>("text-input").disabled = true;
 }
-function sessionFailed(message: string) {
+function showOverlay(kind: "connecting" | "ended") {
+  const ended = kind === "ended";
+  el("overlay").hidden = false;
+  el("overlay-spinner").hidden = ended;
+  el("overlay-title").textContent = ended
+    ? "연결이 끊겼습니다"
+    : connectingText(selected?.name || "원격 데스크톱");
+  el("overlay-detail").hidden = !ended;
+  el("overlay-actions").hidden = !ended;
+}
+function sessionEnded() {
   releaseInput();
   active = false;
   el("session-state").textContent = "연결 종료";
-  el("session-message").textContent = message;
-  el("session-message").hidden = false;
-  el("reconnect").hidden = false;
+  showOverlay("ended");
   el("display")
     .querySelector(".remote-surface")
     ?.classList.remove("remote-connected");
@@ -274,17 +241,11 @@ async function connect(input: ConnectInput) {
   document.body.classList.add("viewing");
   el<HTMLDialogElement>("viewer-error").close();
   el("session-title").textContent = selected?.name || "원격 데스크톱";
-  el("home").hidden = true;
-  el("session").hidden = false;
+  showScreen("session");
   syncViewerMenu();
-  el("breadcrumb-title").textContent = selected?.name || "원격 데스크톱";
   el("session-state").textContent = "연결 중";
-  el("session-message").textContent = "데스크톱에 연결하고 있습니다…";
-  el("session-message").hidden = false;
-  el("reconnect").hidden = true;
-  el("session-hint").textContent = selected?.persistent
-    ? "연결을 종료해도 가상 데스크톱의 작업은 유지됩니다."
-    : "화면을 클릭하면 키보드와 마우스로 조작할 수 있습니다.";
+  showOverlay("connecting");
+  el<HTMLSelectElement>("resolution").disabled = selected?.protocol !== "rdp";
   try {
     const result = await api.connect(input);
     if (current !== generation) return;
@@ -354,16 +315,10 @@ async function connect(input: ConnectInput) {
     };
     surface.addEventListener("blur", releaseInput);
     connection.onerror = () => {
-      if (current === generation)
-        sessionFailed(
-          "화면 연결에 실패했습니다. 서버의 로그인 정보와 원격 데스크톱 설정을 확인해주세요.",
-        );
+      if (current === generation) sessionEnded();
     };
     tunnel.onerror = () => {
-      if (current === generation)
-        sessionFailed(
-          "연결이 끊어졌습니다. Tailscale 연결을 확인한 뒤 다시 연결해주세요.",
-        );
+      if (current === generation) sessionEnded();
     };
     connection.onstatechange = (state: number) => {
       if (current !== generation) return;
@@ -372,48 +327,71 @@ async function connect(input: ConnectInput) {
         surface.classList.add("remote-connected");
         syncViewerMenu();
         el("session-state").textContent = "연결됨";
-        el("session-message").hidden = true;
+        el("overlay").hidden = true;
         el<HTMLButtonElement>("text-input").disabled = false;
         surface.focus();
         fit();
-      } else if (state === 5)
-        sessionFailed(
-          "연결이 종료되었습니다. 다시 연결하면 데스크톱으로 돌아갑니다.",
-        );
+      } else if (state === 5) sessionEnded();
     };
     connection.connect(`ticket=${encodeURIComponent(result.ticket)}`);
-    await loadSettings();
   } catch (error) {
-    if (current === generation) sessionFailed(errorText(error));
+    if (current !== generation) return;
+    if (error instanceof ApiError && error.kind === "forbidden") {
+      back(false);
+      showState("forbidden");
+    } else sessionEnded();
   }
 }
-function back() {
+function back(reload = true) {
   stop();
   document.body.classList.remove("viewing");
   el<HTMLDialogElement>("viewer-error").close();
   void setFullscreen(false);
   lastInput = undefined;
-  el("home").hidden = false;
-  el("session").hidden = true;
+  el<HTMLSelectElement>("resolution").disabled = false;
+  showScreen("home");
   syncViewerMenu();
-  el("breadcrumb-title").textContent = "내 서버";
+  if (reload) void refresh();
 }
-el("settings-button").onclick = el("setup").onclick = () => {
-  void openSettings().catch((e) => notice(errorText(e)));
-};
-el("refresh").onclick = () => {
-  void refresh();
-};
-el("all-servers").onclick = el("back").onclick = back;
-el("disconnect").onclick = () => {
+function disconnect() {
   stop();
-  sessionFailed("연결을 종료했습니다. 필요할 때 다시 접속하세요.");
+  sessionEnded();
+}
+function reconnect() {
+  if (lastInput && !active) void connect(lastInput);
+}
+function openTextDialog() {
+  if (!active) return;
+  releaseInput();
+  el<HTMLDialogElement>("text-dialog").showModal();
+  el("remote-text").focus();
+}
+
+function closeMenu() {
+  el("menu").hidden = true;
+  el("menu-button").setAttribute("aria-expanded", "false");
+}
+el("menu-button").onclick = (event) => {
+  event.stopPropagation();
+  const open = el("menu").hidden;
+  el("menu").hidden = !open;
+  el("menu-button").setAttribute("aria-expanded", String(open));
 };
+document.addEventListener("click", closeMenu);
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape") closeMenu();
+});
+el("menu-refresh").onclick = () => void refresh();
+el("menu-address").onclick = el("state-address").onclick = () => {
+  closeMenu();
+  void api.openSetup();
+};
+el("state-retry").onclick = () => void refresh();
+el("back").onclick = el("overlay-back").onclick = () => back();
+el("disconnect").onclick = disconnect;
+el("overlay-reconnect").onclick = reconnect;
 el("fullscreen").onclick = () => {
   void setFullscreen(!fullscreen);
-};
-el("reconnect").onclick = () => {
-  if (lastInput) void connect(lastInput);
 };
 el<HTMLSelectElement>("resolution").onchange = () => {
   releaseInput();
@@ -423,85 +401,13 @@ el<HTMLSelectElement>("resolution").onchange = () => {
     .map(Number);
   if (lastInput) Object.assign(lastInput, { width, height });
   if (active && selected?.protocol === "rdp") client.sendSize(width, height);
-  else if (active)
-    el("session-hint").textContent =
-      "맥 화면의 해상도는 원격 맥의 디스플레이 설정에서 변경해주세요. 앱은 창 크기에 맞춰 표시합니다.";
 };
-el("forget").onclick = async () => {
-  if (!selected) return;
-  try {
-    await api.forget(selected.id);
-    await loadSettings();
-    openLoginRefresh();
-  } catch (error) {
-    el("login-error").textContent = errorText(error);
-  }
-};
-function openLoginRefresh() {
-  el<HTMLDialogElement>("login-dialog").close();
-  if (selected) openLogin(selected);
-}
 document
   .querySelectorAll<HTMLButtonElement>("[data-close]")
   .forEach((button) => {
     button.onclick = () => el<HTMLDialogElement>(button.dataset.close!).close();
   });
-el<HTMLFormElement>("settings-form").onsubmit = async (event) => {
-  event.preventDefault();
-  const button =
-    el("settings-form").querySelector<HTMLButtonElement>("[type=submit]")!;
-  button.disabled = true;
-  try {
-    configuring = true;
-    listGeneration++;
-    targets = [];
-    selected = undefined;
-    renderTargets();
-    el<HTMLDialogElement>("login-dialog").close();
-    el<HTMLInputElement>("password").value = "";
-    back();
-    await api.configure({
-      gateway: el<HTMLInputElement>("gateway").value,
-      token: el<HTMLInputElement>("gateway-token").value,
-    });
-    el<HTMLInputElement>("gateway-token").value = "";
-    el<HTMLDialogElement>("settings-dialog").close();
-    configuring = false;
-    await refresh();
-  } catch (error) {
-    el("settings-error").textContent = errorText(error);
-  } finally {
-    configuring = false;
-    button.disabled = false;
-    el<HTMLButtonElement>("refresh").disabled = false;
-  }
-};
-el<HTMLFormElement>("login-form").onsubmit = (event) => {
-  event.preventDefault();
-  if (!selected) return;
-  const [width, height] = el<HTMLSelectElement>("resolution")
-    .value.split("x")
-    .map(Number);
-  const input: ConnectInput = {
-    revision: selected.revision,
-    targetId: selected.id,
-    username: el<HTMLInputElement>("username").value,
-    password: el<HTMLInputElement>("password").value,
-    width,
-    height,
-    remember: el<HTMLInputElement>("remember").checked,
-    useSaved: settings.remembered.includes(selected.id),
-  };
-  el<HTMLInputElement>("password").value = "";
-  el<HTMLDialogElement>("login-dialog").close();
-  void connect(input);
-};
-el("text-input").onclick = () => {
-  if (!active) return;
-  releaseInput();
-  el<HTMLDialogElement>("text-dialog").showModal();
-  el("remote-text").focus();
-};
+el("text-input").onclick = openTextDialog;
 el<HTMLFormElement>("text-form").onsubmit = (event) => {
   event.preventDefault();
   if (active) {
@@ -534,12 +440,10 @@ api.onViewerAction((action) => {
       return;
     select.value = size;
     select.dispatchEvent(new Event("change"));
-  } else if (
-    ["back", "disconnect", "reconnect", "text-input"].includes(action)
-  ) {
-    if (action === "reconnect" && active) return;
-    el<HTMLButtonElement>(action).click();
-  }
+  } else if (action === "back") back();
+  else if (action === "disconnect") disconnect();
+  else if (action === "reconnect") reconnect();
+  else if (action === "text-input") openTextDialog();
 });
 window.addEventListener("blur", releaseInput);
 window.addEventListener("beforeunload", stop);

@@ -10,4 +10,3 @@ config.local.json
 .DS_Store
 output/
 .playwright-cli/
-__pycache__/

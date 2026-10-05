@@ -12,6 +12,9 @@ Restart=on-failure
 RestartSec=3
 UMask=0077
 NoNewPrivileges=true
+# The gateway listens on a unix socket under %h/.local/state/gome-remote/ (the
+# socketPath in its configuration). Keep it out of /tmp: PrivateTmp gives this
+# service its own /tmp, so a socket there would be invisible to Tailscale Serve.
 PrivateTmp=true
 
 [Install]

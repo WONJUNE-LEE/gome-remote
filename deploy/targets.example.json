@@ -1,7 +1,7 @@
 [
   {
-    "id": "ubuntu-login",
-    "name": "Ubuntu Server",
+    "id": "ubuntu-server",
+    "name": "Ubuntu 서버",
     "platform": "linux",
     "protocol": "rdp",
     "profile": "gnome-remote-login",
@@ -10,5 +10,14 @@
     "security": "nla",
     "ignoreCertificate": true,
     "persistent": true
+  },
+  {
+    "id": "mac",
+    "name": "Mac",
+    "platform": "mac",
+    "protocol": "vnc",
+    "hostname": "100.64.0.20",
+    "port": 5900,
+    "persistent": false
   }
 ]

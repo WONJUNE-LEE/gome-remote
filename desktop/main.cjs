@@ -2,29 +2,33 @@ const {
   app,
   BrowserWindow,
   ipcMain,
-  protocol,
-  net,
-  safeStorage,
   dialog,
   Menu,
+  nativeTheme,
+  shell,
 } = require("electron");
+const fs = require("node:fs/promises");
 const path = require("node:path");
 const { pathToFileURL } = require("node:url");
-const { Vault, gatewayOrigin } = require("./vault.cjs");
+const { AddressStore, gatewayOrigin } = require("./address.cjs");
 const smokeTest = process.argv.includes("--smoke-test");
 
-protocol.registerSchemesAsPrivileged([
-  {
-    scheme: "app",
-    privileges: {
-      standard: true,
-      secure: true,
-      supportFetchAPI: true,
-      corsEnabled: true,
-    },
-  },
-]);
+// The app is a thin window: it shows the gateway's own web page. The only local page is
+// setup.html, where the user types the server address.
+const setupPage = pathToFileURL(path.join(__dirname, "setup.html")).href;
+const originOf = (url) => {
+  try {
+    return new URL(url).origin;
+  } catch {
+    return "";
+  }
+};
+const pageOf = (url) => String(url).split(/[?#]/)[0];
+const ERR_ABORTED = -3;
+
 let window;
+let store;
+let gateway = ""; // configured gateway origin, "" until the user enters one
 let fullscreenTarget = false;
 let fullscreenTransition = false;
 function applyFullscreenTarget() {
@@ -37,177 +41,87 @@ function requestFullscreen(enabled) {
   fullscreenTarget = enabled;
   applyFullscreenTarget();
 }
-let vault;
-let revision = 0;
-function assertCurrent(expected) {
-  if (expected !== revision)
-    throw new Error("연결 설정이 변경되었습니다. 다시 연결해주세요.");
-}
 
-function handle(name, callback) {
-  ipcMain.handle(`remote:${name}`, async (event, ...args) => {
+// Every IPC call must come from the top frame of this window, and from the page the
+// channel is meant for: the gateway origin for bridge calls, the local setup page for
+// address changes. Anything else (another origin, a subframe) is refused.
+function handle(audience, channel, callback) {
+  ipcMain.handle(channel, async (event, ...args) => {
     if (
       !window ||
       event.sender !== window.webContents ||
       event.senderFrame !== window.webContents.mainFrame
-    ) {
+    )
       throw new Error("Untrusted sender.");
-    }
-    if (!event.senderFrame.url.startsWith("app://gome-remote/"))
-      throw new Error("Untrusted origin.");
+    const url = event.senderFrame.url;
+    const allowed =
+      audience === "gateway"
+        ? !!gateway && originOf(url) === gateway
+        : pageOf(url) === setupPage;
+    if (!allowed) throw new Error("Untrusted origin.");
     return callback(...args);
   });
 }
 
-async function request(route, payload, context = vault.value) {
-  if (!context.gateway || !context.token)
-    throw new Error("먼저 게이트웨이에 연결해주세요.");
-  let response;
+function showSetup(reason) {
+  return window
+    .loadURL(reason ? `${setupPage}?reason=${reason}` : setupPage)
+    .catch(() => {});
+}
+function openGateway() {
+  return window.loadURL(gateway).catch(() => {});
+}
+function openExternal(url) {
   try {
-    response = await fetch(`${gatewayOrigin(context.gateway)}${route}`, {
-      method: payload ? "POST" : "GET",
-      redirect: "error",
-      signal: AbortSignal.timeout(12_000),
-      headers: {
-        Authorization: `Bearer ${context.token}`,
-        "Content-Type": "application/json",
-      },
-      ...(payload ? { body: JSON.stringify(payload) } : {}),
-    });
+    const parsed = new URL(url);
+    if (parsed.protocol === "http:" || parsed.protocol === "https:")
+      Promise.resolve(shell.openExternal(parsed.href)).catch(() => {});
   } catch {
-    throw new Error(
-      "서버에 연결할 수 없습니다. Tailscale 연결과 주소를 확인해주세요.",
-    );
+    // not a URL; ignore
   }
-  const result = await response.json();
-  if (!response.ok)
-    throw new Error(result.error || "연결 요청이 실패했습니다.");
-  return result;
 }
 
 app
   .whenReady()
   .then(async () => {
-    vault = new Vault(
-      path.join(app.getPath("userData"), "vault.enc"),
-      safeStorage,
-    );
-    try {
-      await vault.load();
-    } catch (error) {
-      dialog.showErrorBox("보안 저장소를 열 수 없습니다", error.message);
-      app.quit();
-      return;
-    }
-    protocol.handle("app", (request) => {
-      const url = new URL(request.url);
-      const root = path.resolve(__dirname, "../dist");
-      const file = path.resolve(
-        root,
-        `.${decodeURIComponent(url.pathname === "/" ? "/index.html" : url.pathname)}`,
-      );
-      if (url.host !== "gome-remote" || !file.startsWith(`${root}${path.sep}`))
-        return new Response("Not found", { status: 404 });
-      return net.fetch(pathToFileURL(file).toString());
-    });
-    handle("settings", async () => {
-      const current = revision;
-      const context = vault.value;
-      const secureStorage = await vault.available();
-      assertCurrent(current);
-      return {
-        gateway: context.gateway,
-        configured: !!context.token,
-        secureStorage,
-        remembered: Object.keys(context.credentials),
-        revision: current,
-      };
-    });
-    handle("configure", async (input) => {
-      if (
-        !input ||
-        typeof input.gateway !== "string" ||
-        typeof input.token !== "string"
-      )
-        throw new Error("Invalid settings.");
-      const gateway = gatewayOrigin(input.gateway);
-      const changed = gateway !== vault.value.gateway;
-      const token = input.token || (!changed ? vault.value.token : "");
-      if (!/^[A-Za-z0-9_-]{43,128}$/.test(token))
-        throw new Error("올바른 접속 키를 입력해주세요.");
-      const current = ++revision;
-      vault.value = {
-        gateway,
-        token,
-        credentials: changed ? {} : vault.value.credentials,
-      };
-      await vault.save();
-      const secureStorage = await vault.available();
-      assertCurrent(current);
-      return { gateway, secureStorage };
-    });
-    handle("targets", async () => {
-      const current = revision;
-      const result = await request("/api/targets");
-      assertCurrent(current);
-      return { ...result, revision: current };
-    });
-    handle("connect", async (input) => {
-      if (
-        !input ||
-        typeof input.targetId !== "string" ||
-        !/^[a-z0-9-]{1,64}$/.test(input.targetId)
-      )
-        throw new Error("Invalid target.");
-      assertCurrent(input.revision);
-      const current = revision;
-      const context = vault.value;
-      const saved = input.useSaved
-        ? context.credentials[input.targetId]
-        : undefined;
-      const gateway = context.gateway;
-      const username = saved?.username ?? input.username;
-      const password = saved?.password ?? input.password;
-      if (typeof username !== "string" || typeof password !== "string")
-        throw new Error("로그인 정보를 입력해주세요.");
-      const result = await request(
-        "/api/sessions",
-        {
-          targetId: input.targetId,
-          username,
-          password,
-          width: input.width,
-          height: input.height,
-        },
-        context,
-      );
-      assertCurrent(current);
-      if (input.remember) {
-        if (!(await vault.available()))
-          throw new Error(
-            "OS 보안 저장소를 사용할 수 없어 암호를 저장할 수 없습니다.",
+    const userData = app.getPath("userData");
+    // Versions before 0.2 kept the gateway token and desktop passwords here. The new
+    // design never reads them, so remove the only remaining copy.
+    // Only these two fixed names are touched; rm without `recursive` unlinks a symlink
+    // and never follows it. A failure (a directory of that name, EPERM, a lock) is
+    // logged and ignored so it cannot keep the app from starting.
+    await Promise.all(
+      ["vault.enc", "vault.enc.tmp"].map((name) =>
+        fs.rm(path.join(userData, name), { force: true }).catch((error) => {
+          console.error(
+            `Could not remove old ${name}: ${error.code || "error"}`,
           );
-        assertCurrent(current);
-        context.credentials[input.targetId] = { username, password };
-        await vault.save();
-      }
-      assertCurrent(current);
-      return {
-        ...result,
-        websocket: gateway.replace(/^http/, "ws") + "/tunnel",
-      };
+        }),
+      ),
+    );
+    store = new AddressStore(path.join(userData, "gateway.json"));
+    gateway = await store.load();
+
+    handle("setup", "setup:current", () => gateway);
+    handle("setup", "setup:save", async (address) => {
+      const saved = await store.save(gatewayOrigin(address));
+      gateway = saved;
+      void openGateway();
+      return { gateway: saved };
     });
-    handle("forget", async (targetId) => {
-      if (typeof targetId !== "string") throw new Error("Invalid target.");
-      delete vault.value.credentials[targetId];
-      await vault.save();
+    handle("setup", "setup:retry", () => {
+      if (!gateway) throw new Error("서버 주소를 먼저 입력해주세요.");
+      void openGateway();
     });
-    handle("fullscreen", (enabled) => {
+    handle("gateway", "remote:open-setup", () => {
+      void showSetup();
+    });
+    handle("gateway", "remote:fullscreen", (enabled) => {
       if (typeof enabled !== "boolean")
         throw new Error("Invalid fullscreen state.");
       requestFullscreen(enabled);
     });
-    handle("fullscreen-state", () => window.isFullScreen());
+    handle("gateway", "remote:fullscreen-state", () => window.isFullScreen());
     const resolutions = ["1440x900", "1920x1080", "2560x1440"];
     const command = (id, label) => ({
       id,
@@ -215,7 +129,7 @@ app
       enabled: false,
       click: () => window.webContents.send("remote:viewer-action", id),
     });
-    handle("viewer-state", (state) => {
+    handle("gateway", "remote:viewer-state", (state) => {
       if (
         !state ||
         typeof state.open !== "boolean" ||
@@ -280,6 +194,12 @@ app
             command("text-input", "텍스트 입력"),
             command("reconnect", "다시 연결"),
             command("disconnect", "연결 종료"),
+            { type: "separator" },
+            {
+              id: "change-server",
+              label: "서버 주소 바꾸기",
+              click: () => void showSetup(),
+            },
           ],
         },
         { role: "windowMenu" },
@@ -292,7 +212,7 @@ app
       minWidth: 900,
       minHeight: 620,
       title: "Gome Remote",
-      backgroundColor: "#101212",
+      backgroundColor: nativeTheme.shouldUseDarkColors ? "#22201e" : "#f6f3ee",
       webPreferences: {
         preload: path.join(__dirname, "preload.cjs"),
         nodeIntegration: false,
@@ -320,15 +240,41 @@ app
           fullscreenTransition ? !fullscreenTarget : !window.isFullScreen(),
         );
     });
-    window.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
-    window.webContents.on("will-navigate", (event) => event.preventDefault());
+    // The window may only ever show the gateway origin (and the local address page,
+    // which the main process loads itself). Links elsewhere go to the OS browser when they are http(s) and are dropped otherwise.
+    const stay = (event, url) => {
+      if (originOf(url) === gateway) return;
+      event.preventDefault();
+      openExternal(url);
+    };
+    window.webContents.on("will-navigate", stay);
+    window.webContents.on("will-redirect", stay);
+    window.webContents.setWindowOpenHandler(({ url }) => {
+      openExternal(url);
+      return { action: "deny" };
+    });
+    // A gateway that is down shows as a failed load, or as an error status from
+    // Tailscale Serve. Either way the user lands on a page where the address can change.
+    window.webContents.on(
+      "did-fail-load",
+      (_event, code, _description, url, isMainFrame) => {
+        if (isMainFrame && code !== ERR_ABORTED && originOf(url) === gateway)
+          void showSetup("unreachable");
+      },
+    );
+    window.webContents.on("did-navigate", (_event, url, status) => {
+      if (originOf(url) === gateway && status >= 400)
+        void showSetup("unreachable");
+    });
     window.webContents.session.setPermissionRequestHandler(
       (_webContents, _permission, callback) => callback(false),
     );
-    await window.loadURL("app://gome-remote/");
+    window.webContents.session.setPermissionCheckHandler(() => false);
+    if (smokeTest || !gateway) await showSetup();
+    else void openGateway();
     if (smokeTest) {
       const state = await window.webContents.executeJavaScript(
-        "window.desktop.settings().then(s => ({title: document.title, secureStorage: s.secureStorage, bridge: true}))",
+        "({title: document.title, bridgeVersion: window.desktop.bridgeVersion, setup: typeof window.desktopSetup.save})",
       );
       console.log(JSON.stringify(state));
       app.quit();

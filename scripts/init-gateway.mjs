@@ -1,26 +1,123 @@
 import { readFile, mkdir, writeFile } from "node:fs/promises";
-import { randomBytes } from "node:crypto";
-import { dirname, resolve } from "node:path";
+import { homedir } from "node:os";
+import { dirname, posix, resolve } from "node:path";
+import { parseArgs } from "node:util";
+import { pathToFileURL } from "node:url";
 import { validateConfig } from "../server/config.js";
 
-const [output, origin, targetsFile] = process.argv.slice(2);
-if (!output || !origin || !targetsFile) {
-  console.error(
-    "Usage: node scripts/init-gateway.mjs <private-config-path> <https://host.tailnet.ts.net:8449> <targets.json>",
-  );
-  process.exit(1);
+const usage = `Usage: node scripts/init-gateway.mjs [<private-config-path>] \\
+  --origin https://host.tailnet.ts.net:8450 \\
+  --login owner@example.com [--login second@example.com ...] \\
+  --targets deploy/targets.example.json \\
+  [--socket <path>] [--credentials <path>]
+
+Creates the gateway configuration. It contains no secrets: desktop passwords go into the
+credentials file with scripts/set-credential.mjs, and access is decided by the Tailscale
+login names given with --login. Without a config path, GOME_REMOTE_CONFIG or
+~/.config/gome-remote/gateway.json is used, the same file set-credential.mjs reads.`;
+
+export function defaultPaths(home = homedir()) {
+  return {
+    // Not under /tmp: the unit sets PrivateTmp=true, which would hide the socket from Serve.
+    socketPath: posix.join(
+      home,
+      ".local",
+      "state",
+      "gome-remote",
+      "gateway.sock",
+    ),
+    credentialsFile: posix.join(
+      home,
+      ".config",
+      "gome-remote",
+      "credentials.json",
+    ),
+  };
 }
-const config = validateConfig({
-  publicOrigin: origin,
-  token: randomBytes(32).toString("base64url"),
-  targets: JSON.parse(await readFile(targetsFile, "utf8")),
-});
-const file = resolve(output);
-await mkdir(dirname(file), { recursive: true, mode: 0o700 });
-await writeFile(file, JSON.stringify(config, null, 2) + "\n", {
-  mode: 0o600,
-  flag: "wx",
-});
-console.log(
-  `Created ${file}. The gateway token is stored there; it was not printed.`,
-);
+
+export function defaultConfigPath(env = process.env, home = homedir()) {
+  return (
+    env.GOME_REMOTE_CONFIG ||
+    posix.join(home, ".config", "gome-remote", "gateway.json")
+  );
+}
+
+export function buildConfig({
+  origin,
+  logins,
+  targets,
+  socketPath = defaultPaths().socketPath,
+  credentialsFile = defaultPaths().credentialsFile,
+}) {
+  return validateConfig({
+    socketPath,
+    publicOrigin: origin,
+    allowedLogins: logins,
+    credentialsFile,
+    targets,
+  });
+}
+
+export async function main(argv = process.argv.slice(2)) {
+  let parsed;
+  try {
+    parsed = parseArgs({
+      args: argv,
+      allowPositionals: true,
+      options: {
+        origin: { type: "string" },
+        login: { type: "string", multiple: true },
+        targets: { type: "string" },
+        socket: { type: "string" },
+        credentials: { type: "string" },
+      },
+    });
+  } catch (error) {
+    console.error(`${error.message}\n${usage}`);
+    return 2;
+  }
+  const { values, positionals } = parsed;
+  if (
+    positionals.length > 1 ||
+    !values.origin ||
+    !values.login?.length ||
+    !values.targets
+  ) {
+    console.error(usage);
+    return 2;
+  }
+  let config;
+  try {
+    config = buildConfig({
+      origin: values.origin,
+      logins: values.login,
+      targets: JSON.parse(await readFile(values.targets, "utf8")),
+      ...(values.socket ? { socketPath: resolve(values.socket) } : {}),
+      ...(values.credentials
+        ? { credentialsFile: resolve(values.credentials) }
+        : {}),
+    });
+  } catch (error) {
+    console.error(`Invalid configuration: ${error.message}`);
+    return 1;
+  }
+  const file = resolve(positionals[0] ?? defaultConfigPath());
+  await mkdir(dirname(file), { recursive: true, mode: 0o700 });
+  try {
+    await writeFile(file, JSON.stringify(config, null, 2) + "\n", {
+      mode: 0o600,
+      flag: "wx",
+    });
+  } catch (error) {
+    if (error.code !== "EEXIST") throw error;
+    console.error(`${file} already exists; refusing to overwrite it.`);
+    return 1;
+  }
+  console.log(
+    `Created ${file}. Next: node scripts/set-credential.mjs ${positionals[0] === undefined ? "" : `${file} `}<target-id> for each target.`,
+  );
+  return 0;
+}
+
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href)
+  process.exitCode = await main();
