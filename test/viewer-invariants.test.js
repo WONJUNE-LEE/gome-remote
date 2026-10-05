@@ -51,7 +51,7 @@ test("F11 stays local and the viewer keeps its commands", () => {
     '"text-input"',
   ])
     assert.ok(main.includes(command), command);
-  assert.match(main, /client\.sendSize\(width, height\)/);
+  assert.match(main, /client\?\.sendSize\(size\.width, size\.height\)/);
   assert.match(main, /createClipboardStream\("text\/plain"\)/);
 });
 

@@ -230,6 +230,14 @@ GDM 로그인 화면에서 `gome`으로 들어간다. 앱은 계정을 만들거
 원격 화면 위에 덮는 요소 없음, 원격 커서 하나, F11은 로컬, 해상도 변경(RDP), 텍스트
 붙여넣기, 다시 연결, 연결 끊기. 이 동작들의 기존 테스트는 유지·이식한다.
 
+해상도 기본값은 "자동 (창 크기)"(값 `auto`)이다. 자동 크기는 뷰어 요소의 CSS 크기 ×
+`devicePixelRatio`를 짝수로 내림하고 게이트웨이 한도(너비 640–3840, 높이 480–2160)로
+자른 값이다. 첫 세션 요청에 쓰고, 연결된 RDP 세션에서는 창 크기가 300 ms 동안 멈추면
+`sendSize`로 보낸다(값이 바뀐 때만). VNC는 해상도 선택을 막은 채 크기를 보내지 않는다
+(macOS는 Apple 클라이언트가 아닌 요청을 무시한다). 네이티브 메뉴는 `resolution:auto`
+항목을 맨 앞에 두며 브리지 버전은 그대로 1이다. 결정 로직은 `src/resolution.ts`.
+VNC 연결은 guacd `cursor: local`을 쓴다.
+
 ### D7. 레거시 계정 도구를 저장소에서 지운다
 
 - 삭제: `scripts/setup-headless.py`, `scripts/setup-remote-login.py`, `scripts/legacy-units/`,

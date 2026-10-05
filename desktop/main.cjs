@@ -64,7 +64,10 @@ function handle(audience, channel, callback) {
   });
 }
 
-const resolutions = ["1440x900", "1920x1080", "2560x1440"];
+// "auto" follows the window size; it is the default and comes first.
+const resolutions = ["auto", "1440x900", "1920x1080", "2560x1440"];
+const resolutionLabel = (size) =>
+  size === "auto" ? "자동 (창 크기)" : size.replace("x", " × ");
 // Enables the Remote menu entries that make sense for what the page shows.
 function applyViewerState(state) {
   const menu = Menu.getApplicationMenu();
@@ -200,7 +203,7 @@ app
               enabled: false,
               submenu: resolutions.map((size) => ({
                 id: `resolution:${size}`,
-                label: size.replace("x", " × "),
+                label: resolutionLabel(size),
                 type: "radio",
                 checked: size === resolutions[0],
                 click: () =>

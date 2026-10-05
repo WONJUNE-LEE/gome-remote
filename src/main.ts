@@ -1,6 +1,7 @@
 import Guacamole from "../vendor/guacamole.js";
 import { ApiError, api, appMode } from "./api";
 import { connectFailure, createSessionFlow, errorScreen } from "./flow";
+import { createResolution, sizeFor } from "./resolution";
 import {
   connectingText,
   platformClass,
@@ -41,7 +42,7 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
       <span id="session-state" class="session-state"></span>
       <div class="toolbar-spacer"></div>
       <label class="sr-only" for="resolution">해상도</label>
-      <select id="resolution"><option value="1440x900">1440 × 900</option><option value="1920x1080">1920 × 1080</option><option value="2560x1440">2560 × 1440</option></select>
+      <select id="resolution"><option value="auto">자동 (창 크기)</option><option value="1440x900">1440 × 900</option><option value="1920x1080">1920 × 1080</option><option value="2560x1440">2560 × 1440</option></select>
       <button id="text-input" disabled>텍스트 입력</button>
       <button id="fullscreen">전체 화면</button>
       <button id="disconnect" class="danger">연결 종료</button>
@@ -77,6 +78,15 @@ let releaseMouse: (() => void) | undefined;
 const flow = createSessionFlow({
   begin: (input) => void connect(input),
   ended: () => sessionEnded(),
+});
+// What size the remote gets: the picker's choice, or the window's size for "auto".
+const resolution = createResolution({
+  send: (size) => client?.sendSize(size.width, size.height),
+  viewport: () => ({
+    width: el("viewport").clientWidth,
+    height: el("viewport").clientHeight,
+    ratio: window.devicePixelRatio,
+  }),
 });
 let fullscreen = false;
 document.body.classList.toggle("app-mode", appMode);
@@ -189,9 +199,12 @@ function renderTargets() {
 function openTarget(target: Target) {
   if (!targets.includes(target) || !tileEnabled(target)) return;
   selected = target;
-  const [width, height] = el<HTMLSelectElement>("resolution")
-    .value.split("x")
-    .map(Number);
+  // The session screen is still hidden, so "auto" is measured again when the session starts.
+  const { width, height } = sizeFor(el<HTMLSelectElement>("resolution").value, {
+    width: 0,
+    height: 0,
+    ratio: 1,
+  });
   flow.open({ targetId: target.id, width, height });
 }
 function releaseInput() {
@@ -205,6 +218,7 @@ function stop() {
   generation++;
   releaseInput();
   flow.stopped();
+  resolution.stopped();
   resizeObserver?.disconnect();
   resizeObserver = undefined;
   if (client) {
@@ -231,6 +245,7 @@ function showOverlay(kind: "connecting" | "ended") {
 function sessionEnded() {
   releaseInput();
   flow.stopped();
+  resolution.stopped();
   el("session-state").textContent = "연결 종료";
   showOverlay("ended");
   el("display")
@@ -250,8 +265,12 @@ async function connect(input: ConnectInput) {
   el("session-state").textContent = "연결 중";
   showOverlay("connecting");
   el<HTMLSelectElement>("resolution").disabled = selected?.protocol !== "rdp";
+  // The screen is visible now, so "auto" can be measured: the window, in device pixels.
+  const size = resolution.choose(el<HTMLSelectElement>("resolution").value);
+  flow.resize(size.width, size.height);
+  resolution.begin(size, selected?.protocol === "rdp");
   try {
-    const result = await api.connect(input);
+    const result = await api.connect({ ...input, ...size });
     if (current !== generation) return;
     const tunnel = new Guacamole.WebSocketTunnel(result.websocket);
     const connection = new Guacamole.Client(tunnel);
@@ -276,7 +295,10 @@ async function connect(input: ConnectInput) {
       );
     };
     display.onresize = fit;
-    resizeObserver = new ResizeObserver(fit);
+    resizeObserver = new ResizeObserver(() => {
+      fit();
+      resolution.viewportChanged();
+    });
     resizeObserver.observe(el("viewport"));
     const mouse = new Guacamole.Mouse(display.getElement());
     let mouseState: any;
@@ -328,6 +350,7 @@ async function connect(input: ConnectInput) {
       if (current !== generation) return;
       if (state === 3) {
         flow.connected();
+        resolution.connected();
         surface.classList.add("remote-connected");
         syncViewerMenu();
         el("session-state").textContent = "연결됨";
@@ -398,12 +421,8 @@ el("fullscreen").onclick = () => {
 el<HTMLSelectElement>("resolution").onchange = () => {
   releaseInput();
   syncViewerMenu();
-  const [width, height] = el<HTMLSelectElement>("resolution")
-    .value.split("x")
-    .map(Number);
-  flow.resize(width, height);
-  if (flow.active && selected?.protocol === "rdp")
-    client.sendSize(width, height);
+  const size = resolution.choose(el<HTMLSelectElement>("resolution").value);
+  flow.resize(size.width, size.height);
 };
 document
   .querySelectorAll<HTMLButtonElement>("[data-close]")

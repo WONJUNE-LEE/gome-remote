@@ -161,7 +161,31 @@ export async function viewer({ appMode = false, targets, fetchHandler } = {}) {
         },
       }
     : undefined;
-  const window = { desktop, addEventListener() {} };
+  // devicePixelRatio is read from the window each time, as in a browser.
+  const window = { desktop, devicePixelRatio: 1, addEventListener() {} };
+
+  // Timers the test advances by hand, so a debounce is tested without waiting.
+  let now = 0;
+  let nextTimer = 1;
+  const timers = new Map();
+  const fakeSetTimeout = (callback, ms) => {
+    timers.set(nextTimer, { callback, at: now + ms });
+    return nextTimer++;
+  };
+  const fakeClearTimeout = (id) => timers.delete(id);
+  const advance = (ms) => {
+    const end = now + ms;
+    for (;;) {
+      const due = [...timers].filter(([, t]) => t.at <= end);
+      if (!due.length) break;
+      const [id, timer] = due.sort((a, b) => a[1].at - b[1].at)[0];
+      timers.delete(id);
+      now = timer.at;
+      timer.callback();
+    }
+    now = end;
+  };
+  const observers = [];
 
   const defaultFetch = async (path, init) => {
     if (path === "/api/targets")
@@ -173,7 +197,11 @@ export async function viewer({ appMode = false, targets, fetchHandler } = {}) {
     };
   };
   const fetch = async (path, init = {}) => {
-    fetches.push({ path, method: init.method ?? "GET" });
+    fetches.push({
+      path,
+      method: init.method ?? "GET",
+      body: init.body === undefined ? undefined : JSON.parse(init.body),
+    });
     // A page that keeps reconnecting by itself would loop here for ever: stop it
     // after a generous number of requests so the test fails instead of hanging.
     if (fetches.length > 40) return new Promise(() => {});
@@ -194,6 +222,7 @@ export async function viewer({ appMode = false, targets, fetchHandler } = {}) {
       this.tunnel = tunnel;
       this.connected = [];
       this.disconnected = 0;
+      this.sizes = [];
       this.display = {
         getCursorLayer: () => new FakeElement("canvas"),
         getElement: () => new FakeElement("div"),
@@ -214,7 +243,9 @@ export async function viewer({ appMode = false, targets, fetchHandler } = {}) {
     }
     sendMouseState() {}
     sendKeyEvent() {}
-    sendSize() {}
+    sendSize(width, height) {
+      this.sizes.push([width, height]);
+    }
   }
   const Guacamole = {
     WebSocketTunnel: Tunnel,
@@ -236,6 +267,10 @@ export async function viewer({ appMode = false, targets, fetchHandler } = {}) {
     JSON,
   });
   const flow = await loadTs("flow.ts");
+  const resolution = await loadTs("resolution.ts", {
+    setTimeout: fakeSetTimeout,
+    clearTimeout: fakeClearTimeout,
+  });
   await loadTs(
     "main.ts",
     {
@@ -243,8 +278,17 @@ export async function viewer({ appMode = false, targets, fetchHandler } = {}) {
       document,
       Event,
       ResizeObserver: class {
-        observe() {}
-        disconnect() {}
+        constructor(callback) {
+          this.callback = callback;
+          this.active = false;
+        }
+        observe() {
+          this.active = true;
+          observers.push(this);
+        }
+        disconnect() {
+          this.active = false;
+        }
       },
     },
     {
@@ -252,6 +296,7 @@ export async function viewer({ appMode = false, targets, fetchHandler } = {}) {
       "./api": api,
       "./tiles": tiles,
       "./flow": flow,
+      "./resolution": resolution,
       "./style.css": {},
     },
   );
@@ -268,6 +313,20 @@ export async function viewer({ appMode = false, targets, fetchHandler } = {}) {
     tunnels,
     bridgeCalls,
     settle,
+    // The viewer element changes size (CSS pixels): every live observer is told.
+    resizeViewport: (width, height) => {
+      el("viewport").clientWidth = width;
+      el("viewport").clientHeight = height;
+      for (const observer of observers)
+        if (observer.active) observer.callback();
+    },
+    setPixelRatio: (ratio) => {
+      window.devicePixelRatio = ratio;
+    },
+    advance,
+    pendingTimers: () => timers.size,
+    sessionRequests: () =>
+      fetches.filter((f) => f.path === "/api/sessions").map((f) => f.body),
     action: (name) => actionListener?.(name),
     posts: () => fetches.filter((f) => f.path === "/api/sessions").length,
     gets: () => fetches.filter((f) => f.path === "/api/targets").length,

@@ -615,6 +615,41 @@ test("a second F11 during entry queues exit instead of repeating entry", async (
   assert.equal(await f.invoke("fullscreen-state"), false);
 });
 
+test("the resolution menu starts with auto (window size), checked by default, then the fixed sizes", async (t) => {
+  const f = await desktop({}, t);
+  const group = f.menu.getMenuItemById("resolution").submenu;
+  assert.deepEqual(
+    [...group.map((item) => [item.id, item.label, item.type])].map((x) => [
+      ...x,
+    ]),
+    [
+      ["resolution:auto", "자동 (창 크기)", "radio"],
+      ["resolution:1440x900", "1440 × 900", "radio"],
+      ["resolution:1920x1080", "1920 × 1080", "radio"],
+      ["resolution:2560x1440", "2560 × 1440", "radio"],
+    ],
+  );
+  assert.deepEqual(
+    [...group.map((item) => item.checked)],
+    [true, false, false, false],
+  );
+  await f.invoke("viewer-state", {
+    open: true,
+    connected: true,
+    protocol: "rdp",
+    resolution: "2560x1440",
+  });
+  assert.equal(f.menu.getMenuItemById("resolution:auto").checked, false);
+  await f.invoke("viewer-state", {
+    open: true,
+    connected: true,
+    protocol: "rdp",
+    resolution: "auto",
+  });
+  assert.equal(f.menu.getMenuItemById("resolution:auto").checked, true);
+  assert.equal(f.menu.getMenuItemById("resolution:2560x1440").checked, false);
+});
+
 test("native remote menu enables valid commands and forwards exact actions", async (t) => {
   const f = await desktop({}, t);
   const item = (id) => f.menu.getMenuItemById(id);
@@ -654,6 +689,7 @@ test("native remote menu enables valid commands and forwards exact actions", asy
     "text-input",
     "reconnect",
     "resolution:2560x1440",
+    "resolution:auto",
   ]) {
     const before = f.notifications.length;
     item(id).click();
@@ -922,7 +958,7 @@ test("showing the address page closes the Remote menu entries and leaves fullscr
       "resolution",
     ])
       assert.equal(item(id).enabled, false, `${how}: ${id}`);
-    assert.equal(item("resolution:1440x900").checked, true, how);
+    assert.equal(item("resolution:auto").checked, true, how);
     assert.equal(item("resolution:1920x1080").checked, false, how);
     assert.deepEqual(
       f.fullscreenRequests,
@@ -1015,7 +1051,7 @@ test("each clause of the viewer-state check refuses on its own", async (t) => {
   await f.invoke("viewer-state", good);
   for (const protocol of [null, "rdp", "vnc"])
     await f.invoke("viewer-state", { ...good, protocol });
-  for (const resolution of ["1440x900", "1920x1080", "2560x1440"])
+  for (const resolution of ["auto", "1440x900", "1920x1080", "2560x1440"])
     await f.invoke("viewer-state", { ...good, resolution });
   for (const [what, bad] of [
     ["open", { ...good, open: "yes" }],

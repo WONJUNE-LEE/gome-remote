@@ -155,11 +155,14 @@ Open the same address in a browser for the identical screen.
 ## Using it
 
 - Click a tile. While connecting, the window shows a spinner and "<name>에 연결하는 중".
-- In the app, use the native **원격** menu: 서버 목록, 해상도 (RDP only), 텍스트 입력,
+- In the app, use the native **원격** menu: 서버 목록, 해상도 (RDP only; 자동 by default), 텍스트 입력,
   다시 연결, 연결 종료. F11 and **View → 전체 화면** toggle full screen locally; Escape
   stays a remote key.
 - In a browser the same controls sit in a bar above the picture, never over it.
 - Only the remote cursor is drawn over a connected desktop.
+- Resolution (Ubuntu, RDP) defaults to **자동 (창 크기)**: the remote desktop follows the window
+  size and is resized shortly after the window stops changing. Fixed sizes remain in the menu.
+- A Mac (VNC) session uses guacd's local cursor: a normal pointer instead of a dot, moving without round-trip lag.
 - Lost connection: the window says **연결이 끊겼습니다 / 작업은 그대로 남아 있습니다**.
   Choose 다시 연결 or 목록으로.
 - If this device's Tailscale account is not in `allowedLogins`, the window says
