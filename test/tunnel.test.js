@@ -143,7 +143,10 @@ test("a client that stops draining pauses guacd, instead of closing the tunnel",
   await sleep(200);
   assert.equal(ws.sentBytes, stalled, "nothing more is read while paused");
 
-  await drainUntil(ws, () => blobs(ws).length === BLOBS);
+  await drainUntil(
+    ws,
+    () => blobs(ws).length === BLOBS && ws.pending.length === 0,
+  );
   assert.equal(upstream().isPaused(), false, "the guacd socket is resumed");
   assert.deepEqual(blobs(ws), payload, "every instruction arrives, in order");
   assert.equal(ws.readyState, 1);
