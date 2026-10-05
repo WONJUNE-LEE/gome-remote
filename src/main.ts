@@ -1,5 +1,6 @@
 import Guacamole from "../vendor/guacamole.js";
 import { ApiError, api, appMode } from "./api";
+import { connectFailure, createSessionFlow, errorScreen } from "./flow";
 import {
   connectingText,
   platformClass,
@@ -72,8 +73,11 @@ let client: any;
 let keyboard: any;
 let resizeObserver: ResizeObserver | undefined;
 let releaseMouse: (() => void) | undefined;
-let active = false;
-let lastInput: ConnectInput | undefined;
+// When a connection may start, and what the session knows about its last attempt.
+const flow = createSessionFlow({
+  begin: (input) => void connect(input),
+  ended: () => sessionEnded(),
+});
 let fullscreen = false;
 document.body.classList.toggle("app-mode", appMode);
 el("menu-address").hidden = !appMode;
@@ -84,24 +88,29 @@ function showScreen(screen: Screen) {
   for (const name of ["home", "state", "session"] as Screen[])
     el(name).hidden = name !== screen;
 }
-function showState(kind: "loading" | "unreachable" | "forbidden") {
+function showLoading() {
   showScreen("state");
-  el("state-spinner").hidden = kind !== "loading";
-  el("state-title").hidden = kind === "loading";
-  el("state-actions").hidden = kind === "loading";
-  el("state-title").textContent =
-    kind === "forbidden"
-      ? "이 기기의 Tailscale 계정으로는 쓸 수 없습니다"
-      : "서버에 연결할 수 없습니다";
-  // Another attempt cannot fix a refused login, and the address is not the cause.
-  el("state-address").hidden = !appMode || kind !== "unreachable";
+  el("state-spinner").hidden = false;
+  el("state-title").hidden = true;
+  el("state-actions").hidden = true;
+}
+// The screens for a failure are decided in flow.ts. "다시 시도" is shown on both: a
+// refused login can be fixed by switching the Tailscale account on this device.
+function showFailure(kind: string | undefined) {
+  const screen = errorScreen(kind, appMode);
+  showScreen("state");
+  el("state-spinner").hidden = true;
+  el("state-title").hidden = false;
+  el("state-actions").hidden = false;
+  el("state-title").textContent = screen.title;
+  el("state-address").hidden = !screen.showAddressButton;
 }
 
 function syncViewerMenu() {
   void api
     .viewerState({
       open: !el("session").hidden,
-      connected: active,
+      connected: flow.active,
       protocol: selected?.protocol || null,
       resolution: el<HTMLSelectElement>("resolution").value,
     })
@@ -149,7 +158,7 @@ if (!appMode) {
 async function refresh() {
   const current = ++listGeneration;
   closeMenu();
-  showState("loading");
+  showLoading();
   try {
     const result = await api.targets();
     if (current !== listGeneration) return;
@@ -159,11 +168,7 @@ async function refresh() {
   } catch (error) {
     if (current !== listGeneration) return;
     targets = [];
-    showState(
-      error instanceof ApiError && error.kind === "forbidden"
-        ? "forbidden"
-        : "unreachable",
-    );
+    showFailure(error instanceof ApiError ? error.kind : undefined);
   }
 }
 function renderTargets() {
@@ -187,7 +192,7 @@ function openTarget(target: Target) {
   const [width, height] = el<HTMLSelectElement>("resolution")
     .value.split("x")
     .map(Number);
-  void connect({ targetId: target.id, width, height });
+  flow.open({ targetId: target.id, width, height });
 }
 function releaseInput() {
   keyboard?.reset();
@@ -199,7 +204,7 @@ function releaseInput() {
 function stop() {
   generation++;
   releaseInput();
-  active = false;
+  flow.stopped();
   resizeObserver?.disconnect();
   resizeObserver = undefined;
   if (client) {
@@ -225,7 +230,7 @@ function showOverlay(kind: "connecting" | "ended") {
 }
 function sessionEnded() {
   releaseInput();
-  active = false;
+  flow.stopped();
   el("session-state").textContent = "연결 종료";
   showOverlay("ended");
   el("display")
@@ -237,7 +242,6 @@ function sessionEnded() {
 async function connect(input: ConnectInput) {
   stop();
   const current = generation;
-  lastInput = { ...input };
   document.body.classList.add("viewing");
   el<HTMLDialogElement>("viewer-error").close();
   el("session-title").textContent = selected?.name || "원격 데스크톱";
@@ -280,7 +284,7 @@ async function connect(input: ConnectInput) {
       mouse.onmouseup =
       mouse.onmousemove =
         (state: any) => {
-          if (!active) return;
+          if (!flow.active) return;
           surface.classList.add("remote-pointer-active");
           mouseState = state;
           surface.focus({ preventScroll: true });
@@ -289,10 +293,10 @@ async function connect(input: ConnectInput) {
     mouse.onmouseout = () => surface.classList.remove("remote-pointer-active");
     // Guacamole deduplicates moves to the last coordinate, including re-entry.
     surface.addEventListener("mouseenter", () => {
-      if (active) surface.classList.add("remote-pointer-active");
+      if (flow.active) surface.classList.add("remote-pointer-active");
     });
     releaseMouse = () => {
-      if (active && mouseState)
+      if (flow.active && mouseState)
         connection.sendMouseState(
           {
             ...mouseState,
@@ -307,23 +311,23 @@ async function connect(input: ConnectInput) {
     };
     keyboard = new Guacamole.Keyboard(surface);
     keyboard.onkeydown = (keysym: number) => {
-      if (active) connection.sendKeyEvent(1, keysym);
+      if (flow.active) connection.sendKeyEvent(1, keysym);
       return false;
     };
     keyboard.onkeyup = (keysym: number) => {
-      if (active) connection.sendKeyEvent(0, keysym);
+      if (flow.active) connection.sendKeyEvent(0, keysym);
     };
     surface.addEventListener("blur", releaseInput);
     connection.onerror = () => {
-      if (current === generation) sessionEnded();
+      if (current === generation) flow.ended();
     };
     tunnel.onerror = () => {
-      if (current === generation) sessionEnded();
+      if (current === generation) flow.ended();
     };
     connection.onstatechange = (state: number) => {
       if (current !== generation) return;
       if (state === 3) {
-        active = true;
+        flow.connected();
         surface.classList.add("remote-connected");
         syncViewerMenu();
         el("session-state").textContent = "연결됨";
@@ -331,15 +335,16 @@ async function connect(input: ConnectInput) {
         el<HTMLButtonElement>("text-input").disabled = false;
         surface.focus();
         fit();
-      } else if (state === 5) sessionEnded();
+      } else if (state === 5) flow.ended();
     };
     connection.connect(`ticket=${encodeURIComponent(result.ticket)}`);
   } catch (error) {
     if (current !== generation) return;
-    if (error instanceof ApiError && error.kind === "forbidden") {
+    const kind = error instanceof ApiError ? error.kind : undefined;
+    if (connectFailure(kind) === "forbidden") {
       back(false);
-      showState("forbidden");
-    } else sessionEnded();
+      showFailure(kind);
+    } else flow.ended();
   }
 }
 function back(reload = true) {
@@ -347,7 +352,7 @@ function back(reload = true) {
   document.body.classList.remove("viewing");
   el<HTMLDialogElement>("viewer-error").close();
   void setFullscreen(false);
-  lastInput = undefined;
+  flow.discard();
   el<HTMLSelectElement>("resolution").disabled = false;
   showScreen("home");
   syncViewerMenu();
@@ -355,13 +360,10 @@ function back(reload = true) {
 }
 function disconnect() {
   stop();
-  sessionEnded();
-}
-function reconnect() {
-  if (lastInput && !active) void connect(lastInput);
+  flow.ended();
 }
 function openTextDialog() {
-  if (!active) return;
+  if (!flow.active) return;
   releaseInput();
   el<HTMLDialogElement>("text-dialog").showModal();
   el("remote-text").focus();
@@ -389,7 +391,7 @@ el("menu-address").onclick = el("state-address").onclick = () => {
 el("state-retry").onclick = () => void refresh();
 el("back").onclick = el("overlay-back").onclick = () => back();
 el("disconnect").onclick = disconnect;
-el("overlay-reconnect").onclick = reconnect;
+el("overlay-reconnect").onclick = () => flow.reconnect();
 el("fullscreen").onclick = () => {
   void setFullscreen(!fullscreen);
 };
@@ -399,8 +401,9 @@ el<HTMLSelectElement>("resolution").onchange = () => {
   const [width, height] = el<HTMLSelectElement>("resolution")
     .value.split("x")
     .map(Number);
-  if (lastInput) Object.assign(lastInput, { width, height });
-  if (active && selected?.protocol === "rdp") client.sendSize(width, height);
+  flow.resize(width, height);
+  if (flow.active && selected?.protocol === "rdp")
+    client.sendSize(width, height);
 };
 document
   .querySelectorAll<HTMLButtonElement>("[data-close]")
@@ -410,7 +413,7 @@ document
 el("text-input").onclick = openTextDialog;
 el<HTMLFormElement>("text-form").onsubmit = (event) => {
   event.preventDefault();
-  if (active) {
+  if (flow.active) {
     const text = el<HTMLTextAreaElement>("remote-text").value;
     if (text) {
       const writer = new Guacamole.StringWriter(
@@ -433,7 +436,7 @@ api.onViewerAction((action) => {
   if (el("session").hidden) return;
   releaseInput();
   if (action.startsWith("resolution:")) {
-    if (!active || selected?.protocol !== "rdp") return;
+    if (!flow.active || selected?.protocol !== "rdp") return;
     const select = el<HTMLSelectElement>("resolution");
     const size = action.slice("resolution:".length);
     if (!Array.from(select.options).some((option) => option.value === size))
@@ -442,7 +445,7 @@ api.onViewerAction((action) => {
     select.dispatchEvent(new Event("change"));
   } else if (action === "back") back();
   else if (action === "disconnect") disconnect();
-  else if (action === "reconnect") reconnect();
+  else if (action === "reconnect") flow.reconnect();
   else if (action === "text-input") openTextDialog();
 });
 window.addEventListener("blur", releaseInput);

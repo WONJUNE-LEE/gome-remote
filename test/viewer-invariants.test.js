@@ -10,6 +10,7 @@ const read = (name) =>
 const css = (await read("style.css")).replace(/\s+/g, " ");
 const main = await read("main.ts");
 const tiles = await read("tiles.ts");
+const flow = await read("flow.ts");
 const body = (selector) => {
   const start = css.indexOf(`${selector} {`);
   assert.notEqual(start, -1, `rule ${selector}`);
@@ -73,23 +74,23 @@ test("the list uses the approved palette, dark mode and state words", () => {
     "작업은 그대로 남아 있습니다",
     "다시 연결",
     "목록으로",
-    "서버에 연결할 수 없습니다",
     "다시 시도",
-    "이 기기의 Tailscale 계정으로는 쓸 수 없습니다",
   ])
     assert.ok(main.includes(text), text);
+  // The failure titles live in flow.ts and are tested behaviourally in viewer-flow.test.js.
+  for (const text of [
+    "서버에 연결할 수 없습니다",
+    "이 기기의 Tailscale 계정으로는 쓸 수 없습니다",
+  ])
+    assert.ok(flow.includes(text), text);
 });
 
-// Grep-only on purpose: main.ts builds the whole page and talks to Guacamole, and this
-// suite has no DOM, so a behavioural test would need a fake of both. The behaviour behind
-// each rule is covered by the tile and API tests or by the manual browser check.
+// Grep-only on purpose, for what a fake page cannot show: the real DOM template and
+// the disabled attribute. Which screen a failure shows and when a connection may start are
+// tested behaviourally in viewer-flow.test.js (flow.ts and main.ts with a fake page).
 test("the server address is app-only, tiles that cannot open are real disabled buttons", () => {
   assert.match(main, /el\("menu-address"\)\.hidden = !appMode/);
   assert.match(main, /el\("state-address"\)\.hidden = !appMode/);
-  assert.match(
-    main,
-    /el\("state-address"\)\.hidden = !appMode \|\| kind !== "unreachable"/,
-  );
   assert.match(main, /tile\.disabled = !tileEnabled\(target\)/);
   assert.match(
     main,
@@ -97,19 +98,18 @@ test("the server address is app-only, tiles that cannot open are real disabled b
   );
 });
 
-test("a failed or refused connection is never retried on its own", () => {
-  // Retrying a refused Mac login by itself could lock the account; only a click reconnects.
+test("main.ts takes its failure screens and its connection policy from flow.ts", () => {
+  assert.match(main, /errorScreen\(kind, appMode\)/);
+  assert.match(main, /connectFailure\(kind\)/);
+  assert.match(main, /createSessionFlow\(/);
   assert.doesNotMatch(main, /setTimeout|setInterval/);
-  const reconnects = main.match(/void connect\(/g) || [];
+  // The only call of connect() is the `begin` effect handed to flow.ts.
   assert.equal(
-    reconnects.length,
+    (main.match(/(?<![.\w])connect\(/g) || []).length,
     2,
-    "only opening a tile and the reconnect action",
+    "begin + definition",
   );
-  assert.match(
-    main,
-    /function reconnect\(\) \{\s*if \(lastInput && !active\) void connect\(lastInput\);/,
-  );
+  assert.match(main, /begin: \(input\) => void connect\(input\)/);
 });
 
 test("screens keep to the minimal copy of the spec", () => {
@@ -128,7 +128,10 @@ test("screens keep to the minimal copy of the spec", () => {
 test("the ended view offers 다시 연결 once, in the overlay card", () => {
   assert.equal((main.match(/다시 연결/g) || []).length, 1);
   assert.doesNotMatch(main, /id="reconnect"|el\("reconnect"\)/);
-  assert.match(main, /el\("overlay-reconnect"\)\.onclick = reconnect/);
+  assert.match(
+    main,
+    /el\("overlay-reconnect"\)\.onclick = \(\) => flow\.reconnect\(\)/,
+  );
 });
 
 // WCAG relative luminance contrast of two #rrggbb colours.
