@@ -134,6 +134,7 @@ function fakeGuacd(received, connections, stats, mode = "ok") {
               "enable-drive",
               "disable-copy",
               "enable-wallpaper",
+              "cursor",
               "security",
               "color-depth",
             ]),
@@ -730,6 +731,8 @@ for (const protocol of ["rdp", "vnc"])
           protocol === "rdp" ? "false" : "",
           "true",
           protocol === "rdp" ? "true" : "",
+          // VNC draws the real local pointer; RDP leaves the cursor to the server.
+          protocol === "rdp" ? "" : "local",
           protocol === "rdp" ? "nla" : "",
           // RDP leaves the depth to its negotiation; VNC asks for 16-bit colour.
           protocol === "rdp" ? "" : "16",
@@ -800,10 +803,35 @@ test(
     const ws = f.open(json.ticket);
     await handshake(ws);
     const connect = f.received.find((p) => p[0] === "connect");
-    // args order: ..., security, color-depth (the last argument).
+    // args order: ..., cursor, security, color-depth (the last argument).
     assert.equal(connect.at(-1), "16");
     ws.close();
     await once(ws, "close");
+  },
+);
+
+test(
+  "a Mac (VNC) target shows the real local pointer, an RDP target leaves the cursor to the server",
+  { skip: !posix },
+  async (t) => {
+    const size = { targetId: "linux", width: 1920, height: 1080 };
+    for (const [protocol, expected] of [
+      ["vnc", "local"],
+      ["rdp", ""],
+    ]) {
+      const f = await fixture(t, { protocol });
+      const { json } = await f.post(size);
+      const ws = f.open(json.ticket);
+      await handshake(ws);
+      // args order: ..., enable-wallpaper, cursor, security, color-depth.
+      assert.equal(
+        f.received.find((p) => p[0] === "connect").at(-3),
+        expected,
+        protocol,
+      );
+      ws.close();
+      await once(ws, "close");
+    }
   },
 );
 

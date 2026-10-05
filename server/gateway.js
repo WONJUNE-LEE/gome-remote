@@ -81,7 +81,7 @@ export function connectionSettings(target, credentials, size = {}) {
           : // 16-bit colour: measured on a 4K Mac, a full frame shrinks from 5.4 MB to
             // 2.0 MB. macOS refuses 8-bit (error 515), and non-default `encodings`
             // make it send ~32 MB per frame, so leave those alone.
-            { "color-depth": 16, cursor: "remote" }),
+            { "color-depth": 16, cursor: "local" }),
       },
     },
   };
