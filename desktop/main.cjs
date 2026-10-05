@@ -63,7 +63,31 @@ function handle(audience, channel, callback) {
   });
 }
 
+const resolutions = ["1440x900", "1920x1080", "2560x1440"];
+// Enables the Remote menu entries that make sense for what the page shows.
+function applyViewerState(state) {
+  const menu = Menu.getApplicationMenu();
+  if (!menu) return;
+  for (const id of ["back", "disconnect"])
+    menu.getMenuItemById(id).enabled = state.open;
+  menu.getMenuItemById("reconnect").enabled = state.open && !state.connected;
+  menu.getMenuItemById("text-input").enabled = state.open && state.connected;
+  menu.getMenuItemById("resolution").enabled =
+    state.open && state.connected && state.protocol === "rdp";
+  for (const size of resolutions)
+    menu.getMenuItemById(`resolution:${size}`).checked =
+      size === state.resolution;
+}
 function showSetup(reason) {
+  // The address page has no viewer: close the menu entries and leave fullscreen, or a
+  // viewer opened a moment ago would keep them enabled for a page that ignores them.
+  applyViewerState({
+    open: false,
+    connected: false,
+    protocol: null,
+    resolution: resolutions[0],
+  });
+  requestFullscreen(false);
   return window
     .loadURL(reason ? `${setupPage}?reason=${reason}` : setupPage)
     .catch(() => {});
@@ -84,6 +108,13 @@ function openExternal(url) {
 app
   .whenReady()
   .then(async () => {
+    // The smoke test must end by itself, with 0 or 1, whatever the page does.
+    const smokeTimer = smokeTest
+      ? setTimeout(() => {
+          console.error("Desktop smoke test timed out.");
+          app.exit(1);
+        }, 60_000)
+      : undefined;
     const userData = app.getPath("userData");
     // Versions before 0.2 kept the gateway token and desktop passwords here. The new
     // design never reads them, so remove the only remaining copy.
@@ -122,7 +153,6 @@ app
       requestFullscreen(enabled);
     });
     handle("gateway", "remote:fullscreen-state", () => window.isFullScreen());
-    const resolutions = ["1440x900", "1920x1080", "2560x1440"];
     const command = (id, label) => ({
       id,
       label,
@@ -138,18 +168,7 @@ app
         !resolutions.includes(state.resolution)
       )
         throw new Error("Invalid viewer state.");
-      const menu = Menu.getApplicationMenu();
-      for (const id of ["back", "disconnect"])
-        menu.getMenuItemById(id).enabled = state.open;
-      menu.getMenuItemById("reconnect").enabled =
-        state.open && !state.connected;
-      menu.getMenuItemById("text-input").enabled =
-        state.open && state.connected;
-      menu.getMenuItemById("resolution").enabled =
-        state.open && state.connected && state.protocol === "rdp";
-      for (const size of resolutions)
-        menu.getMenuItemById(`resolution:${size}`).checked =
-          size === state.resolution;
+      applyViewerState(state);
     });
     Menu.setApplicationMenu(
       Menu.buildFromTemplate([
@@ -273,10 +292,20 @@ app
     if (smokeTest || !gateway) await showSetup();
     else void openGateway();
     if (smokeTest) {
+      // Run with a throwaway --user-data-dir: with no saved address it only shows the
+      // local address page, so there is no network and no real settings are touched.
       const state = await window.webContents.executeJavaScript(
-        "({title: document.title, bridgeVersion: window.desktop.bridgeVersion, setup: typeof window.desktopSetup.save})",
+        "({page: location.href.split(/[?#]/)[0], title: document.title, bridgeVersion: window.desktop.bridgeVersion, setup: typeof window.desktopSetup.save})",
       );
       console.log(JSON.stringify(state));
+      if (
+        state.page !== setupPage ||
+        state.title !== "Gome Remote" ||
+        state.bridgeVersion !== 1 ||
+        state.setup !== "function"
+      )
+        throw new Error("The address page or the bridge is not as expected.");
+      clearTimeout(smokeTimer);
       app.quit();
     }
   })

@@ -48,6 +48,8 @@ async function desktop(
     links = {},
     logs = [],
     platform = "win32",
+    argv = [],
+    page, // what executeJavaScript answers in the smoke test
   } = {},
   t,
 ) {
@@ -70,6 +72,8 @@ async function desktop(
   const external = [];
   const fullscreenRequests = [];
   const notifications = [];
+  const lifecycle = [];
+  const scripts = [];
   let fullscreen = false;
   let window;
   let menu;
@@ -84,6 +88,11 @@ async function desktop(
       this.webContents = Object.assign(new EventEmitter(), {
         mainFrame: { url: "about:blank" },
         send: (...args) => notifications.push(args),
+        executeJavaScript: async (script) => {
+          scripts.push(script);
+          if (page instanceof Error) throw page;
+          return page;
+        },
         setWindowOpenHandler(handler) {
           openHandler = handler;
         },
@@ -114,8 +123,8 @@ async function desktop(
       whenReady: async () => {},
       getPath: () => userData,
       on() {},
-      quit() {},
-      exit() {},
+      quit: () => lifecycle.push(["quit"]),
+      exit: (code) => lifecycle.push(["exit", code]),
     },
     BrowserWindow,
     ipcMain: { handle: (name, callback) => handlers.set(name, callback) },
@@ -156,7 +165,9 @@ async function desktop(
     URL,
     console: { ...console, error: (...args) => logs.push(args.join(" ")) },
     Promise,
-    process: { argv: [], platform },
+    process: { argv, platform },
+    setTimeout,
+    clearTimeout,
   });
   await ready.promise;
   await new Promise((resolve) => setImmediate(resolve));
@@ -169,6 +180,8 @@ async function desktop(
   return {
     userData,
     loads,
+    lifecycle,
+    scripts,
     external,
     handlers,
     permissions,
@@ -683,4 +696,345 @@ test("native fullscreen menu preserves a second click during entry", async (t) =
   assert.deepEqual(f.fullscreenRequests, [true, false]);
   f.finishFullscreen(false);
   assert.equal(await f.invoke("fullscreen-state"), false);
+});
+
+// ---- the address page (desktop/setup.html), running its own inline script ----
+
+const setupHtml = await readFile(
+  new URL("../desktop/setup.html", import.meta.url),
+  "utf8",
+);
+const setupScript = setupHtml.match(/<script>([\s\S]*?)<\/script>/)[1];
+const settle = async () => {
+  for (let i = 0; i < 5; i++)
+    await new Promise((resolve) => setImmediate(resolve));
+};
+
+// Runs the page's script with a fake document. `pageUrl` is the URL the main process
+// loaded; `setup` stands in for window.desktopSetup. Errors reach the page the way
+// Electron delivers them from ipcMain.handle: prefixed with the channel.
+function setupPageRuns(pageUrl, setup) {
+  const elements = {};
+  for (const id of [
+    "title",
+    "current",
+    "retry",
+    "form",
+    "address",
+    "error",
+    "save",
+  ])
+    elements[id] = {
+      id,
+      value: "",
+      textContent: id === "title" ? "서버 주소" : "",
+      hidden: id === "current" || id === "retry",
+      disabled: false,
+    };
+  vm.runInNewContext(setupScript, {
+    document: { getElementById: (id) => elements[id] },
+    location: new URL(pageUrl),
+    window: { desktopSetup: setup },
+    URLSearchParams,
+    String,
+  });
+  return elements;
+}
+const asElectronError = (error) =>
+  new Error(`Error invoking remote method 'setup:save': ${error}`);
+
+test("the address page shows the unreachable state for the URL the main process really loads, and retry reaches the main process", async (t) => {
+  const f = await desktop({}, t);
+  // The URL comes from main.cjs itself: a failed load of the gateway.
+  f.window.webContents.emit(
+    "did-fail-load",
+    {},
+    -102,
+    "ERR",
+    `${GATEWAY}/`,
+    true,
+  );
+  await settle();
+  const pageUrl = f.loads.at(-1);
+  assert.notEqual(
+    pageUrl,
+    SETUP,
+    "main.cjs adds a reason to the address page URL",
+  );
+  const calls = [];
+  const page = setupPageRuns(pageUrl, {
+    current: () => f.call("setup:current"),
+    retry: async () => {
+      calls.push("retry");
+      return f.call("setup:retry");
+    },
+    save: () => assert.fail("not used"),
+  });
+  await settle();
+  assert.equal(page.title.textContent, "서버에 연결할 수 없습니다");
+  assert.equal(page.current.textContent, GATEWAY);
+  assert.equal(page.current.hidden, false);
+  assert.equal(page.retry.hidden, false);
+  assert.equal(page.address.value, GATEWAY);
+  const loadsBefore = f.loads.length;
+  page.retry.onclick();
+  await settle();
+  assert.deepEqual(calls, ["retry"]);
+  assert.equal(f.loads.length, loadsBefore + 1);
+  assert.equal(f.loads.at(-1), GATEWAY, "retry opens the saved gateway again");
+  // The same page reached from the menu has no reason and shows only the form.
+  f.menu.getMenuItemById("change-server").click();
+  await settle();
+  const plain = setupPageRuns(f.loads.at(-1), {
+    current: () => f.call("setup:current"),
+    retry: () => assert.fail("not used"),
+    save: () => assert.fail("not used"),
+  });
+  await settle();
+  assert.equal(plain.title.textContent, "서버 주소");
+  assert.equal(plain.retry.hidden, true);
+  assert.equal(plain.current.hidden, true);
+  assert.equal(plain.address.value, GATEWAY);
+});
+
+test("the unreachable state needs both the reason and a saved address", async () => {
+  const unreachable = `${SETUP}?reason=unreachable`;
+  for (const [url, address, shown] of [
+    [unreachable, GATEWAY, true],
+    [SETUP, GATEWAY, false],
+    [`${SETUP}?reason=other`, GATEWAY, false],
+    [`${SETUP}?why=unreachable`, GATEWAY, false],
+    [unreachable, "", false], // first run: nothing to retry
+  ]) {
+    const page = setupPageRuns(url, {
+      current: async () => address,
+      retry: async () => {},
+      save: async () => {},
+    });
+    await settle();
+    assert.equal(page.retry.hidden, !shown, `${url} with "${address}"`);
+    assert.equal(
+      page.title.textContent,
+      shown ? "서버에 연결할 수 없습니다" : "서버 주소",
+      `${url} with "${address}"`,
+    );
+  }
+});
+
+test("a rejected save shows the readable message without Electron's prefix and enables the button again", async (t) => {
+  const f = await desktop({ stored: "" }, t);
+  const pending = deferred();
+  const page = setupPageRuns(SETUP, {
+    current: () => f.call("setup:current"),
+    retry: async () => {},
+    save: async (address) => {
+      if (address === "wait") {
+        await pending.promise;
+        return;
+      }
+      try {
+        return await f.call("setup:save", address);
+      } catch (error) {
+        throw asElectronError(error);
+      }
+    },
+  });
+  await settle();
+  const submit = () => {
+    let prevented = false;
+    const done = page.form.onsubmit({
+      preventDefault: () => (prevented = true),
+    });
+    assert.equal(prevented, true);
+    return done;
+  };
+  page.address.value = "https://evil.example";
+  const rejected = submit();
+  assert.equal(page.save.disabled, true, "disabled while saving");
+  assert.equal(page.error.textContent, "", "the old message is cleared first");
+  await rejected;
+  assert.equal(page.save.disabled, false);
+  assert.ok(page.error.textContent.length > 0, "a message is shown");
+  assert.doesNotMatch(page.error.textContent, /Error invoking remote method/);
+  assert.doesNotMatch(page.error.textContent, /^Error: /);
+  // A later success clears the message and keeps the button for the new page.
+  page.address.value = "gateway.tail123.ts.net:8450";
+  await submit();
+  assert.equal(page.error.textContent, "");
+  assert.equal(f.loads.at(-1), GATEWAY);
+  // A plain message and a non-Error rejection are shown as they are.
+  const plainPage = setupPageRuns(SETUP, {
+    current: async () => "",
+    retry: () => Promise.reject("서버 주소를 먼저 입력해주세요."),
+    save: () =>
+      Promise.reject(
+        new Error(
+          "Error invoking remote method 'setup:save': Error: 주소가 올바르지 않습니다.",
+        ),
+      ),
+  });
+  await settle();
+  plainPage.retry.onclick();
+  await settle();
+  assert.equal(plainPage.error.textContent, "서버 주소를 먼저 입력해주세요.");
+  await plainPage.form.onsubmit({ preventDefault() {} });
+  assert.equal(plainPage.error.textContent, "주소가 올바르지 않습니다.");
+  assert.equal(plainPage.save.disabled, false);
+});
+
+// ---- leaving the viewer for the address page ----
+
+test("showing the address page closes the Remote menu entries and leaves fullscreen", async (t) => {
+  for (const how of ["menu", "unreachable", "bridge"]) {
+    const f = await desktop({}, t);
+    const item = (id) => f.menu.getMenuItemById(id);
+    await f.invoke("viewer-state", {
+      open: true,
+      connected: true,
+      protocol: "rdp",
+      resolution: "1920x1080",
+    });
+    await f.invoke("fullscreen", true);
+    f.finishFullscreen(true);
+    assert.equal(item("back").enabled, true);
+    assert.equal(item("resolution").enabled, true);
+    assert.deepEqual(f.fullscreenRequests, [true]);
+    if (how === "menu") item("change-server").click();
+    else if (how === "bridge") await f.invoke("open-setup");
+    else f.window.webContents.emit("did-navigate", {}, `${GATEWAY}/`, 502);
+    await settle();
+    assert.ok(f.loads.at(-1).startsWith(SETUP), how);
+    for (const id of [
+      "back",
+      "disconnect",
+      "reconnect",
+      "text-input",
+      "resolution",
+    ])
+      assert.equal(item(id).enabled, false, `${how}: ${id}`);
+    assert.equal(item("resolution:1440x900").checked, true, how);
+    assert.equal(item("resolution:1920x1080").checked, false, how);
+    assert.deepEqual(
+      f.fullscreenRequests,
+      [true, false],
+      `${how}: leaves fullscreen`,
+    );
+  }
+});
+
+test("showing the address page while windowed does not touch fullscreen", async (t) => {
+  const f = await desktop({}, t);
+  f.menu.getMenuItemById("change-server").click();
+  await settle();
+  assert.deepEqual(f.fullscreenRequests, []);
+});
+
+// ---- the smoke test the CI runs on a real Electron ----
+
+const goodPage = {
+  page: SETUP,
+  title: "Gome Remote",
+  bridgeVersion: 1,
+  setup: "function",
+};
+test("--smoke-test shows only the address page, never the saved gateway, and quits with success", async (t) => {
+  const f = await desktop({ argv: ["--smoke-test"], page: goodPage }, t);
+  await settle();
+  assert.deepEqual(
+    f.loads,
+    [SETUP],
+    "no network: the saved gateway is not opened",
+  );
+  assert.equal(f.windowOptions.show, false);
+  assert.equal(f.scripts.length, 1);
+  assert.deepEqual(f.lifecycle, [["quit"]]);
+});
+
+test("--smoke-test exits 1 when the page or the bridge is not what the app promises, or the check itself fails", async (t) => {
+  for (const page of [
+    { ...goodPage, bridgeVersion: 2 },
+    { ...goodPage, bridgeVersion: undefined },
+    { ...goodPage, setup: "undefined" },
+    { ...goodPage, title: "" },
+    { ...goodPage, page: "about:blank" },
+    new Error("Cannot read properties of undefined"),
+  ]) {
+    const f = await desktop({ argv: ["--smoke-test"], page }, t);
+    await settle();
+    assert.deepEqual(f.lifecycle, [["exit", 1]], JSON.stringify(page));
+  }
+});
+
+test("a normal start never runs the smoke check", async (t) => {
+  const f = await desktop({ page: goodPage }, t);
+  await settle();
+  assert.deepEqual(f.scripts, []);
+  assert.deepEqual(f.lifecycle, []);
+});
+
+// ---- boundaries: each validation clause alone, and the exact setup page ----
+
+test("each clause of the viewer-state check refuses on its own", async (t) => {
+  const f = await desktop({}, t);
+  const good = {
+    open: true,
+    connected: false,
+    protocol: "rdp",
+    resolution: "1440x900",
+  };
+  await f.invoke("viewer-state", good);
+  for (const protocol of [null, "rdp", "vnc"])
+    await f.invoke("viewer-state", { ...good, protocol });
+  for (const resolution of ["1440x900", "1920x1080", "2560x1440"])
+    await f.invoke("viewer-state", { ...good, resolution });
+  for (const [what, bad] of [
+    ["open", { ...good, open: "yes" }],
+    ["connected", { ...good, connected: 1 }],
+    ["protocol", { ...good, protocol: "ssh" }],
+    ["protocol undefined", { ...good, protocol: undefined }],
+    ["resolution", { ...good, resolution: "800x600" }],
+    ["resolution missing", { ...good, resolution: undefined }],
+    ["null", null],
+    ["empty", undefined],
+  ])
+    await assert.rejects(
+      f.invoke("viewer-state", bad),
+      /Invalid viewer state/,
+      what,
+    );
+});
+
+test("the address page channels accept exactly the page the app loads, in the top frame", async (t) => {
+  const f = await desktop({ stored: "" }, t);
+  assert.equal(await f.call("setup:current"), "");
+  const refused = [
+    pathToFileURL(join(desktopDir, "other.html")).href,
+    pathToFileURL(join(desktopDir, "setup.html.bak")).href,
+    pathToFileURL(join(desktopDir, "..", "package.json")).href,
+    `${SETUP}x`,
+    "file:///etc/passwd",
+    "about:blank",
+    "",
+  ];
+  for (const url of refused) {
+    f.show(url);
+    for (const channel of ["setup:current", "setup:retry"])
+      await assert.rejects(
+        f.call(channel),
+        /Untrusted origin/,
+        `${channel} ${url}`,
+      );
+  }
+  // The exact page is fine with a query or a fragment, but not from a subframe.
+  for (const url of [SETUP, `${SETUP}?reason=unreachable`, `${SETUP}#x`]) {
+    f.show(url);
+    assert.equal(await f.call("setup:current"), "");
+  }
+  await assert.rejects(
+    f.call("setup:current", undefined, {
+      sender: f.window.webContents,
+      senderFrame: { url: SETUP },
+    }),
+    /Untrusted sender/,
+  );
 });
