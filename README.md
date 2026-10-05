@@ -129,7 +129,8 @@ Sharing > Screen Sharing). macOS then makes `guacd` authenticate with Apple Remo
 Desktop credentials, so the credential for the `mac` target is that macOS account's name
 and password. On the server, run `node scripts/set-credential.mjs mac` and enter the
 macOS account name and password. The separate "VNC viewers may control screen with
-password" option is not needed; leave it off.
+password" option is not needed; leave it off. The gateway asks for 16-bit colour from
+the Mac to keep a 4K screen responsive, so gradients may show slight banding.
 
 ### Notes
 

@@ -135,6 +135,7 @@ function fakeGuacd(received, connections, stats, mode = "ok") {
               "disable-copy",
               "enable-wallpaper",
               "security",
+              "color-depth",
             ]),
           );
         if (parts[0] === "connect") {
@@ -678,7 +679,7 @@ test(
       "entry-user",
       "entry-password",
     ]);
-    assert.equal(f.received.find((p) => p[0] === "connect").at(-1), "nla");
+    assert.equal(f.received.find((p) => p[0] === "connect").at(-2), "nla");
     ws.close();
     await once(ws, "close");
   },
@@ -730,6 +731,8 @@ for (const protocol of ["rdp", "vnc"])
           "true",
           protocol === "rdp" ? "true" : "",
           protocol === "rdp" ? "nla" : "",
+          // RDP leaves the depth to its negotiation; VNC asks for 16-bit colour.
+          protocol === "rdp" ? "" : "16",
         ],
       );
       assert.ok(messages.includes("0.,5.$test;"));
@@ -779,6 +782,26 @@ test(
       "mac-user",
       "mac-secret",
     ]);
+    ws.close();
+    await once(ws, "close");
+  },
+);
+
+test(
+  "a Mac (VNC) target asks guacd for 16-bit colour so a 4K frame stays small",
+  { skip: !posix },
+  async (t) => {
+    const f = await fixture(t, { protocol: "vnc" });
+    const { json } = await f.post({
+      targetId: "linux",
+      width: 1920,
+      height: 1080,
+    });
+    const ws = f.open(json.ticket);
+    await handshake(ws);
+    const connect = f.received.find((p) => p[0] === "connect");
+    // args order: ..., security, color-depth (the last argument).
+    assert.equal(connect.at(-1), "16");
     ws.close();
     await once(ws, "close");
   },
