@@ -40,6 +40,9 @@ test("connection tickets expire, are single-use, and cap pending credentials", (
   assert.deepEqual(tickets.take(first), { secret: "a" });
   assert.equal(tickets.take(first), undefined);
   const second = tickets.issue("b");
+  const third = tickets.issue("c");
+  now = 19;
+  assert.equal(tickets.take(third), "c", "still valid one tick before the ttl");
   now = 20;
   assert.equal(tickets.take(second), undefined);
   for (let i = 0; i < 64; i++) tickets.issue(i);
@@ -79,27 +82,41 @@ function decode(buffer) {
 
 // `stats.opened` counts every connection ever accepted, so "no guacd connection was
 // opened" cannot be satisfied by a connection that already closed again.
-function fakeGuacd(received, connections, stats) {
+// `mode` makes the fixture fail like a real guacd: "args-error" answers `select` with an
+// `error` instruction, "connect-error" answers `connect` with one (a failed login).
+// Real guacd closes the connection after an error, and so does the fixture.
+function fakeGuacd(received, connections, stats, mode = "ok") {
   return net.createServer((socket) => {
     stats.opened++;
     connections.add(socket);
     socket.on("close", () => connections.delete(socket));
+    // The gateway may hang up while the fixture is still writing (EPIPE/ECONNRESET).
+    socket.on("error", () => {});
     socket.setEncoding("utf8");
     let buffer = "";
+    let stray = false;
     socket.on("data", (chunk) => {
+      if (stray) return;
       buffer += chunk;
       for (;;) {
         let decoded;
         try {
           decoded = decode(buffer);
         } catch {
-          // Anything that is not Guacamole (for example a port scanner) is dropped.
+          // Anything that is not Guacamole (for example a port scanner) is dropped, and is
+          // not the gateway: a stray probe of this ephemeral port must not count as a dial.
+          if (!stray) stats.opened--;
+          stray = true;
           return socket.destroy();
         }
         if (!decoded) break;
         buffer = decoded.rest;
         const parts = decoded.parts;
         received.push(parts);
+        if (parts[0] === "select" && mode === "args-error") {
+          socket.end(wire(["error", "Upstream unavailable", "519"]));
+          return;
+        }
         if (parts[0] === "select")
           socket.write(
             wire([
@@ -125,6 +142,10 @@ function fakeGuacd(received, connections, stats) {
             received.find((p) => p[0] === "image"),
             ["image", "image/png", "image/jpeg"],
           );
+          if (mode === "connect-error") {
+            socket.end(wire(["error", "Authentication failed", "769"]));
+            return;
+          }
           socket.write(wire(["ready", "$test"]));
           // Deliberately split a multibyte name across TCP writes.
           const name = Buffer.from(wire(["name", "원격 🖥️"]));
@@ -188,11 +209,12 @@ async function fixture(t, options = {}) {
     credentials = stub({ ...defaults[protocol] }),
     probe = async () => true,
     dist,
+    guacd = "ok",
   } = options;
   const received = [];
   const connections = new Set();
   const stats = { opened: 0 };
-  const daemon = fakeGuacd(received, connections, stats);
+  const daemon = fakeGuacd(received, connections, stats, guacd);
   daemon.listen(0, "127.0.0.1");
   await once(daemon, "listening");
   const dir = await mkdtemp(join(tmpdir(), "gr-"));
@@ -777,8 +799,65 @@ test(
   },
 );
 
+// What the browser sees on the tunnel until the gateway closes it. Bounded, so a
+// gateway that swallows the error (and waits for its 15 s handshake timeout) fails here.
+async function drain(ws, ms = 3000) {
+  const messages = [];
+  ws.on("message", (data) => messages.push(data.toString()));
+  ws.on("error", () => {});
+  let timer;
+  const outcome = await Promise.race([
+    once(ws, "close").then(() => "closed"),
+    new Promise((resolve) => {
+      timer = setTimeout(() => resolve("still open"), ms);
+    }),
+  ]);
+  clearTimeout(timer);
+  return { messages, outcome };
+}
+
+for (const [mode, text, code] of [
+  ["connect-error", "Authentication failed", "769"],
+  ["args-error", "Upstream unavailable", "519"],
+]) {
+  test(
+    `a guacd ${mode} reaches the browser, ends the tunnel and is never retried by the gateway`,
+    { skip: !posix },
+    async (t) => {
+      const f = await fixture(t, { guacd: mode });
+      const { json } = await f.post({
+        targetId: "linux",
+        width: 1920,
+        height: 1080,
+      });
+      const ws = f.open(json.ticket);
+      const { messages, outcome } = await drain(ws);
+      assert.equal(outcome, "closed", "the tunnel is closed after the error");
+      assert.deepEqual(
+        messages,
+        [wire(["error", text, code])],
+        "the browser receives guacd's error instruction unchanged, and nothing else",
+      );
+      assert.equal(f.opened(), 1);
+      // The gateway must not dial guacd again by itself (an account-lockout risk on
+      // the remote machine): wait, then check there was still exactly one attempt.
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      assert.equal(f.opened(), 1, "no reconnection by the gateway");
+      assert.ok(f.received.every((p) => p[0] !== "autoretry"));
+      assert.equal(
+        f.received.filter((p) => p[0] === "select").length,
+        1,
+        "one select for the one ticket",
+      );
+      // The ticket is spent; another attempt needs a new, explicit request.
+      await rejected(f.open(json.ticket));
+      assert.equal(f.opened(), 1);
+    },
+  );
+}
+
 test(
-  "a failed authentication is not retried by the gateway: one guacd connection per ticket",
+  "a finished session is not reopened by the gateway: the ticket is spent and nothing is redialed",
   { skip: !posix },
   async (t) => {
     const f = await fixture(t);
@@ -791,13 +870,41 @@ test(
     await handshake(ws);
     ws.close();
     await once(ws, "close");
-    // The ticket is spent; a second attempt needs a new, explicit request.
+    await new Promise((resolve) => setTimeout(resolve, 200));
     await rejected(f.open(json.ticket));
     assert.equal(f.opened(), 1);
-    assert.ok(
-      f.received.every((p) => p[0] !== "autoretry"),
-      "no autoretry instruction",
-    );
+  },
+);
+
+test(
+  "session sizes are inclusive at 640x480 and 3840x2160 and refused one pixel beyond",
+  { skip: !posix },
+  async (t) => {
+    const f = await fixture(t);
+    for (const [width, height] of [
+      [640, 480],
+      [3840, 2160],
+      [640, 2160],
+      [3840, 480],
+    ])
+      assert.equal(
+        (await f.post({ targetId: "linux", width, height })).status,
+        201,
+        `${width}x${height}`,
+      );
+    for (const [width, height] of [
+      [639, 1080],
+      [3841, 1080],
+      [1920, 479],
+      [1920, 2161],
+      [1920.5, 1080],
+    ])
+      assert.equal(
+        (await f.post({ targetId: "linux", width, height })).status,
+        400,
+        `${width}x${height}`,
+      );
+    assert.equal(f.opened(), 0);
   },
 );
 
@@ -811,7 +918,12 @@ test(
       config: { allowedLogins: [LOGIN, "second@example.com"] },
     });
     const fresh = async (login = LOGIN) =>
-      (await f.post({ targetId: "linux" }, { login })).json.ticket;
+      (
+        await f.post(
+          { targetId: "linux", width: 1920, height: 1080 },
+          { login },
+        )
+      ).json.ticket;
     for (const options of [
       { origin: "https://evil.example" },
       { origin: "app://gome-remote" },
@@ -824,9 +936,18 @@ test(
     ])
       await rejected(f.open(await fresh(), options));
     const ticket = await fresh();
+    const lastMoment = await fresh();
+    now = 19_999;
+    const early = f.open(lastMoment);
+    await once(early, "open");
+    early.close();
     now = 20_000;
     await rejected(f.open(ticket));
-    assert.equal(f.opened(), 0);
+    assert.equal(
+      f.opened(),
+      1,
+      "only the ticket one millisecond before expiry opened",
+    );
     // A ticket survives a refused attempt only if the refusal happened before it was taken.
     now = 0;
     const good = f.open(await fresh());
