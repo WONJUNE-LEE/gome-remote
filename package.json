@@ -12,7 +12,7 @@
     "gateway": "node server/index.js",
     "test": "node --test test/*.test.js",
     "check": "tsc --noEmit",
-    "dist": "npm run build && electron-builder"
+    "dist": "npm run build && electron-builder --publish never"
   },
   "dependencies": {
     "ws": "8.22.0"

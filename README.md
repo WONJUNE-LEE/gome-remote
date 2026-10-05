@@ -114,8 +114,13 @@ routes stay untouched. The socket lives under `~/.local/state`, not `/tmp`, beca
 unit sets `PrivateTmp=true`. Enable lingering (`loginctl enable-linger $USER`) if the
 service must run without a login session.
 
-To run a candidate beside an older gateway, install the unit under another name with its
-own configuration, socket and Serve port, and remove it when done.
+If a 0.1.x gateway already runs on this host, do not follow the steps above as written:
+the unit name, the configuration path and the Serve port are the ones it uses, and
+copying the unit over it would replace the running service. Follow the parallel procedure
+in section 8 of [`docs/redesign-spec.md`](docs/redesign-spec.md) instead: a new unit name,
+a new configuration path and a new Serve port. The unit file hardcodes
+`WorkingDirectory=%h/remote` and `Environment=GOME_REMOTE_CONFIG=...`, so a copy for
+another checkout or configuration must change both lines.
 
 ### The Mac
 

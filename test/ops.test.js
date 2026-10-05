@@ -221,3 +221,21 @@ test(
     assert.equal((await stat(output)).mode & 0o777, 0o600);
   },
 );
+
+test("packaging never publishes, and CI smoke-tests the real Electron on Linux after the tests", async () => {
+  const pkg = JSON.parse(await readFile(new URL("package.json", root), "utf8"));
+  assert.match(pkg.scripts.dist, /electron-builder\b.*--publish never/);
+  const workflow = await readFile(
+    new URL(".github/workflows/build.yml", root),
+    "utf8",
+  );
+  const steps = workflow.split(/\n(?= {6}- )/);
+  const at = (needle) => steps.findIndex((step) => step.includes(needle));
+  const smoke = steps[at("--smoke-test")];
+  assert.ok(smoke, "a smoke test step exists");
+  assert.match(smoke, /if: runner\.os == 'Linux'/);
+  assert.match(smoke, /xvfb-run -a npx electron \. /);
+  assert.match(smoke, /--user-data-dir=/, "a throwaway data directory");
+  assert.ok(at("npm test") < at("--smoke-test"), "after npm test");
+  assert.ok(at("--smoke-test") < at("npm run dist"), "before packaging");
+});

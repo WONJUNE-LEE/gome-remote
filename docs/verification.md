@@ -2,7 +2,10 @@
 
 This file is public. Evidence recorded here uses no tailnet login, device name or tailnet
 IP; those stay in the owner's private handoff notes. Results for 0.1.x (the dedicated
-account design) are in git history at the tag `legacy-dedicated-account`.
+account design) are in git history at the tag `legacy-dedicated-account`. The
+implementation plan that preceded this tree was removed from it; it is in git history at
+commit `529fe56`. The specification, `docs/redesign-spec.md`, and the README are the
+documents.
 
 ## Automated checks
 
@@ -30,13 +33,20 @@ npm run build     # vite build
   survives; a confirmation mismatch, empty value or early EOF writes nothing; no secret
   travels in argv; the configuration path is the first argument, or comes from
   `GOME_REMOTE_CONFIG` or the default location when only the target ID is given; piped
-  input is refused; the replacement is atomic and leaves no temporary file; a wrong-mode
+  input is refused; on a fake terminal, raw mode wraps only the password and confirmation
+  prompts and is always restored, backspace deletes, arrow-key escape sequences are
+  ignored, and Ctrl-C and Ctrl-D cancel without writing; the 1024 and 256 character
+  limits and the 8-character note are tested on both sides of the boundary; the replacement is atomic and leaves no temporary file; a wrong-mode
   file is left untouched.
 - **Gateway (D3)**, `test/gateway.test.js`: allowed or refused login on every API route
   with the exact 403 text; static UI and health check open; Origin rules; client
   credentials refused with 400; 0.1.3 client behaviour; the target list has no address or
   secret; stored credentials are injected; tickets are bound to a login, single use and
-  20 s; WebSocket Origin and identity matrix; development login.
+  20 s (valid one millisecond before expiry); session sizes accepted at 640x480 and
+  3840x2160 and refused one pixel beyond; a guacd `error` at the `select` or `connect`
+  step reaches the browser, ends the tunnel, is dialed exactly once and spends the ticket
+  (the fixture fails like a real guacd); WebSocket Origin and identity matrix;
+  development login.
 - **Socket (D3)**, `test/listen.test.js`, `test/index.test.js`: socket 0600 in a 0700
   directory; an open directory refused; a regular file never removed; a live gateway never
   taken over; the stale socket left by SIGKILL replaced; clear refusal messages at
@@ -48,20 +58,34 @@ npm run build     # vite build
   `test/address.test.js`: address validation and storage; the legacy `vault.enc` deleted;
   window security flags; bridge calls accepted only from the gateway origin in the top
   frame; address-page channels only from the local page; navigation and new-window
-  blocking; an unreachable gateway lands on the address page; fullscreen and F11
-  serialization; native menu states.
+  blocking; an unreachable gateway lands on the address page; the address page's own
+  script is run against the URL `main.cjs` really loads (unreachable state, retry, a
+  rejected save without Electron's error prefix); showing the address page closes the
+  Remote menu and leaves fullscreen; `--smoke-test` checks the page and bridge and
+  cannot hang; fullscreen and F11 serialization; native menu states.
 - **UI (D6)**, `test/browser-api.test.js`, `test/tiles.test.js`,
-  `test/viewer-invariants.test.js`: same-origin requests without token or credentials;
-  error classification; the bridge version gate; browser fullscreen serialization; tile
-  states and labels; the cursor, overlay and in-flow toolbar rules, the palette and the
-  exact screen texts.
+  `test/viewer-flow.test.js`, `test/viewer-invariants.test.js`: same-origin requests
+  without token or credentials; error classification; the bridge version gate; browser
+  fullscreen serialization; tile states and labels; which screen each failure shows and
+  that a connection starts only from a click or the menu, never from an error, close or
+  state change (`src/flow.ts`, and `src/main.ts` itself run against a fake page and fake
+  Guacamole); the cursor, overlay and in-flow toolbar rules, the palette and the exact
+  screen texts (read from the source, as a fake page cannot show them).
 - **Public repository (D7)**, `test/public-hygiene.test.js`: scans the files tracked by git
   (`git ls-files`) and rejects any email other than `example.com` or `noreply`, any
   `*.ts.net` tailnet name other than the placeholders, any tailnet (CGNAT range) address
-  other than the documented placeholders, and any `/home/<name>/` other than `/home/user`.
-  A positive control proves the scanner flags a planted value.
+  other than the documented placeholders (also the tailnet IPv6 prefix `fd7a:115c:a1e0:`
+  except the documented placeholder), and any `/home/<name>/` other than `/home/user`.
+  A positive control proves the scanner flags a planted value. It cannot recognise a bare
+  MagicDNS device name, and it does not scan git history; checking history is a separate
+  one-off step before publishing.
 
-Not covered by automation: the real Electron window, the browser rendering, real
+On Linux CI also runs `xvfb-run -a npx electron . --no-sandbox --smoke-test --user-data-dir=...`:
+the real Electron opens the local address page with a throwaway data directory and no
+network, and exits 0 only if the page, its title and both preload bridges are as expected.
+`--no-sandbox` is needed because the runner's Electron lacks a configured setuid sandbox.
+
+Not covered by automation: the browser rendering on a real screen, real
 guacd with real GNOME Remote Desktop or macOS Screen Sharing. Those are the
 pre-tests and V-checks below.
 

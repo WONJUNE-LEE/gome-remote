@@ -30,13 +30,24 @@ const placeholderAddresses = new Set([
   "100.64.0.99",
   "100.127.255.254",
 ]);
+// The tailnet IPv6 prefix is fd7a:115c:a1e0::/48; this is the documented placeholder.
+const placeholderAddresses6 = new Set(["fd7a:115c:a1e0::1234"]);
 const placeholderHomes = new Set(["user"]);
+
+// What this scan cannot do, by design:
+// - A bare MagicDNS device name (for example "laptop" written without ".ts.net") has no
+//   shape to match, so only full names ending in .ts.net are caught here.
+// - Git history is not scanned. Checking history for identifiers is a separate one-off
+//   step (spec D7) that runs over `git log --all -p` before the repository is published.
 
 const emailPattern =
   /[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}/g;
 const tailnetHostPattern = /(?:[A-Za-z0-9-]+\.)*([A-Za-z0-9-]+)\.ts\.net\b/gi;
 const tailnetAddressPattern =
   /\b100\.(?:6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.\d{1,3}\.\d{1,3}\b/g;
+// A tailnet IPv6 address: the prefix followed by at least one group, so the bare prefix
+// that config.js checks for does not count.
+const tailnetAddress6Pattern = /fd7a:115c:a1e0(?::{1,2}[0-9a-f]{1,4})+/gi;
 const homePattern = /\/(?:home|Users)\/([A-Za-z0-9._-]+)\//g;
 
 export function findIdentifiers(text) {
@@ -55,6 +66,8 @@ export function findIdentifiers(text) {
     if (!placeholderTailnets.has(label.toLowerCase())) found.push(host);
   for (const [address] of text.matchAll(tailnetAddressPattern))
     if (!placeholderAddresses.has(address)) found.push(address);
+  for (const [address] of text.matchAll(tailnetAddress6Pattern))
+    if (!placeholderAddresses6.has(address.toLowerCase())) found.push(address);
   for (const [path, name] of text.matchAll(homePattern))
     if (!placeholderHomes.has(name)) found.push(path);
   return found;
@@ -92,17 +105,31 @@ test("the scanner flags values that are not placeholders (positive control)", ()
   const tailnetHost = ["host", "realnet", "ts", "net"].join(".");
   const login = ["someone", "gmail.com"].join("@");
   const home = ["", "home", "someone", "x"].join("/");
+  const tailnetIp6 = ["fd7a", "115c", "a1e0", "ab12", "34", "5678"].join(":");
   assert.deepEqual(
-    findIdentifiers(`${tailnetIp} ${tailnetHost} ${login} ${home}`),
-    [login, tailnetHost, tailnetIp, home.slice(0, -1)],
+    findIdentifiers(
+      `${tailnetIp} ${tailnetHost} ${login} ${home} ${tailnetIp6}`,
+    ),
+    [login, tailnetHost, tailnetIp, tailnetIp6, home.slice(0, -1)],
   );
+  // Case does not hide it, and a compressed form is still an address.
+  const prefix = ["fd7a", "115c", "a1e0"].join(":");
+  assert.deepEqual(
+    findIdentifiers(`${prefix.toUpperCase()}::AB12 ${prefix}::1`),
+    [`${prefix.toUpperCase()}::AB12`, `${prefix}::1`],
+  );
+});
+
+test("the bare tailnet IPv6 prefix, as server/config.js checks it, is not an address", () => {
+  assert.deepEqual(findIdentifiers('startsWith("fd7a:115c:a1e0:")'), []);
 });
 
 test("the scanner accepts the documented placeholders", () => {
   assert.deepEqual(
     findIdentifiers(
       "owner@example.com noreply@hapi.run 100.64.0.10 100.64.0.20 " +
-        "server.example.ts.net box.tail123.ts.net /home/user/remote 100.63.255.255",
+        "server.example.ts.net box.tail123.ts.net /home/user/remote 100.63.255.255 " +
+        "fd7a:115c:a1e0::1234 FD7A:115C:A1E0::1234 fd7a:115c:bad::1",
     ),
     [],
   );

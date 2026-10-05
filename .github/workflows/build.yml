@@ -22,6 +22,12 @@ jobs:
       - run: npm ci
       - run: npm test
       - run: npm run check
+      # The real Electron on the local address page: no network, a throwaway data
+      # directory, exit 0 only if the page and both bridges are as expected. The runner
+      # has no configured setuid sandbox, hence --no-sandbox for this check only.
+      - name: Electron smoke test
+        if: runner.os == 'Linux'
+        run: xvfb-run -a npx electron . --no-sandbox --smoke-test --user-data-dir="$RUNNER_TEMP/gome-remote-smoke"
       - run: npm run dist
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
