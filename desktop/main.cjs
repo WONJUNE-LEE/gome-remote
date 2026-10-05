@@ -12,6 +12,7 @@ const path = require("node:path");
 const { pathToFileURL } = require("node:url");
 const { AddressStore, gatewayOrigin } = require("./address.cjs");
 const smokeTest = process.argv.includes("--smoke-test");
+let smokeTimer;
 
 // The app is a thin window: it shows the gateway's own web page. The only local page is
 // setup.html, where the user types the server address.
@@ -109,12 +110,11 @@ app
   .whenReady()
   .then(async () => {
     // The smoke test must end by itself, with 0 or 1, whatever the page does.
-    const smokeTimer = smokeTest
-      ? setTimeout(() => {
-          console.error("Desktop smoke test timed out.");
-          app.exit(1);
-        }, 60_000)
-      : undefined;
+    if (smokeTest)
+      smokeTimer = setTimeout(() => {
+        console.error("Desktop smoke test timed out.");
+        app.exit(1);
+      }, 60_000);
     const userData = app.getPath("userData");
     // Versions before 0.2 kept the gateway token and desktop passwords here. The new
     // design never reads them, so remove the only remaining copy.
@@ -310,6 +310,7 @@ app
     }
   })
   .catch((error) => {
+    clearTimeout(smokeTimer);
     if (smokeTest) {
       console.error("Desktop smoke test failed:", error.message);
       app.exit(1);

@@ -49,7 +49,7 @@ async function desktop(
     logs = [],
     platform = "win32",
     argv = [],
-    page, // what executeJavaScript answers in the smoke test
+    page, // what executeJavaScript answers in the smoke test; "hang" never answers
   } = {},
   t,
 ) {
@@ -74,6 +74,7 @@ async function desktop(
   const notifications = [];
   const lifecycle = [];
   const scripts = [];
+  const timers = new Map();
   let fullscreen = false;
   let window;
   let menu;
@@ -90,6 +91,7 @@ async function desktop(
         send: (...args) => notifications.push(args),
         executeJavaScript: async (script) => {
           scripts.push(script);
+          if (page === "hang") return new Promise(() => {});
           if (page instanceof Error) throw page;
           return page;
         },
@@ -166,8 +168,15 @@ async function desktop(
     console: { ...console, error: (...args) => logs.push(args.join(" ")) },
     Promise,
     process: { argv, platform },
-    setTimeout,
-    clearTimeout,
+    // Timers are recorded, never run, so the test decides when the guard fires.
+    setTimeout: (callback, ms) => {
+      const id = timers.size + 1;
+      timers.set(id, { callback, ms, cleared: false });
+      return id;
+    },
+    clearTimeout: (id) => {
+      if (timers.has(id)) timers.get(id).cleared = true;
+    },
   });
   await ready.promise;
   await new Promise((resolve) => setImmediate(resolve));
@@ -182,6 +191,7 @@ async function desktop(
     loads,
     lifecycle,
     scripts,
+    timers,
     external,
     handlers,
     permissions,
@@ -962,6 +972,26 @@ test("--smoke-test exits 1 when the page or the bridge is not what the app promi
     const f = await desktop({ argv: ["--smoke-test"], page }, t);
     await settle();
     assert.deepEqual(f.lifecycle, [["exit", 1]], JSON.stringify(page));
+  }
+});
+
+test("--smoke-test cannot hang: a 60 s guard exits 1 and the guard is cleared when the check ends", async (t) => {
+  const hung = await desktop({ argv: ["--smoke-test"], page: "hang" }, t);
+  await settle();
+  assert.deepEqual(hung.lifecycle, []);
+  const [guard] = hung.timers.values();
+  assert.equal(hung.timers.size, 1);
+  assert.equal(guard.ms, 60_000);
+  guard.callback();
+  assert.deepEqual(hung.lifecycle, [["exit", 1]]);
+  for (const page of [goodPage, new Error("boom")]) {
+    const done = await desktop({ argv: ["--smoke-test"], page }, t);
+    await settle();
+    assert.equal(
+      [...done.timers.values()].every((timer) => timer.cleared),
+      true,
+      "no timer is left to keep the process alive",
+    );
   }
 });
 
