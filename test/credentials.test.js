@@ -7,6 +7,7 @@ import { join } from "node:path";
 import {
   CredentialStore,
   CredentialFileError,
+  MAX_CREDENTIAL_FILE_BYTES,
   credentialsFor,
   readCredentialFile,
 } from "../server/credentials.js";
@@ -228,5 +229,65 @@ test(
     assert.ok(outcome instanceof CredentialFileError);
     assert.match(outcome.message, /regular file/);
     assert.ok(outcome.message.includes(file));
+  },
+);
+
+test(
+  "value limits are inclusive: 1024 character passwords and 256 character usernames are accepted, one more is not",
+  { skip: !posix },
+  async (t) => {
+    const dir = await workdir(t);
+    const entry = (username, password) => ({
+      version: 1,
+      targets: {
+        mac: { ...(username === undefined ? {} : { username }), password },
+      },
+    });
+    const accepted = await readCredentialFile(
+      await write(
+        dir,
+        entry("u".repeat(256), "p".repeat(1024)),
+        0o600,
+        "ok.json",
+      ),
+    );
+    assert.equal(accepted.get("mac").password.length, 1024);
+    assert.equal(accepted.get("mac").username.length, 256);
+    await assert.rejects(
+      readCredentialFile(
+        await write(dir, entry(undefined, "p".repeat(1025)), 0o600, "pw.json"),
+      ),
+      /password of 1-1024/,
+    );
+    await assert.rejects(
+      readCredentialFile(
+        await write(dir, entry("u".repeat(257), "p"), 0o600, "user.json"),
+      ),
+      /username of 1-256/,
+    );
+  },
+);
+
+test(
+  "the credentials file size limit is inclusive and refuses the byte after it",
+  { skip: !posix },
+  async (t) => {
+    const dir = await workdir(t);
+    const body = JSON.stringify(valid);
+    const padded = (size) => body + " ".repeat(size - Buffer.byteLength(body));
+    const atLimit = await write(
+      dir,
+      padded(MAX_CREDENTIAL_FILE_BYTES),
+      0o600,
+      "at.json",
+    );
+    assert.equal((await readCredentialFile(atLimit)).size, 2);
+    const over = await write(
+      dir,
+      padded(MAX_CREDENTIAL_FILE_BYTES + 1),
+      0o600,
+      "over.json",
+    );
+    await assert.rejects(readCredentialFile(over), /larger than expected/);
   },
 );

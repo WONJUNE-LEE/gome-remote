@@ -25,12 +25,16 @@ const script = new URL("../scripts/set-credential.mjs", import.meta.url);
 async function setup(t) {
   const dir = await mkdtemp(join(tmpdir(), "gr-setcred-"));
   t.after(() => rm(dir, { recursive: true, force: true }));
-  const credentialsFile = join(dir, "state", "credentials.json");
+  // The gateway is Linux-only and its config accepts POSIX paths only, so the
+  // fixture never builds a config path with the host's separators on Windows.
+  const credentialsFile = posix
+    ? join(dir, "state", "credentials.json")
+    : "/home/user/.config/gome-remote/credentials.json";
   const configPath = join(dir, "gateway.json");
   await writeFile(
     configPath,
     JSON.stringify({
-      socketPath: join(dir, "g.sock"),
+      socketPath: "/home/user/.local/state/gome-remote/gateway.sock",
       publicOrigin: "http://127.0.0.1:38991",
       allowedLogins: ["owner@example.com"],
       credentialsFile,
@@ -356,5 +360,195 @@ test(
     assert.equal(result.status, 2, "must not exit 0 without doing anything");
     assert.match(result.stderr, /interactive terminal/);
     await assert.rejects(stat(credentialsFile), { code: "ENOENT" });
+  },
+);
+
+// A fake terminal: isTTY, a setRawMode spy, and one timeline for what the program
+// prints and when it switches raw mode, so the order can be asserted.
+async function runTty(argv, keystrokes) {
+  const stdin = new PassThrough();
+  stdin.isTTY = true;
+  const timeline = [];
+  stdin.setRawMode = (on) => {
+    timeline.push(`raw:${on}`);
+    return stdin;
+  };
+  const stdout = new PassThrough().on("data", (c) =>
+    timeline.push(`out:${String(c)}`),
+  );
+  const err = [];
+  const stderr = new PassThrough().on("data", (c) => err.push(String(c)));
+  const done = main({ argv, stdin, stdout, stderr, requireTty: true });
+  for (const chunk of keystrokes) {
+    stdin.write(chunk);
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+  stdin.end();
+  const code = await done;
+  return { code, timeline, err: err.join("") };
+}
+
+test(
+  "on a terminal raw mode wraps exactly the password and confirmation prompts, never the username",
+  { skip: !posix },
+  async (t) => {
+    const { configPath, credentialsFile } = await setup(t);
+    const result = await runTty(
+      [configPath, "ubuntu-server"],
+      ["me\n", "pw-secret\r", "pw-secret\r"],
+    );
+    assert.equal(result.code, 0, result.err);
+    const at = (text) =>
+      result.timeline.findIndex(
+        (e) => e.startsWith("out:") && e.includes(text),
+      );
+    const user = at("사용자 이름");
+    const password = at("비밀번호: ");
+    const confirm = at("비밀번호 확인");
+    assert.ok(user >= 0 && user < password && password < confirm);
+    assert.deepEqual(
+      result.timeline.filter((e) => e.startsWith("raw:")),
+      ["raw:true", "raw:false", "raw:true", "raw:false"],
+    );
+    assert.ok(
+      !result.timeline.slice(0, password).some((e) => e.startsWith("raw:")),
+      "the username is typed in the normal, echoing mode",
+    );
+    // Each raw:true follows its own prompt and is restored before the next output.
+    assert.equal(result.timeline[password + 1], "raw:true");
+    assert.equal(result.timeline[password + 2], "raw:false");
+    assert.equal(result.timeline[password + 3], "out:\n");
+    assert.equal(result.timeline[confirm + 1], "raw:true");
+    assert.equal(result.timeline[confirm + 2], "raw:false");
+    assert.ok(
+      !result.timeline.join("").includes("pw-secret"),
+      "the password is never written back",
+    );
+    assert.equal(
+      (await readCredentialFile(credentialsFile)).get("ubuntu-server").password,
+      "pw-secret",
+    );
+  },
+);
+
+test(
+  "in raw mode backspace and delete remove the last character and arrow-key sequences are ignored",
+  { skip: !posix },
+  async (t) => {
+    const { configPath, credentialsFile } = await setup(t);
+    const result = await runTty(
+      [configPath, "ubuntu-server"],
+      [
+        "me\n",
+        // abc, delete c, d => abd; the arrow keys must not leave "[A" or "[1;5D" behind
+        "abc\x7fd\x1b[A\x1b[B\x1b[1;5D\x1bOP\r",
+        "abXX\b\x7fd\x1b[C\r",
+      ],
+    );
+    assert.equal(result.code, 0, result.err);
+    assert.equal(
+      (await readCredentialFile(credentialsFile)).get("ubuntu-server").password,
+      "abd",
+    );
+  },
+);
+
+test(
+  "Ctrl-C and Ctrl-D cancel at any prompt with a failure status, restore the terminal and write nothing",
+  { skip: !posix },
+  async (t) => {
+    const { configPath, credentialsFile } = await setup(t);
+    for (const key of ["\x03", "\x04"]) {
+      for (const keys of [
+        [`me${key}`],
+        ["me\n", `pass${key}`],
+        ["me\n", "pass\n", `pass${key}`],
+      ]) {
+        const result = await runTty([configPath, "ubuntu-server"], keys);
+        const label = JSON.stringify(keys);
+        assert.notEqual(result.code, 0, label);
+        assert.match(result.err, /Cancelled/, label);
+        const raws = result.timeline.filter((e) => e.startsWith("raw:"));
+        assert.equal(raws.length % 2, 0, `raw mode is left restored: ${label}`);
+        assert.ok(raws.length === 0 || raws.at(-1) === "raw:false", label);
+        assert.ok(!result.timeline.join("").includes("pass"), label);
+        await assert.rejects(stat(credentialsFile), { code: "ENOENT" }, label);
+      }
+    }
+  },
+);
+
+test(
+  "the username is trimmed and the copy says only the password is hidden",
+  { skip: !posix },
+  async (t) => {
+    const { configPath, credentialsFile } = await setup(t);
+    const result = await run(
+      [configPath, "ubuntu-server"],
+      ["  gome \n", "pw\n", "pw\n"],
+    );
+    assert.equal(result.code, 0, result.err);
+    assert.match(result.out, /비밀번호는 화면에 표시되지 않고/);
+    assert.deepEqual(
+      (await readCredentialFile(credentialsFile)).get("ubuntu-server"),
+      { username: "gome", password: "pw" },
+    );
+  },
+);
+
+test(
+  "length limits are inclusive: 1024/256 characters are stored, 1025/257 are refused",
+  { skip: !posix },
+  async (t) => {
+    const { configPath, credentialsFile } = await setup(t);
+    const store = async () =>
+      (await readCredentialFile(credentialsFile)).get("ubuntu-server");
+    const pw = (n) => `${"p".repeat(n)}\n`;
+    const ok = await run(
+      [configPath, "ubuntu-server"],
+      [`${"u".repeat(256)}\n`, pw(1024), pw(1024)],
+    );
+    assert.equal(ok.code, 0, ok.err);
+    assert.equal((await store()).password.length, 1024);
+    assert.equal((await store()).username.length, 256);
+
+    const longPassword = await run(
+      [configPath, "ubuntu-server"],
+      ["other\n", pw(1025), pw(1025)],
+    );
+    assert.notEqual(longPassword.code, 0);
+    assert.match(longPassword.err, /1-1024/);
+    const longUser = await run(
+      [configPath, "ubuntu-server"],
+      [`${"u".repeat(257)}\n`, "pw\n", "pw\n"],
+    );
+    assert.notEqual(longUser.code, 0);
+    assert.match(longUser.err, /256/);
+    assert.equal(
+      (await store()).username,
+      "u".repeat(256),
+      "kept the old entry",
+    );
+    assert.equal((await store()).password.length, 1024);
+  },
+);
+
+test(
+  "Apple's 8 character note appears from the ninth character on",
+  { skip: !posix },
+  async (t) => {
+    const { configPath } = await setup(t);
+    const eight = await run(
+      [configPath, "mac"],
+      ["\n", "12345678\n", "12345678\n"],
+    );
+    assert.equal(eight.code, 0, eight.err);
+    assert.doesNotMatch(eight.out, /8자/);
+    const nine = await run(
+      [configPath, "mac"],
+      ["\n", "123456789\n", "123456789\n"],
+    );
+    assert.equal(nine.code, 0, nine.err);
+    assert.match(nine.out, /8자/);
   },
 );

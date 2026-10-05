@@ -56,12 +56,33 @@ class Prompter {
     if (raw) this.input.setRawMode(true);
     this.input.resume();
     const typed = [];
+    // In raw mode the terminal sends escape sequences for keys such as the arrows
+    // ("\x1b[A"); they are skipped as a whole instead of leaving "[A" in the password.
+    let escape; // undefined | "start" | "csi" | "ss3"
     try {
       for (;;) {
         const char = await this.#next();
         if (char === undefined) {
           if (typed.length) break; // final line without a newline
           throw new Error("Input ended before a value was entered.");
+        }
+        if (raw && escape) {
+          if (escape === "start") {
+            escape = char === "[" ? "csi" : char === "O" ? "ss3" : undefined;
+            if (escape) continue;
+          } else if (escape === "csi") {
+            // Parameter and intermediate bytes continue the sequence; a final byte ends it.
+            if (char >= " " && char <= "?") continue;
+            escape = undefined;
+            if (char >= "@" && char <= "~") continue;
+          } else {
+            escape = undefined; // SS3 carries exactly one more character
+            continue;
+          }
+        }
+        if (raw && char === "\x1b") {
+          escape = "start";
+          continue;
         }
         if (char === "\n" && this.#skipLineFeed) {
           this.#skipLineFeed = false;
@@ -189,7 +210,7 @@ export async function main({
   const prompter = new Prompter(stdin, stdout);
   try {
     stdout.write(
-      `${target.name} (${target.id}): 값은 화면에 표시되지 않고 ${config.credentialsFile} 에만 저장됩니다.\n`,
+      `${target.name} (${target.id}): 비밀번호는 화면에 표시되지 않고 ${config.credentialsFile} 에만 저장됩니다.\n`,
     );
     // RDP needs an account name. VNC takes one when the server uses Apple Remote
     // Desktop authentication (macOS Screen Sharing); empty means password only.
@@ -199,7 +220,7 @@ export async function main({
         : "사용자 이름 (macOS 계정 이름, 비밀번호만 쓰면 비워 두세요): ",
       { secret: false },
     );
-    const username = answer.trim() ? answer : undefined;
+    const username = answer.trim() ? answer.trim() : undefined;
     if (username === undefined && target.protocol === "rdp")
       return fail("사용자 이름이 비어 있어 저장하지 않았습니다.");
     const password = await prompter.ask(

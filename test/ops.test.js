@@ -1,7 +1,14 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import {
+  mkdtemp,
+  readFile,
+  rm,
+  stat,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -146,7 +153,9 @@ test(
   "without a config path the command writes the default one set-credential reads",
   { skip: !posix },
   async (t) => {
-    const home = await mkdtemp(join(tmpdir(), "gr-home-"));
+    // A short home: the default socket lives below it and sun_path allows about 100
+    // bytes, which the long per-user temp directory on macOS would exceed.
+    const home = await mkdtemp(join(posix ? "/tmp" : tmpdir(), "gr-home-"));
     t.after(() => rm(home, { recursive: true, force: true }));
     const args = [
       script,
@@ -177,5 +186,38 @@ test(
     assert.deepEqual((await loadConfig(custom)).allowedLogins, [
       "owner@example.com",
     ]);
+  },
+);
+
+test(
+  "running the command through a symbolic link still creates the config",
+  { skip: !posix },
+  async (t) => {
+    const dir = await mkdtemp(join(tmpdir(), "gr-init-link-"));
+    t.after(() => rm(dir, { recursive: true, force: true }));
+    const link = join(dir, "init-link.mjs");
+    await symlink(script, link);
+    const output = join(dir, "conf", "gateway.json");
+    const result = spawnSync(
+      process.execPath,
+      [
+        link,
+        output,
+        "--origin",
+        "https://gateway.example.ts.net:8450",
+        "--login",
+        "owner@example.com",
+        "--targets",
+        fileURLToPath(new URL("deploy/targets.example.json", root)),
+        "--socket",
+        join(dir, "run", "g.sock"),
+        "--credentials",
+        join(dir, "conf", "credentials.json"),
+      ],
+      { encoding: "utf8" },
+    );
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /Created/);
+    assert.equal((await stat(output)).mode & 0o777, 0o600);
   },
 );
