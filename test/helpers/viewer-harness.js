@@ -174,6 +174,9 @@ export async function viewer({ appMode = false, targets, fetchHandler } = {}) {
   };
   const fetch = async (path, init = {}) => {
     fetches.push({ path, method: init.method ?? "GET" });
+    // A page that keeps reconnecting by itself would loop here for ever: stop it
+    // after a generous number of requests so the test fails instead of hanging.
+    if (fetches.length > 40) return new Promise(() => {});
     return (fetchHandler ?? defaultFetch)(path, init, defaultFetch);
   };
 
