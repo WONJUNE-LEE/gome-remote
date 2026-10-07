@@ -64,7 +64,8 @@ npm run build     # vite build
   Remote menu and leaves fullscreen; `--smoke-test` checks the page and bridge and
   cannot hang; fullscreen and F11 serialization; native menu states.
 - **UI (D6)**, `test/browser-api.test.js`, `test/tiles.test.js`,
-  `test/viewer-flow.test.js`, `test/viewer-invariants.test.js`: same-origin requests
+  `test/viewer-flow.test.js`, `test/viewer-invariants.test.js`,
+  `test/resolution.test.js` (자동 해상도, 구 앱 호환): same-origin requests
   without token or credentials; error classification; the bridge version gate; browser
   fullscreen serialization; tile states and labels; which screen each failure shows and
   that a connection starts only from a click or the menu, never from an error, close or

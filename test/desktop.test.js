@@ -980,7 +980,7 @@ test("showing the address page while windowed does not touch fullscreen", async 
 const goodPage = {
   page: SETUP,
   title: "Gome Remote",
-  bridgeVersion: 1,
+  bridgeVersion: 2,
   setup: "function",
 };
 test("--smoke-test shows only the address page, never the saved gateway, and quits with success", async (t) => {
@@ -998,7 +998,8 @@ test("--smoke-test shows only the address page, never the saved gateway, and qui
 
 test("--smoke-test exits 1 when the page or the bridge is not what the app promises, or the check itself fails", async (t) => {
   for (const page of [
-    { ...goodPage, bridgeVersion: 2 },
+    { ...goodPage, bridgeVersion: 1 },
+    { ...goodPage, bridgeVersion: 3 },
     { ...goodPage, bridgeVersion: undefined },
     { ...goodPage, setup: "undefined" },
     { ...goodPage, title: "" },

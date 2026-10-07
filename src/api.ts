@@ -23,6 +23,9 @@ export class ApiError extends Error {
 // including an older app without a version, is treated as an ordinary browser.
 export const appMode =
   (window.desktop?.bridgeVersion ?? 0) >= REQUIRED_BRIDGE_VERSION;
+// An app with bridge version 1 rejects the "auto" resolution in viewerState, so only
+// browsers and newer apps may offer it.
+export const autoResolution = !appMode || window.desktop!.bridgeVersion! >= 2;
 
 async function request<T>(path: string, input?: unknown): Promise<T> {
   let response: Response;

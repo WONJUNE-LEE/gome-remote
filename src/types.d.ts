@@ -23,8 +23,9 @@ interface ViewerState {
   protocol: "rdp" | "vnc" | null;
   resolution: string;
 }
-// Functions the desktop app contributes to the page it shows. Version 1 is the first
-// and only version so far; later versions only add members.
+// Functions the desktop app contributes to the page it shows. Version 1 is the first;
+// later versions only add members. Version 2 adds the "auto" resolution to viewerState
+// and the resolution:auto menu action.
 interface NativeBridge {
   fullscreen(enabled: boolean): Promise<void>;
   fullscreenState(): Promise<boolean>;

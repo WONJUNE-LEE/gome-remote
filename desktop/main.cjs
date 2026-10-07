@@ -304,7 +304,7 @@ app
       if (
         state.page !== setupPage ||
         state.title !== "Gome Remote" ||
-        state.bridgeVersion !== 1 ||
+        state.bridgeVersion !== 2 ||
         state.setup !== "function"
       )
         throw new Error("The address page or the bridge is not as expected.");

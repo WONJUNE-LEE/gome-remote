@@ -155,7 +155,7 @@ Open the same address in a browser for the identical screen.
 ## Using it
 
 - Click a tile. While connecting, the window shows a spinner and "<name>에 연결하는 중".
-- In the app, use the native **원격** menu: 서버 목록, 해상도 (RDP only; 자동 by default), 텍스트 입력,
+- In the app, use the native **원격** menu: 서버 목록, 해상도 (RDP only; 자동 by default; apps older than bridge version 2 offer fixed sizes only), 텍스트 입력,
   다시 연결, 연결 종료. F11 and **View → 전체 화면** toggle full screen locally; Escape
   stays a remote key.
 - In a browser the same controls sit in a bar above the picture, never over it.

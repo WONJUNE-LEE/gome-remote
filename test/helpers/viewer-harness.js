@@ -38,6 +38,11 @@ class FakeElement {
     for (const name of String(value).split(/\s+/).filter(Boolean))
       this.classes.add(name);
   }
+  // HTMLSelectElement.remove(index): the select falls back to its first option.
+  remove(index) {
+    const [gone] = this.options.splice(index, 1);
+    if (gone?.value === this.value) this.value = this.options[0]?.value ?? "";
+  }
   set innerHTML(html) {
     this.children = [];
     for (const match of String(html).matchAll(/class="([^"]+)"/g))
@@ -88,7 +93,17 @@ class FakeElement {
   }
 }
 
-export async function viewer({ appMode = false, targets, fetchHandler } = {}) {
+// What a version 1 app accepts in viewerState (desktop/main.cjs of that release).
+const BRIDGE_1_RESOLUTIONS = ["1440x900", "1920x1080", "2560x1440"];
+
+// `bridgeVersion` only matters in app mode. Version 1 mirrors the old app: it throws
+// on any resolution but the fixed sizes.
+export async function viewer({
+  appMode = false,
+  bridgeVersion = 2,
+  targets,
+  fetchHandler,
+} = {}) {
   const fetches = [];
   const elements = new Map();
   const dataClose = [];
@@ -145,12 +160,17 @@ export async function viewer({ appMode = false, targets, fetchHandler } = {}) {
   let actionListener;
   const desktop = appMode
     ? {
-        bridgeVersion: 1,
+        bridgeVersion,
         fullscreen: async () => {},
         fullscreenState: async () => false,
         onFullscreenChange: () => () => {},
         viewerState: async (state) => {
           bridgeCalls.viewerState.push(state);
+          if (
+            bridgeVersion < 2 &&
+            !BRIDGE_1_RESOLUTIONS.includes(state.resolution)
+          )
+            throw new Error("Invalid viewer state.");
         },
         onViewerAction: (callback) => {
           actionListener = callback;

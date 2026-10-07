@@ -408,6 +408,43 @@ test("the browser select does the same as the menu", async () => {
   assert.deepEqual(plain(v.clients[0].sizes).at(-1), [1280, 720]);
 });
 
+test("an app with bridge version 1 gets no auto: the picker starts on 1440x900 and the app never rejects it", async () => {
+  const v = await connected({ appMode: true, bridgeVersion: 1 });
+  const select = v.el("resolution");
+  assert.deepEqual(
+    select.options.map((o) => o.value),
+    ["1440x900", "1920x1080", "2560x1440"],
+  );
+  assert.equal(select.value, "1440x900");
+  assert.deepEqual(plain(v.sessionRequests()), [
+    { targetId: "linux", width: 1440, height: 900 },
+  ]);
+  v.action("resolution:auto");
+  v.action("resolution:1920x1080");
+  select.value = "2560x1440";
+  select.dispatchEvent(new Event("change"));
+  assert.deepEqual(plain(v.clients[0].sizes), [
+    [1920, 1080],
+    [2560, 1440],
+  ]);
+  v.resizeViewport(1000, 700);
+  v.advance(1000);
+  assert.equal(v.clients[0].sizes.length, 2, "the window size is not followed");
+  assert.ok(v.bridgeCalls.viewerState.length > 0);
+  for (const state of v.bridgeCalls.viewerState)
+    assert.match(state.resolution, /^\d+x\d+$/);
+  await v.settle();
+  assert.equal(v.el("viewer-error").open, false, "no menu error dialog");
+});
+
+test("an app with bridge version 2 starts on auto and tells the menu so", async () => {
+  const v = await connected({ appMode: true, bridgeVersion: 2 });
+  assert.equal(v.el("resolution").value, "auto");
+  assert.equal(v.bridgeCalls.viewerState.at(-1).resolution, "auto");
+  await v.settle();
+  assert.equal(v.el("viewer-error").open, false);
+});
+
 test("a reconnect measures the window again, and a fixed choice keeps its size", async () => {
   const v = await connected({ appMode: true });
   v.clients[0].onstatechange(5);

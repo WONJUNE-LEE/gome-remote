@@ -2,10 +2,13 @@ const { contextBridge, ipcRenderer } = require("electron");
 
 // Contract for pages served by the gateway. It only ever grows: existing functions keep
 // their meaning, and a page that needs a newer bridge falls back to browser mode.
+// Version 2 adds "auto" as a viewerState resolution and the resolution:auto menu action;
+// a version 1 app rejects any resolution but the three fixed sizes, so the page offers
+// "auto" only to version 2 or later.
 // The main process answers these calls only while the window shows the configured
 // gateway origin, so exposing them here grants nothing to any other page.
 const bridge = {
-  bridgeVersion: 1,
+  bridgeVersion: 2,
   fullscreen: (enabled) => ipcRenderer.invoke("remote:fullscreen", enabled),
   fullscreenState: () => ipcRenderer.invoke("remote:fullscreen-state"),
   viewerState: (state) => ipcRenderer.invoke("remote:viewer-state", state),

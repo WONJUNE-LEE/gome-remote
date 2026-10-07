@@ -1,5 +1,5 @@
 import Guacamole from "../vendor/guacamole.js";
-import { ApiError, api, appMode } from "./api";
+import { ApiError, api, appMode, autoResolution } from "./api";
 import { connectFailure, createSessionFlow, errorScreen } from "./flow";
 import { createResolution, sizeFor } from "./resolution";
 import {
@@ -90,6 +90,14 @@ const resolution = createResolution({
 });
 let fullscreen = false;
 document.body.classList.toggle("app-mode", appMode);
+// Apps with bridge version 1 reject "auto" in viewerState. Without it the select starts
+// on 1440x900, as it did before "auto" existed.
+if (!autoResolution) {
+  const select = el<HTMLSelectElement>("resolution");
+  select.remove(
+    Array.from(select.options).findIndex((o) => o.value === "auto"),
+  );
+}
 el("menu-address").hidden = !appMode;
 el("state-address").hidden = !appMode;
 

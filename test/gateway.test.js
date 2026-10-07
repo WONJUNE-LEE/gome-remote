@@ -11,6 +11,7 @@ import { createGateway, Tickets } from "../server/gateway.js";
 import { validateConfig } from "../server/config.js";
 import { CredentialStore } from "../server/credentials.js";
 import { listenOnSocket } from "../server/listen.js";
+import { loadTs } from "./helpers/load-ts.js";
 
 // The gateway listens on a unix socket, which Windows does not support the same way.
 const posix = process.platform !== "win32";
@@ -974,6 +975,36 @@ test(
     await new Promise((resolve) => setTimeout(resolve, 200));
     await rejected(f.open(json.ticket));
     assert.equal(f.opened(), 1);
+  },
+);
+
+test(
+  "the page's clamp limits (src/resolution.ts) are exactly what the gateway accepts",
+  { skip: !posix },
+  async (t) => {
+    const { LIMITS } = await loadTs("resolution.ts");
+    const f = await fixture(t);
+    const { minWidth, maxWidth, minHeight, maxHeight } = LIMITS;
+    for (const [width, height] of [
+      [minWidth, minHeight],
+      [maxWidth, maxHeight],
+    ])
+      assert.equal(
+        (await f.post({ targetId: "linux", width, height })).status,
+        201,
+        `${width}x${height}`,
+      );
+    for (const [width, height] of [
+      [minWidth - 1, minHeight],
+      [maxWidth + 1, maxHeight],
+      [minWidth, minHeight - 1],
+      [maxWidth, maxHeight + 1],
+    ])
+      assert.equal(
+        (await f.post({ targetId: "linux", width, height })).status,
+        400,
+        `${width}x${height}`,
+      );
   },
 );
 
