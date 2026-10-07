@@ -1,0 +1,12 @@
+node_modules/
+dist/
+release/
+playwright-report/
+test-results/
+.env*
+!.env.example
+config.local.json
+*.log
+.DS_Store
+output/
+.playwright-cli/

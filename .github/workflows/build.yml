@@ -1,0 +1,42 @@
+name: Verify and package
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  package:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+      - run: npm ci
+      - run: npm test
+      - run: npm run check
+      # The real Electron on the local address page: no network, a throwaway data
+      # directory, exit 0 only if the page and both bridges are as expected. The runner
+      # has no configured setuid sandbox, hence --no-sandbox for this check only.
+      - name: Electron smoke test
+        if: runner.os == 'Linux'
+        run: xvfb-run -a npx electron . --no-sandbox --smoke-test --user-data-dir="$RUNNER_TEMP/gome-remote-smoke"
+      - run: npm run dist
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: gome-remote-${{ matrix.os }}
+          path: |
+            release/*.dmg
+            release/*.zip
+            release/*.exe
+            release/*.AppImage
+          if-no-files-found: error
