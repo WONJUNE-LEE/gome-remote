@@ -2,6 +2,7 @@
 pub mod capture;
 pub mod encoder;
 pub mod ffi;
+pub mod inject;
 pub mod pipeline;
 pub mod system;
 pub mod wake;
