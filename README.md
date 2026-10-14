@@ -110,8 +110,13 @@ config path first to use another file.
 ```sh
 node scripts/set-credential.mjs ubuntu-server        # system Remote Login user name + password
 node scripts/set-credential.mjs mac-vnc              # macOS account name + password (Mac (VNC))
-node scripts/set-credential.mjs mac --agent-token    # the token the Mac's install.sh showed
+node scripts/set-credential.mjs <gateway.json> mac --agent-token    # the token the Mac's install.sh showed
 ```
+
+Always give the config path with `--agent-token`: without it the command writes into the
+default configuration's credentials, and during the parallel rollout (section 9 of
+[`docs/mac-agent-spec.md`](docs/mac-agent-spec.md)) the file you mean is the candidate's
+`gateway.json`, not the running gateway's.
 
 A target without stored credentials shows as 설정 필요. The gateway re-reads the file on
 every request, so no restart is needed after `set-credential`. The gateway refuses to
@@ -196,9 +201,10 @@ Privacy & Security allow `gome-remote-agent` under **Screen & System Audio Recor
 under **Accessibility**, then restart it with
 `launchctl kickstart -k gui/$(id -u)/net.gome.remote-agent` (macOS only applies a new
 permission to a program that starts afterwards). On the gateway server run
-`node scripts/set-credential.mjs mac --agent-token` and paste the token the installer
-showed (it is shown once; it stays in `~/Library/Application Support/Gome Remote
-Agent/token`). In Korean Mac settings, the 한/영 key needs **System Settings > Keyboard >
+`node scripts/set-credential.mjs <gateway.json> mac --agent-token` (the path of the gateway
+configuration you are setting up; during the parallel rollout that is the candidate's
+`gateway.json`) and paste the token the installer showed (it is shown once; it stays in
+`~/Library/Application Support/Gome Remote Agent/token`). In Korean Mac settings, the 한/영 key needs **System Settings > Keyboard >
 Input Sources > Use the Caps Lock key to switch to and from ABC** to be on: the Windows
 Hangul key is sent as one Caps Lock press.
 
@@ -289,7 +295,8 @@ code signing, auto-update, unattended Mac login after a FileVault reboot.
   agent tile cannot be opened while the screen is locked. **권한 필요(의심)**: the screen
   returned only black pictures for a few seconds; the tile still opens, and if the picture
   stays black the permission is the first thing to check. After a token change on the Mac
-  (delete `token` and run `install.sh`), run `set-credential <id> --agent-token` again; the
+  (delete `token` and run `install.sh`), run
+  `node scripts/set-credential.mjs <gateway.json> <id> --agent-token` again; the
   gateway log says when a token was refused ("did not accept the gateway token").
 - **Startup refused?** The log says why (`journalctl --user -u gome-remote-gateway`):
   an empty `allowedLogins`, a legacy `token` field, a credentials file whose mode is not

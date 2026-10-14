@@ -165,7 +165,11 @@ test(
     assert.ok(r.stdout.includes(token), "the token is shown once, at the end");
     assert.match(r.stdout, /Screen & System Audio Recording/);
     assert.match(r.stdout, /Accessibility/);
-    assert.match(r.stdout, /set-credential\.mjs <target-id> --agent-token/);
+    assert.match(
+      r.stdout,
+      /set-credential\.mjs <gateway\.json> <target-id> --agent-token/,
+    );
+    assert.match(r.stdout, /parallel rollout.*candidate/is);
     const plist = await readFile(l.paths.plist, "utf8");
     assert.match(
       plist,

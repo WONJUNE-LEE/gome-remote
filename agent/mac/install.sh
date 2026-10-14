@@ -340,7 +340,9 @@ Next steps (first installation):
   2. Restart the agent so it sees the permissions:
        launchctl kickstart -k $DOMAIN/$LABEL
   3. On the gateway server run:
-       node scripts/set-credential.mjs <target-id> --agent-token
+       node scripts/set-credential.mjs <gateway.json> <target-id> --agent-token
+     (<gateway.json> is the configuration of the gateway you are setting up; during the
+     parallel rollout it is the candidate's gateway.json, not the running gateway's)
      and paste this token (it is shown only now; it stays in $TOKEN_FILE):
 
 $(cat "$TOKEN_FILE")

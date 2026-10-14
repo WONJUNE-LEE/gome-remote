@@ -91,6 +91,24 @@ test("the README documents the agent: install, permissions, token, the three set
   assert.ok(!/legacy-hidden|TODO|TBD/.test(readme));
 });
 
+// Final review 5: without a config path the command targets the default (production) config,
+// which during the parallel rollout is the wrong file.
+test("every --agent-token command in the README and the installer names the config path", async () => {
+  for (const file of ["README.md", "agent/mac/install.sh"]) {
+    const text = await read(file);
+    const commands = text.match(/set-credential[^\n`]*--agent-token/g) ?? [];
+    assert.ok(commands.length >= 1, `${file}: ${commands.length} commands`);
+    for (const command of commands)
+      assert.match(
+        command,
+        /set-credential(\.mjs)?\s+(<gateway\.json>|\.\/\S+\.json|\S+gateway\.json)\s+\S+\s+--agent-token/,
+        `${file}: ${command}`,
+      );
+  }
+  const readme = await read("README.md");
+  assert.match(readme, /parallel rollout[^]*candidate[^]*gateway\.json/i);
+});
+
 test("verification.md records the automated checks of the agent and the VNC route evidence without identifiers", async () => {
   const text = await read("docs/verification.md");
   for (const needle of [
