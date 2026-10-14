@@ -87,6 +87,34 @@ mod tests {
     }
 
     #[test]
+    fn a_step_of_exactly_ten_percent_is_applied_and_one_hair_under_is_not() {
+        let at_8_5m = || {
+            let mut c = BitrateController::new(12_000_000);
+            assert_eq!(c.on_estimate(10_000_000), Some(8_500_000));
+            c
+        };
+        // 8.5 Mbps * 1.1 = 9.35 Mbps and * 0.9 = 7.65 Mbps: exactly the smallest step worth taking.
+        assert_eq!(at_8_5m().on_estimate(11_000_001), Some(9_350_000), "up by exactly 10 %");
+        assert_eq!(at_8_5m().on_estimate(9_000_001), Some(7_650_000), "down by exactly 10 %");
+        assert_eq!(at_8_5m().on_estimate(10_999_999), None, "just under 10 % up");
+        assert_eq!(at_8_5m().on_estimate(9_000_002), None, "just under 10 % down");
+    }
+
+    #[test]
+    fn a_small_step_that_reaches_the_floor_or_the_ceiling_is_still_applied() {
+        // 2.1 Mbps to the 2 Mbps floor is under 5 %, but the floor is where the rate must end up.
+        let mut c = BitrateController::new(2_100_000);
+        assert_eq!(c.current(), 2_100_000);
+        assert_eq!(c.on_estimate(500_000), Some(FLOOR_BPS));
+        // 11.2 Mbps to the 12 Mbps ceiling is about 7 %: same.
+        let mut c = BitrateController::new(12_000_000);
+        assert_eq!(c.on_estimate(13_176_471), Some(11_200_000));
+        assert_eq!(c.on_estimate(100_000_000), Some(12_000_000));
+        // And a small step that stops short of either is not.
+        assert_eq!(c.on_estimate(13_000_000), None, "11.05 Mbps is not worth a reconfiguration from 12");
+    }
+
+    #[test]
     fn a_smaller_stream_lowers_the_ceiling_and_the_current_rate() {
         let mut c = BitrateController::new(20_000_000);
         c.on_estimate(60_000_000);

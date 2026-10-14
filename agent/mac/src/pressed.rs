@@ -184,6 +184,32 @@ mod tests {
     }
 
     #[test]
+    fn a_click_exactly_at_the_window_or_the_slop_still_counts_and_one_hair_past_either_does_not() {
+        let t0 = Instant::now();
+        let mut c = ClickCounter::default();
+        c.on_down(Button::Left, t0, 0.0, 0.0);
+        assert_eq!(c.on_down(Button::Left, t0 + ClickCounter::WINDOW, 0.0, 0.0), 2, "exactly the window");
+        let t1 = t0 + Duration::from_secs(5);
+        c.on_down(Button::Left, t1, 0.0, 0.0);
+        let just_late = ClickCounter::WINDOW + Duration::from_nanos(1);
+        assert_eq!(c.on_down(Button::Left, t1 + just_late, 0.0, 0.0), 1, "a nanosecond past it");
+        // Positions are chosen so that the distance is exactly SLOP in floating point.
+        let t2 = t1 + Duration::from_secs(5);
+        c.on_down(Button::Left, t2, 0.0, 0.0);
+        assert_eq!(c.on_down(Button::Left, t2 + Duration::from_millis(10), ClickCounter::SLOP, 0.0), 2, "x at SLOP");
+        let t3 = t2 + Duration::from_secs(5);
+        c.on_down(Button::Left, t3, 0.0, 0.0);
+        assert_eq!(c.on_down(Button::Left, t3 + Duration::from_millis(10), 0.0, ClickCounter::SLOP), 2, "y at SLOP");
+        let t4 = t3 + Duration::from_secs(5);
+        c.on_down(Button::Left, t4, 0.0, 0.0);
+        let past = ClickCounter::SLOP * 1.001;
+        assert_eq!(c.on_down(Button::Left, t4 + Duration::from_millis(10), past, 0.0), 1, "x past SLOP");
+        let t5 = t4 + Duration::from_secs(5);
+        c.on_down(Button::Left, t5, 0.0, 0.0);
+        assert_eq!(c.on_down(Button::Left, t5 + Duration::from_millis(10), 0.0, past), 1, "y past SLOP");
+    }
+
+    #[test]
     fn a_slow_far_or_different_button_click_starts_over() {
         let t0 = Instant::now();
         let mut c = ClickCounter::default();

@@ -114,7 +114,9 @@ mod tests {
         assert_eq!(bitrate_cap(Size { w: 1920, h: 1080 }), 12_000_000);
         assert_eq!(bitrate_cap(Size { w: 2560, h: 1440 }), 12_000_000);
         assert_eq!(bitrate_cap(D4K), 20_000_000);
-        let mid = bitrate_cap(Size { w: 3200, h: 1800 });
-        assert!(mid > 12_000_000 && mid < 20_000_000, "{mid}");
+        // 3200x1800 is 5 760 000 pixels, 45 % of the way from 1440p (3 686 400) to 4K (8 294 400).
+        assert_eq!(bitrate_cap(Size { w: 3200, h: 1800 }), 15_600_000);
+        assert_eq!(bitrate_cap(Size { w: 2560, h: 1442 }), 12_008_889, "one row above 1440p starts the climb");
+        assert_eq!(bitrate_cap(Size { w: 3840, h: 2158 }), 19_986_667, "and one row under 4K nearly reaches it");
     }
 }

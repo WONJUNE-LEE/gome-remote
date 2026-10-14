@@ -212,6 +212,18 @@ mod tests {
     }
 
     #[test]
+    fn a_text_message_of_exactly_8_kib_is_accepted_and_one_byte_more_is_refused() {
+        let frame = r#"{"type":"text","s":""}"#.len();
+        let exact = "a".repeat(MAX_TEXT_MESSAGE - frame);
+        let message = format!(r#"{{"type":"text","s":"{exact}"}}"#);
+        assert_eq!(message.len(), MAX_TEXT_MESSAGE);
+        assert_eq!(p(&message), Some(InputMsg::Text(exact)));
+        let over = format!(r#"{{"type":"text","s":"{}"}}"#, "a".repeat(MAX_TEXT_MESSAGE - frame + 1));
+        assert_eq!(over.len(), MAX_TEXT_MESSAGE + 1);
+        assert_eq!(p(&over), None);
+    }
+
+    #[test]
     fn a_512_byte_message_is_the_largest_non_text_message() {
         let base = r#"{"type":"pointer","x":0.5,"y":0.5,"pad":""}"#.len();
         let exact = format!(r#"{{"type":"pointer","x":0.5,"y":0.5,"pad":"{}"}}"#, "x".repeat(MAX_MESSAGE - base));

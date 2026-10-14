@@ -52,6 +52,7 @@ mod tests {
     #[test]
     fn a_pending_keyframe_does_not_wait_for_the_interval() {
         assert!(!should_resubmit(&ages(30, 30, true)));
+        assert!(!should_resubmit(&ages(40, 40, true)));
         assert!(should_resubmit(&ages(41, 41, true)));
         assert!(!should_resubmit(&ages(41, 41, false)));
     }
