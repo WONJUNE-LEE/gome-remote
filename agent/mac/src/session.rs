@@ -9,7 +9,7 @@ use crate::peer::{PeerHandle, PeerHooks, PeerParams};
 use crate::protocol::{self, InputMsg};
 use crate::size::{bitrate_cap, fit_to_display, Size};
 use crate::slot::{Closer, Slot};
-use crate::status::{Accessibility, DisplayState, Screen, Status, REFUSE_WHEN_LOCKED};
+use crate::status::{screen_of, Accessibility, DisplayState, Status, REFUSE_WHEN_LOCKED};
 use std::any::Any;
 use std::net::IpAddr;
 use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
@@ -270,15 +270,8 @@ fn begin_capture(core: &Core, hooks: &Hooks, id: u64, peer: &PeerHandle) {
 impl Backend for Sessions {
     fn status(&self) -> Status {
         let parts = &self.core.parts;
-        let screen = if !parts.platform.screen_recording_granted() {
-            Screen::Denied
-        } else if parts.capture.suspect() {
-            Screen::Suspect
-        } else {
-            Screen::Granted
-        };
         Status {
-            screen,
+            screen: screen_of(parts.platform.screen_recording_granted(), parts.capture.suspect()),
             accessibility: if parts.platform.accessibility_granted() {
                 Accessibility::Granted
             } else {
@@ -332,7 +325,7 @@ impl Backend for Sessions {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::status::Gate;
+    use crate::status::{Gate, Screen};
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering::SeqCst};
     use std::time::{Duration, Instant};
 

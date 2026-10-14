@@ -5,6 +5,7 @@
 use super::capture::{self, Capture, CaptureConfig};
 use super::encoder::{Config as EncoderConfig, Encoder, FrameSink};
 use super::ffi::*;
+use super::system;
 use crate::black::{luma_is_black, BlackWatch};
 use crate::frame::FrameTarget;
 use crate::keepalive::{should_resubmit, Ages};
@@ -90,14 +91,21 @@ impl Pipeline {
         *inner.last_frame.lock().unwrap() = None;
         inner.encoder_gate.lock().unwrap().reset();
         let config = Self::capture_config(&inner.plan.lock().unwrap());
+        // A stream the system stopped is still held here (its session ended with it): let it go.
+        let stale = inner.capture.lock().unwrap().take();
+        if let Some(stale) = stale {
+            stale.stop();
+        }
         let me = self.clone();
         let on_frame: capture::FrameFn = Arc::new(move |pixel_buffer, at| me.on_frame(pixel_buffer, at));
+        let me = self.clone();
+        let on_stop: capture::StopFn = Arc::new(move || me.on_stream_stopped(epoch));
         inner.running.store(true, Relaxed);
-        let capture = match capture::start(config, on_frame) {
+        let capture = match capture::start(config, on_frame, on_stop) {
             Ok(capture) => capture,
             Err(e) => {
                 inner.running.store(false, Relaxed);
-                inner.black.lock().unwrap().end();
+                self.end_black_watch();
                 *inner.sink.lock().unwrap() = None;
                 return Err(e);
             }
@@ -145,9 +153,30 @@ impl Pipeline {
             capture.stop(); // consumes the stream, which releases the frame callback
         }
         // After the stream is gone, so no frame of this session can add evidence to the next.
-        inner.black.lock().unwrap().end();
+        self.end_black_watch();
         *inner.encoder.lock().unwrap() = None;
         *inner.last_frame.lock().unwrap() = None;
+    }
+
+    /// Ends the evidence of this run; a suspect verdict is kept unless the screen is locked now.
+    fn end_black_watch(&self) {
+        self.inner.black.lock().unwrap().end(Instant::now(), system::screen_locked());
+    }
+
+    /// The system stopped the stream of run `epoch` by itself (not through `stop`): the picture
+    /// would freeze while the keepalive repeated the last frame, so the pipeline fails, the
+    /// session's peer is closed (the page shows its ended card) and the status learns of it.
+    fn on_stream_stopped(&self, epoch: u64) {
+        let inner = &self.inner;
+        if inner.epoch.load(Relaxed) != epoch || !inner.running.swap(false, Relaxed) {
+            return; // a stop we asked for, or an earlier run's
+        }
+        let screen = inner.black.lock().unwrap().stream_stopped(system::screen_recording_granted());
+        eprintln!("[pipeline] the system stopped the capture stream; the screen now reads {screen:?}");
+        let target = inner.sink.lock().unwrap().clone();
+        if let Some(target) = target {
+            target.stream_stopped();
+        }
     }
 
     pub fn request_keyframe(&self) {

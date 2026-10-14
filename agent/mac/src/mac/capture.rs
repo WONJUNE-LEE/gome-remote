@@ -11,7 +11,8 @@ use objc2::{define_class, msg_send, AllocAnyThread, DefinedClass};
 use objc2_core_media::{CMSampleBuffer, CMTime, CMTimeFlags};
 use objc2_foundation::{NSArray, NSError, NSObject, NSObjectProtocol};
 use objc2_screen_capture_kit::{
-    SCContentFilter, SCShareableContent, SCStream, SCStreamConfiguration, SCStreamOutput, SCStreamOutputType, SCWindow,
+    SCContentFilter, SCShareableContent, SCStream, SCStreamConfiguration, SCStreamDelegate, SCStreamOutput,
+    SCStreamOutputType, SCWindow,
 };
 use std::ffi::c_void;
 use std::sync::mpsc::channel;
@@ -28,8 +29,13 @@ pub struct CaptureConfig {
 
 pub type FrameFn = Arc<dyn Fn(CVPixelBufferRef, Instant) + Send + Sync>;
 
+/// Called when the system stops the stream by itself (display sleep, permission revoked, the
+/// periodic re-check, "Stop sharing"): never for a stop this code asked for.
+pub type StopFn = Arc<dyn Fn() + Send + Sync>;
+
 struct Ivars {
     on_frame: FrameFn,
+    on_stop: StopFn,
 }
 
 define_class!(
@@ -52,6 +58,19 @@ define_class!(
                 return; // a status-only sample (idle, paused)
             }
             (self.ivars().on_frame)(image, Instant::now());
+        }
+    }
+
+    unsafe impl SCStreamDelegate for StreamOutput {
+        #[unsafe(method(stream:didStopWithError:))]
+        unsafe fn did_stop(&self, _stream: &SCStream, error: &NSError) {
+            println!(
+                "[capture] stopped by the system: {} (domain {}, code {})",
+                error.localizedDescription(),
+                error.domain(),
+                error.code()
+            );
+            (self.ivars().on_stop)();
         }
     }
 );
@@ -93,7 +112,7 @@ fn configuration(cfg: &CaptureConfig) -> Retained<SCStreamConfiguration> {
 
 /// Starts capturing the main display. Blocks until ScreenCaptureKit answers (20 s at most).
 /// The error text is what ScreenCaptureKit said, for the log only.
-pub fn start(cfg: CaptureConfig, on_frame: FrameFn) -> Result<Capture, String> {
+pub fn start(cfg: CaptureConfig, on_frame: FrameFn, on_stop: StopFn) -> Result<Capture, String> {
     let (tx, rx) = channel::<Result<SendBox<Retained<SCShareableContent>>, String>>();
     let handler = RcBlock::new(move |content: *mut SCShareableContent, error: *mut NSError| {
         if content.is_null() {
@@ -119,10 +138,14 @@ pub fn start(cfg: CaptureConfig, on_frame: FrameFn) -> Result<Capture, String> {
         };
         let excluded: Retained<NSArray<SCWindow>> = NSArray::new();
         let filter = SCContentFilter::initWithDisplay_excludingWindows(SCContentFilter::alloc(), &display, &excluded);
-        let stream =
-            SCStream::initWithFilter_configuration_delegate(SCStream::alloc(), &filter, &configuration(&cfg), None);
-        let output = StreamOutput::alloc().set_ivars(Ivars { on_frame });
+        let output = StreamOutput::alloc().set_ivars(Ivars { on_frame, on_stop });
         let output: Retained<StreamOutput> = msg_send![super(output), init];
+        let stream = SCStream::initWithFilter_configuration_delegate(
+            SCStream::alloc(),
+            &filter,
+            &configuration(&cfg),
+            Some(ProtocolObject::from_ref(&*output)),
+        );
         let queue = DispatchQueue::new("net.gome.remote-agent.capture", None);
         stream
             .addStreamOutput_type_sampleHandlerQueue_error(
@@ -173,5 +196,28 @@ impl Capture {
         unsafe { self.stream.stopCaptureWithCompletionHandler(Some(&done)) };
         let _ = rx.recv_timeout(Duration::from_secs(5));
         println!("[capture] stopped (main display: {})", self.display_is_main);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use objc2::sel;
+    use std::sync::atomic::{AtomicBool, Ordering::SeqCst};
+
+    /// The class registers as both a stream output and a stream delegate, and answers the
+    /// delegate's stop selector (the stop path itself needs a live stream and a grant).
+    #[test]
+    fn the_stream_object_is_registered_as_output_and_delegate() {
+        let stopped = Arc::new(AtomicBool::new(false));
+        let flag = stopped.clone();
+        let ivars = Ivars { on_frame: Arc::new(|_, _| {}), on_stop: Arc::new(move || flag.store(true, SeqCst)) };
+        let output: Retained<StreamOutput> = unsafe { msg_send![super(StreamOutput::alloc().set_ivars(ivars)), init] };
+        let _delegate: &ProtocolObject<dyn SCStreamDelegate> = ProtocolObject::from_ref(&*output);
+        let _out: &ProtocolObject<dyn SCStreamOutput> = ProtocolObject::from_ref(&*output);
+        let responds: bool = unsafe { msg_send![&*output, respondsToSelector: sel!(stream:didStopWithError:)] };
+        assert!(responds);
+        (output.ivars().on_stop)();
+        assert!(stopped.load(SeqCst));
     }
 }

@@ -5,6 +5,9 @@ use std::time::Instant;
 pub trait FrameTarget: Send + Sync {
     /// False when the target is gone and wants no more frames.
     fn send_frame(&self, frame: EncodedFrame) -> bool;
+    /// The system stopped the capture stream under this target: no more frames will come, so
+    /// the session it belongs to must end (the page then shows its ended card).
+    fn stream_stopped(&self) {}
 }
 
 pub struct EncodedFrame {

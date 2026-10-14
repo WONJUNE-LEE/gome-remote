@@ -56,6 +56,18 @@ impl Gate {
     }
 }
 
+/// The status' `screen`: the system's permission answer wins, then the capture's suspicion
+/// (black frames, or a stream the system stopped while the permission still reads granted).
+pub fn screen_of(permission_granted: bool, suspect: bool) -> Screen {
+    if !permission_granted {
+        Screen::Denied
+    } else if suspect {
+        Screen::Suspect
+    } else {
+        Screen::Granted
+    }
+}
+
 impl Status {
     pub fn gate(&self, refuse_when_locked: bool) -> Result<(), Gate> {
         // `Suspect` still lets a session start: a session is how the suspicion is cleared.
@@ -149,6 +161,14 @@ mod tests {
         assert_eq!(s.gate(false), Err(Gate::Permission));
         assert_eq!(Gate::Permission.code(), "permission");
         assert_eq!(Gate::Permission.http_status(), 403);
+    }
+
+    #[test]
+    fn the_screen_is_denied_when_the_system_says_so_whatever_the_capture_suspects() {
+        assert_eq!(screen_of(false, false), Screen::Denied);
+        assert_eq!(screen_of(false, true), Screen::Denied);
+        assert_eq!(screen_of(true, true), Screen::Suspect);
+        assert_eq!(screen_of(true, false), Screen::Granted);
     }
 
     #[test]

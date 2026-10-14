@@ -1,5 +1,6 @@
 //! Detects "permission lapsed, but ScreenCaptureKit keeps delivering empty frames" (P4):
 //! the status then reads `suspect` and `lastCaptureAt` stops moving.
+use crate::status::Screen;
 use std::time::{Duration, Instant};
 
 /// Only content-free frames for this long make the screen suspect.
@@ -57,22 +58,39 @@ impl BlackDetector {
 /// The black-frame check reads a few hundred bytes; once per 250 ms is plenty.
 pub const CHECK_EVERY: Duration = Duration::from_millis(250);
 
-/// The evidence of one capture session. `begin` and `end` both wipe it, so suspicion never
-/// outlives the session it was seen in: a new session re-checks from scratch (a Mac that was
-/// black once, say behind a lock screen, must not stay suspect for ever).
+/// The evidence of one capture session, and the verdict it leaves behind. `begin` wipes both:
+/// a new session re-checks from scratch. `end` drops the evidence in progress but keeps a
+/// suspect verdict, so the tile (seen when no session runs) can show it, unless the screen was
+/// locked then (lock screens are black by design). Either way a Mac that was black once never
+/// stays suspect past the next session start.
 #[derive(Default)]
 pub struct BlackWatch {
     active: bool,
     detector: BlackDetector,
     last_check: Option<Instant>,
+    /// A suspect verdict kept from the last session (black frames, or a stream the system stopped).
+    kept: bool,
 }
 
 impl BlackWatch {
     pub fn begin(&mut self) {
         *self = BlackWatch { active: true, ..BlackWatch::default() };
     }
-    pub fn end(&mut self) {
-        *self = BlackWatch::default();
+    /// The session is over. `locked`: the screen is locked now.
+    pub fn end(&mut self, now: Instant, locked: bool) {
+        let kept = self.kept || (!locked && self.detector.suspect(now));
+        *self = BlackWatch { kept, ..BlackWatch::default() };
+    }
+    /// The system stopped the stream (`stream:didStopWithError:`). With the permission gone the
+    /// status reads `Denied` from the system and nothing is kept; otherwise the screen is
+    /// `Suspect` until the next session start or a frame with content.
+    pub fn stream_stopped(&mut self, permission_granted: bool) -> Screen {
+        if permission_granted {
+            self.kept = true;
+            Screen::Suspect
+        } else {
+            Screen::Denied
+        }
     }
     /// A frame arrived. `is_black` runs only when this frame is due for a sample (the first
     /// frame of a session always is) and returns the sample, or `None` when none was taken
@@ -84,10 +102,13 @@ impl BlackWatch {
         self.last_check = Some(now);
         let black = is_black();
         self.detector.observe(now, black);
+        if !black {
+            self.kept = false;
+        }
         Some(black)
     }
     pub fn suspect(&self, now: Instant) -> bool {
-        self.detector.suspect(now)
+        self.kept || self.detector.suspect(now)
     }
 }
 
@@ -154,7 +175,7 @@ mod tests {
     }
 
     #[test]
-    fn a_new_session_starts_without_suspicion_until_it_has_its_own_evidence() {
+    fn a_suspect_verdict_outlives_the_session_but_not_the_next_start() {
         let t0 = Instant::now();
         let mut w = BlackWatch::default();
         // First session: black for longer than the limit.
@@ -163,17 +184,80 @@ mod tests {
             w.frame(t0 + Duration::from_millis(ms), || true);
         }
         assert!(w.suspect(t0 + Duration::from_secs(7)));
-        // Stopped: the old evidence is gone, and a late frame from the dying stream is ignored.
-        w.end();
-        assert!(!w.suspect(t0 + Duration::from_secs(8)));
-        assert_eq!(w.frame(t0 + Duration::from_secs(8), || true), None);
-        assert!(!w.suspect(t0 + Duration::from_secs(60)));
+        // Stopped (screen not locked): the verdict stays, so the tile can show it while nobody
+        // watches; a late frame of the dying stream still counts for nothing.
+        w.end(t0 + Duration::from_secs(7), false);
+        assert!(w.suspect(t0 + Duration::from_secs(8)));
+        assert!(w.suspect(t0 + Duration::from_secs(600)));
+        assert_eq!(w.frame(t0 + Duration::from_secs(8), || false), None);
+        assert!(w.suspect(t0 + Duration::from_secs(9)));
         // Started again: clean until new evidence has been black for the full limit.
         w.begin();
         assert!(!w.suspect(t0 + Duration::from_secs(61)));
         assert_eq!(w.frame(t0 + Duration::from_secs(61), || true), Some(true), "the first frame is checked at once");
         assert!(!w.suspect(t0 + Duration::from_secs(65)));
         assert!(w.suspect(t0 + Duration::from_secs(66)));
+    }
+
+    #[test]
+    fn the_black_frame_counter_in_progress_is_dropped_at_stop() {
+        let t0 = Instant::now();
+        let mut w = BlackWatch::default();
+        w.begin();
+        w.frame(t0, || true);
+        assert!(!w.suspect(t0 + Duration::from_secs(4)));
+        // Stopped after 4 s of black: not yet a verdict, and it never becomes one by waiting.
+        w.end(t0 + Duration::from_secs(4), false);
+        assert!(!w.suspect(t0 + Duration::from_secs(60)));
+    }
+
+    #[test]
+    fn a_session_that_ends_on_a_locked_screen_keeps_no_verdict() {
+        let t0 = Instant::now();
+        let mut w = BlackWatch::default();
+        w.begin();
+        for ms in (0..7000).step_by(250) {
+            w.frame(t0 + Duration::from_millis(ms), || true);
+        }
+        assert!(w.suspect(t0 + Duration::from_secs(7)));
+        w.end(t0 + Duration::from_secs(7), true); // lock screens are black by design
+        assert!(!w.suspect(t0 + Duration::from_secs(8)));
+    }
+
+    #[test]
+    fn a_stopped_stream_with_permission_still_granted_is_suspect_until_the_next_start() {
+        let t0 = Instant::now();
+        let mut w = BlackWatch::default();
+        w.begin();
+        w.frame(t0, || false); // the picture was fine
+        assert_eq!(w.stream_stopped(true), Screen::Suspect);
+        assert!(w.suspect(t0 + Duration::from_secs(1)));
+        // The pipeline's own stop follows; the verdict survives it, even on a locked screen.
+        w.end(t0 + Duration::from_secs(1), true);
+        assert!(w.suspect(t0 + Duration::from_secs(30)));
+        w.begin();
+        assert!(!w.suspect(t0 + Duration::from_secs(31)));
+    }
+
+    #[test]
+    fn a_stopped_stream_without_permission_is_denied_and_needs_no_stored_suspicion() {
+        let t0 = Instant::now();
+        let mut w = BlackWatch::default();
+        w.begin();
+        assert_eq!(w.stream_stopped(false), Screen::Denied);
+        w.end(t0, false);
+        assert!(!w.suspect(t0 + Duration::from_secs(30)), "denied is read from the system, not remembered here");
+    }
+
+    #[test]
+    fn a_frame_with_content_clears_a_stream_stop_suspicion_within_the_session() {
+        let t0 = Instant::now();
+        let mut w = BlackWatch::default();
+        w.begin();
+        w.frame(t0, || false);
+        w.stream_stopped(true);
+        assert_eq!(w.frame(t0 + Duration::from_secs(1), || false), Some(false));
+        assert!(!w.suspect(t0 + Duration::from_secs(2)));
     }
 
     #[test]

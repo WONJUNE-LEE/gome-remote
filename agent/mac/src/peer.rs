@@ -82,6 +82,9 @@ impl FrameTarget for PeerHandle {
     fn send_frame(&self, frame: EncodedFrame) -> bool {
         self.is_alive() && self.frames.send(Msg::Frame(frame)).is_ok()
     }
+    fn stream_stopped(&self) {
+        self.close();
+    }
 }
 
 enum Msg {
@@ -285,6 +288,14 @@ mod tests {
         assert!(!idle_expired(t0, t0 + Duration::from_secs(10)));
         assert!(idle_expired(t0, t0 + Duration::from_secs(10) + Duration::from_millis(1)));
         assert!(!idle_expired(t0 + Duration::from_secs(5), t0), "a clock that went backwards is not idle");
+    }
+
+    #[test]
+    fn a_stream_the_system_stopped_closes_the_peer() {
+        let handle = PeerHandle::detached();
+        assert!(handle.is_alive());
+        FrameTarget::stream_stopped(&handle);
+        assert!(!handle.is_alive(), "the session must end so the page shows its ended card");
     }
 
     struct Quiet;
