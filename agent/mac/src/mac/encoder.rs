@@ -4,8 +4,8 @@
 //! these are new: a per-encoder frame sink, a settable bitrate, and a keyframe flag.
 use super::ffi::*;
 use crate::frame::EncodedFrame;
-use std::ffi::c_void;
 use crate::http::LogLimiter;
+use std::ffi::c_void;
 use std::sync::atomic::{AtomicBool, Ordering::Relaxed};
 use std::sync::{Arc, LazyLock, Mutex};
 use std::time::{Duration, Instant};
