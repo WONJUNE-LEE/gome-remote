@@ -1,6 +1,10 @@
 //! macOS side: framework bindings and the process entry point.
+pub mod capture;
+pub mod encoder;
 pub mod ffi;
+pub mod pipeline;
 pub mod system;
+pub mod wake;
 
 use crate::auth::Guard;
 use crate::config::{self, AgentConfig, FileMeta, Kind};
