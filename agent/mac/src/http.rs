@@ -62,6 +62,12 @@ impl Reply {
     }
 }
 
+/// Locks a mutex that guards plain counters: a thread that panicked while holding it left
+/// them in a usable state, so the next request takes the lock instead of panicking too.
+fn relock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 pub struct Router {
     guard: Guard,
     backend: Arc<dyn Backend>,
@@ -83,14 +89,14 @@ impl Router {
         let meta =
             RequestMeta { peer: head.peer, host: head.host, origin: head.origin, authorization: head.authorization };
         match self.guard.check(&meta) {
-            Ok(()) => self.backoff.lock().unwrap().succeeded(),
+            Ok(()) => relock(&self.backoff).succeeded(),
             Err(Reject::Forbidden(why)) => {
                 self.log_refusal(why);
                 return Reply::error(403, "forbidden");
             }
             Err(Reject::Unauthorized) => {
                 self.log_refusal("token");
-                let delay = self.backoff.lock().unwrap().failed();
+                let delay = relock(&self.backoff).failed();
                 return Reply { delay, ..Reply::error(401, "unauthorized") };
             }
         }
@@ -107,7 +113,10 @@ impl Router {
     /// Refusals come from callers nobody vouches for, so they must not be able to fill the
     /// log (and with the size cap, push earlier lines out of it): one line per second.
     fn log_refusal(&self, why: &str) {
-        if let Some(suppressed) = self.refusal_log.lock().unwrap().note(Instant::now()) {
+        // The lock is let go before anything is printed: a slow stderr must not hold up the
+        // other requests' refusals.
+        let note = relock(&self.refusal_log).note(Instant::now());
+        if let Some(suppressed) = note {
             if suppressed == 0 {
                 eprintln!("[http] refused ({why})");
             } else {
@@ -325,6 +334,28 @@ mod tests {
 
     fn post(r: &Router, body: &str) -> Reply {
         r.route(&head("POST", "/v1/sessions", BEARER, Some(body.len() as u64)), &mut body.as_bytes())
+    }
+
+    #[test]
+    fn a_poisoned_backoff_or_refusal_log_does_not_take_the_request_path_down() {
+        let (r, _) = router();
+        let r = Arc::new(r);
+        let victim = r.clone();
+        let _ = std::thread::spawn(move || {
+            let _backoff = victim.backoff.lock().unwrap();
+            let _log = victim.refusal_log.lock().unwrap();
+            panic!("a handler died holding both locks");
+        })
+        .join();
+        assert!(r.backoff.is_poisoned() && r.refusal_log.is_poisoned());
+        let bad = r.route(&head("GET", "/v1/status", "Bearer wrong", None), &mut std::io::empty());
+        assert_eq!(bad.status, 401);
+        let mut stranger = head("GET", "/v1/status", BEARER, None);
+        stranger.peer = "100.64.0.99".parse().unwrap();
+        assert_eq!(r.route(&stranger, &mut std::io::empty()).status, 403);
+        let good = r.route(&head("GET", "/v1/status", BEARER, None), &mut std::io::empty());
+        assert_eq!(good.status, 200, "a correct request is still served");
+        assert_eq!(good.delay, Duration::ZERO);
     }
 
     #[test]

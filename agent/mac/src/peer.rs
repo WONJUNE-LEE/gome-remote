@@ -3,11 +3,12 @@
 //! and the shared statistics are gone, and these are new: tailnet-only candidates and
 //! source addresses, bandwidth estimation, a 10 s idle close, and the release hook.
 use crate::frame::{EncodedFrame, FrameTarget};
+use crate::http::LogLimiter;
 use crate::tailnet::{filter_offer_candidates, is_tailnet_ip};
 use anyhow::{anyhow, Result};
 use std::net::{IpAddr, SocketAddr, UdpSocket};
 use std::sync::atomic::{AtomicBool, Ordering::Relaxed};
-use std::sync::mpsc::{channel, RecvTimeoutError, Sender};
+use std::sync::mpsc::{sync_channel, Receiver, RecvTimeoutError, SyncSender, TrySendError};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use str0m::bwe::{Bitrate, BweKind};
@@ -62,7 +63,7 @@ pub struct PeerParams {
 #[derive(Clone)]
 pub struct PeerHandle {
     alive: Arc<AtomicBool>,
-    frames: Sender<Msg>,
+    frames: SyncSender<Msg>,
 }
 impl PeerHandle {
     pub fn is_alive(&self) -> bool {
@@ -74,13 +75,24 @@ impl PeerHandle {
     /// A handle with no peer behind it, for tests of whatever holds handles.
     #[cfg(test)]
     pub fn detached() -> PeerHandle {
-        PeerHandle { alive: Arc::new(AtomicBool::new(true)), frames: channel().0 }
+        PeerHandle { alive: Arc::new(AtomicBool::new(true)), frames: sync_channel(1).0 }
+    }
+    /// Like `detached`, but the queue's other end is returned so a test can look into it.
+    #[cfg(test)]
+    fn detached_with_queue(capacity: usize) -> (PeerHandle, std::sync::mpsc::Receiver<Msg>) {
+        let (frames, rx) = sync_channel(capacity);
+        (PeerHandle { alive: Arc::new(AtomicBool::new(true)), frames }, rx)
     }
 }
 impl FrameTarget for PeerHandle {
-    /// False when the peer is gone.
+    /// False when the peer is gone. A frame that finds the queue full is dropped (the peer
+    /// is behind; the next keyframe or PLI repairs the picture) and the peer is still there.
     fn send_frame(&self, frame: EncodedFrame) -> bool {
-        self.is_alive() && self.frames.send(Msg::Frame(frame)).is_ok()
+        self.is_alive()
+            && match self.frames.try_send(Msg::Frame(frame)) {
+                Ok(()) | Err(TrySendError::Full(_)) => true,
+                Err(TrySendError::Disconnected(_)) => false,
+            }
     }
     fn stream_stopped(&self) {
         self.close();
@@ -90,6 +102,64 @@ impl FrameTarget for PeerHandle {
 enum Msg {
     Udp(Instant, SocketAddr, Vec<u8>),
     Frame(EncodedFrame),
+}
+
+/// What the peer thread has not yet taken: datagrams and frames. The peer thread drains it
+/// every few milliseconds, so this is a burst allowance, not a backlog; what does not fit is
+/// dropped, which keeps a stalled peer from growing memory without bound.
+const QUEUE_CAPACITY: usize = 256;
+
+/// What the socket read thread does with one datagram: it reaches ICE only from a tailnet
+/// source (this is what keeps a peer-reflexive candidate from any other address out), and
+/// is dropped when the queue is full. False once the peer thread is gone.
+fn forward(tx: &SyncSender<Msg>, at: Instant, source: SocketAddr, data: &[u8]) -> bool {
+    if !source_allowed(source) {
+        return true;
+    }
+    !matches!(tx.try_send(Msg::Udp(at, source, data.to_vec())), Err(TrySendError::Disconnected(_)))
+}
+
+/// The idle clock moves only for a datagram str0m accepted as part of this session.
+fn refreshed(last_rx: Instant, at: Instant, accepted: bool) -> Instant {
+    if accepted {
+        last_rx.max(at)
+    } else {
+        last_rx
+    }
+}
+
+/// Hands one datagram to str0m, and counts it as the peer being there only when str0m
+/// accepted it (a stranger on the tailnet sending noise must not keep a session open).
+fn on_datagram(
+    rtc: &mut Rtc,
+    last_rx: &mut Instant,
+    at: Instant,
+    source: SocketAddr,
+    local: SocketAddr,
+    data: &[u8],
+) -> Result<()> {
+    let Ok(contents) = data.try_into() else { return Ok(()) };
+    let input = Input::Receive(at, Receive { proto: Protocol::Udp, source, destination: local, contents });
+    let accepted = rtc.accepts(&input);
+    *last_rx = refreshed(*last_rx, at, accepted);
+    if accepted {
+        rtc.handle_input(input)?;
+    }
+    Ok(())
+}
+
+/// The offer as str0m gets to see it: only tailnet UDP candidates are ever considered (spec D2).
+fn prepare_offer(offer_sdp: &str) -> Result<SdpOffer> {
+    SdpOffer::from_sdp_string(&filter_offer_candidates(offer_sdp)).map_err(|e| anyhow!("bad offer: {e:?}"))
+}
+
+/// A log line from a path that can fail per packet: at most one a second, with a count of
+/// what was held back.
+fn limited(limiter: &mut LogLimiter, now: Instant, text: &str) -> Option<String> {
+    match limiter.note(now)? {
+        0 => Some(text.to_string()),
+        held => Some(format!("{text} (and {held} more since the last line)")),
+    }
 }
 
 fn set_socket_buffers(socket: &UdpSocket, bytes: usize) {
@@ -114,9 +184,7 @@ fn set_socket_buffers(socket: &UdpSocket, bytes: usize) {
 
 /// Handles an SDP offer: returns the answer and a handle to feed frames and close the peer.
 pub fn accept(offer_sdp: &str, params: PeerParams, hooks: Arc<dyn PeerHooks>) -> Result<(String, PeerHandle)> {
-    // Only tailnet UDP candidates are ever considered (spec D2).
-    let offer =
-        SdpOffer::from_sdp_string(&filter_offer_candidates(offer_sdp)).map_err(|e| anyhow!("bad offer: {e:?}"))?;
+    let offer = prepare_offer(offer_sdp)?;
     let mut rtc = RtcConfig::new()
         .clear_codecs()
         .enable_h264(true)
@@ -134,7 +202,7 @@ pub fn accept(offer_sdp: &str, params: PeerParams, hooks: Arc<dyn PeerHooks>) ->
     let answer = rtc.sdp_api().accept_offer(offer).map_err(|e| anyhow!("accept_offer: {e:?}"))?;
     let answer_sdp = answer.to_sdp_string();
 
-    let (tx, rx) = channel::<Msg>();
+    let (tx, rx) = sync_channel::<Msg>(QUEUE_CAPACITY);
     let alive = Arc::new(AtomicBool::new(true));
     {
         let socket = socket.try_clone()?;
@@ -144,15 +212,10 @@ pub fn accept(offer_sdp: &str, params: PeerParams, hooks: Arc<dyn PeerHooks>) ->
         std::thread::spawn(move || {
             let mut buf = vec![0u8; 2048];
             while alive.load(Relaxed) {
-                match socket.recv_from(&mut buf) {
-                    // A datagram from outside the tailnet never reaches ICE: this is what
-                    // keeps a peer-reflexive candidate from any other address out.
-                    Ok((n, source)) if source_allowed(source) => {
-                        if tx.send(Msg::Udp(Instant::now(), source, buf[..n].to_vec())).is_err() {
-                            break;
-                        }
+                if let Ok((n, source)) = socket.recv_from(&mut buf) {
+                    if !forward(&tx, Instant::now(), source, &buf[..n]) {
+                        break;
                     }
-                    _ => continue,
                 }
             }
         });
@@ -185,7 +248,7 @@ fn run(
     mut rtc: Rtc,
     socket: UdpSocket,
     local: SocketAddr,
-    rx: std::sync::mpsc::Receiver<Msg>,
+    rx: Receiver<Msg>,
     alive: &AtomicBool,
     hooks: &dyn PeerHooks,
 ) -> Result<()> {
@@ -196,13 +259,19 @@ fn run(
     let mut sent_key = false;
     let mut rtx_configured = false;
     let mut last_rx = Instant::now();
+    // A socket that fails does so for every packet: a line a second, not a line per packet.
+    let (mut send_log, mut write_log) = (LogLimiter::default(), LogLimiter::default());
     loop {
         let timeout = loop {
             match rtc.poll_output()? {
                 Output::Timeout(t) => break t,
                 Output::Transmit(t) => {
                     if let Err(e) = socket.send_to(&t.contents, t.destination) {
-                        eprintln!("[peer] send_to error: {e}");
+                        if let Some(line) =
+                            limited(&mut send_log, Instant::now(), &format!("[peer] send_to error: {e}"))
+                        {
+                            eprintln!("{line}");
+                        }
                     }
                 }
                 Output::Event(event) => match event {
@@ -242,14 +311,7 @@ fn run(
         }
         let wait = timeout.saturating_duration_since(Instant::now()).min(Duration::from_millis(200));
         match rx.recv_timeout(wait) {
-            Ok(Msg::Udp(at, source, data)) => {
-                last_rx = at;
-                let Ok(contents) = data.as_slice().try_into() else { continue };
-                rtc.handle_input(Input::Receive(
-                    at,
-                    Receive { proto: Protocol::Udp, source, destination: local, contents },
-                ))?;
-            }
+            Ok(Msg::Udp(at, source, data)) => on_datagram(&mut rtc, &mut last_rx, at, source, local, &data)?,
             Ok(Msg::Frame(frame)) => {
                 let Some(m) = mid else { continue };
                 if !connected || (!sent_key && !frame.key) {
@@ -268,7 +330,13 @@ fn run(
                         .abs_capture_time(AbsCaptureTime { capture_time: capture, clock_offset: None });
                     match writer.write(pt, Instant::now(), MediaTime::new(rtp, Frequency::NINETY_KHZ), frame.data) {
                         Ok(_) => sent_key |= key,
-                        Err(e) => eprintln!("[peer] write error: {e:?}"),
+                        Err(e) => {
+                            if let Some(line) =
+                                limited(&mut write_log, Instant::now(), &format!("[peer] write error: {e:?}"))
+                            {
+                                eprintln!("{line}");
+                            }
+                        }
                     }
                 }
             }
@@ -329,9 +397,96 @@ mod tests {
         assert!(answer.contains("H264/90000"), "{answer}");
         assert!(answer.contains("rtx/90000"), "without RTX a lost packet freezes the picture for a second:\n{answer}");
         assert!(answer.contains("transport-cc"), "bandwidth estimation needs transport-wide feedback:\n{answer}");
-        assert!(answer.contains("a=candidate:"), "the agent advertises its own host candidate");
-        assert!(answer.contains("127.0.0.1"), "and it is the address the socket is bound to");
+        let candidates: Vec<&str> = answer.lines().filter(|l| l.starts_with("a=candidate:")).collect();
+        assert_eq!(candidates.len(), 1, "the agent advertises exactly its own host candidate:\n{answer}");
+        assert!(
+            candidates[0].contains(" 127.0.0.1 "),
+            "and it is the address the socket is bound to: {}",
+            candidates[0]
+        );
         handle.close();
+    }
+
+    #[test]
+    fn accept_reads_the_offer_through_the_candidate_filter() {
+        let lines = "a=candidate:9 1 udp 2122260223 192.168.0.5 51001 typ host\r\n\
+                     a=candidate:10 1 udp 2122260223 0b3a1c9e-77aa-4c1d-9d3e-0a1b2c3d4e5f.local 51002 typ host\r\n\
+                     a=candidate:11 1 udp 2122260223 100.64.0.99 51003 typ host\r\n";
+        let prepared = prepare_offer(&browser_like_offer(lines)).expect("an offer").to_sdp_string();
+        assert!(prepared.contains("100.64.0.99"), "the tailnet candidate stays:\n{prepared}");
+        assert!(!prepared.contains("192.168.0.5"), "a LAN candidate never reaches str0m:\n{prepared}");
+        assert!(!prepared.contains(".local"), "an mDNS candidate never reaches str0m:\n{prepared}");
+        // With nothing but strangers the offer still parses and has no remote candidate at all.
+        let only = "a=candidate:9 1 udp 2122260223 192.168.0.5 51001 typ host\r\n\
+                    a=candidate:10 1 udp 2122260223 203.0.113.9 51002 typ srflx raddr 0.0.0.0 rport 0\r\n";
+        let prepared = prepare_offer(&browser_like_offer(only)).expect("an offer").to_sdp_string();
+        assert!(!prepared.contains("a=candidate:"), "{prepared}");
+    }
+
+    #[test]
+    fn the_read_thread_forwards_only_datagrams_from_the_tailnet() {
+        let (tx, rx) = sync_channel::<Msg>(8);
+        let now = Instant::now();
+        assert!(forward(&tx, now, "192.168.0.5:51001".parse().unwrap(), b"x"), "dropping is not a failure");
+        assert!(forward(&tx, now, "[fe80::1]:5".parse().unwrap(), b"x"));
+        assert!(rx.try_recv().is_err(), "nothing from outside the tailnet reaches ICE");
+        assert!(forward(&tx, now, "100.64.0.99:51000".parse().unwrap(), b"hello"));
+        match rx.try_recv() {
+            Ok(Msg::Udp(_, source, data)) => {
+                assert_eq!(source, "100.64.0.99:51000".parse::<SocketAddr>().unwrap());
+                assert_eq!(data, b"hello");
+            }
+            _ => panic!("the tailnet datagram was not forwarded"),
+        }
+        drop(rx);
+        assert!(!forward(&tx, now, "100.64.0.99:51000".parse().unwrap(), b"x"), "the peer is gone: stop reading");
+    }
+
+    #[test]
+    fn a_full_queue_drops_datagrams_and_frames_instead_of_blocking_or_growing() {
+        let (tx, rx) = sync_channel::<Msg>(2);
+        let now = Instant::now();
+        let source: SocketAddr = "100.64.0.99:51000".parse().unwrap();
+        for _ in 0..5 {
+            assert!(forward(&tx, now, source, b"x"), "a full queue is not a failure");
+        }
+        assert_eq!(rx.try_iter().count(), 2);
+        let (handle, rx) = PeerHandle::detached_with_queue(3);
+        for _ in 0..10 {
+            let frame = EncodedFrame { data: vec![0], key: false, submitted: now };
+            assert!(handle.send_frame(frame), "a frame dropped for want of room is not a dead peer");
+        }
+        assert_eq!(rx.try_iter().count(), 3, "the queue is bounded");
+    }
+
+    #[test]
+    fn only_a_datagram_str0m_accepted_counts_as_the_peer_being_there() {
+        let t0 = Instant::now();
+        let later = t0 + Duration::from_secs(4);
+        assert_eq!(refreshed(t0, later, true), later);
+        assert_eq!(refreshed(t0, later, false), t0, "a stranger's packets must not keep a session alive");
+        assert_eq!(refreshed(later, t0, true), later, "the clock never goes backwards");
+        // The same through a real Rtc: junk from a tailnet address is not accepted.
+        let mut rtc = RtcConfig::new().build(Instant::now());
+        let mut last_rx = t0;
+        let local: SocketAddr = "127.0.0.1:40000".parse().unwrap();
+        let source: SocketAddr = "100.64.0.99:51000".parse().unwrap();
+        on_datagram(&mut rtc, &mut last_rx, later, source, local, &[0x17; 40]).unwrap();
+        assert_eq!(last_rx, t0, "junk is not the peer");
+    }
+
+    #[test]
+    fn a_failing_socket_logs_a_line_a_second_not_one_per_packet() {
+        let t0 = Instant::now();
+        let mut limiter = LogLimiter::default();
+        assert_eq!(limited(&mut limiter, t0, "[peer] send_to error: x").as_deref(), Some("[peer] send_to error: x"));
+        for i in 1..=50 {
+            assert_eq!(limited(&mut limiter, t0 + Duration::from_millis(i), "[peer] send_to error: x"), None);
+        }
+        assert_eq!(
+            limited(&mut limiter, t0 + Duration::from_secs(2), "[peer] send_to error: x").as_deref(),
+            Some("[peer] send_to error: x (and 50 more since the last line)")
+        );
     }
 
     #[test]
