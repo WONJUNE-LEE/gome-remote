@@ -9,6 +9,7 @@ pub mod http;
 pub mod keepalive;
 pub mod log_cap;
 pub mod paths;
+pub mod retry;
 pub mod size;
 pub mod status;
 pub mod tailnet;

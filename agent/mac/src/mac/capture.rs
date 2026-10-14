@@ -136,13 +136,21 @@ pub fn start(cfg: CaptureConfig, on_frame: FrameFn) -> Result<Capture, String> {
             let _ = started_tx.send(if error.is_null() { Ok(()) } else { Err(describe(error)) });
         });
         stream.startCaptureWithCompletionHandler(Some(&started));
+        let capture = Capture { stream, _output: output, _queue: queue, display_is_main };
         match started_rx.recv_timeout(Duration::from_secs(20)) {
             Ok(Ok(())) => {}
-            Ok(Err(e)) => return Err(format!("startCapture: {e}")),
-            Err(e) => return Err(format!("startCapture: {e}")),
+            Ok(Err(e)) => {
+                capture.stop();
+                return Err(format!("startCapture: {e}"));
+            }
+            Err(e) => {
+                // It may still start after the timeout: make sure it ends.
+                capture.stop();
+                return Err(format!("startCapture: {e}"));
+            }
         }
         println!("[capture] started {}x{}@{}", cfg.width, cfg.height, cfg.fps);
-        Ok(Capture { stream, _output: output, _queue: queue, display_is_main })
+        Ok(capture)
     }
 }
 

@@ -8,6 +8,7 @@ use super::ffi::*;
 use crate::black::{luma_is_black, BlackWatch};
 use crate::frame::FrameTarget;
 use crate::keepalive::{should_resubmit, Ages};
+use crate::retry::RetryGate;
 use crate::size::{fps_for, Size};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering::Relaxed};
 use std::sync::{Arc, Mutex};
@@ -25,6 +26,8 @@ struct Plan {
 
 struct Inner {
     encoder: Mutex<Option<Encoder>>,
+    /// Paces attempts to create an encoder session after one failed.
+    encoder_gate: Mutex<RetryGate>,
     last_frame: Mutex<Option<(PixBuf, Instant)>>,
     last_submit: Mutex<Instant>,
     sink: Arc<Mutex<Option<Arc<dyn FrameTarget>>>>,
@@ -51,6 +54,7 @@ impl Default for Pipeline {
         Pipeline {
             inner: Arc::new(Inner {
                 encoder: Mutex::new(None),
+                encoder_gate: Mutex::new(RetryGate::default()),
                 last_frame: Mutex::new(None),
                 last_submit: Mutex::new(now),
                 sink: Arc::new(Mutex::new(None)),
@@ -75,10 +79,16 @@ impl Pipeline {
         *inner.sink.lock().unwrap() = Some(target);
         if inner.running.load(Relaxed) {
             self.apply_plan()?;
+            self.set_bitrate(bitrate);
             self.request_keyframe();
             return Ok(());
         }
         inner.black.lock().unwrap().begin();
+        // Bumped first, so a keepalive thread of an earlier run stops submitting at once.
+        let epoch = inner.epoch.fetch_add(1, Relaxed) + 1;
+        // Nothing of an earlier session may be repeated into this one.
+        *inner.last_frame.lock().unwrap() = None;
+        inner.encoder_gate.lock().unwrap().reset();
         let config = Self::capture_config(&inner.plan.lock().unwrap());
         let me = self.clone();
         let on_frame: capture::FrameFn = Arc::new(move |pixel_buffer, at| me.on_frame(pixel_buffer, at));
@@ -93,7 +103,6 @@ impl Pipeline {
             }
         };
         *inner.capture.lock().unwrap() = Some(capture);
-        let epoch = inner.epoch.fetch_add(1, Relaxed) + 1;
         let me = self.clone();
         std::thread::spawn(move || me.keepalive_loop(epoch));
         Ok(())
@@ -183,6 +192,9 @@ impl Pipeline {
     /// Runs on ScreenCaptureKit's queue for every delivered frame.
     fn on_frame(&self, pixel_buffer: CVPixelBufferRef, at: Instant) {
         let inner = &self.inner;
+        if !inner.running.load(Relaxed) {
+            return; // a late frame of a stream that is being stopped
+        }
         // 1. Black-frame detection, before the buffer goes to the encoder (locking it after
         //    the submit waits for the encoder to let go of it).
         if inner.black.lock().unwrap().frame(at, || Self::is_black(pixel_buffer)) == Some(false) {
@@ -191,7 +203,7 @@ impl Pipeline {
         }
         // 2. Keep the frame for the keepalive thread, then encode it.
         *inner.last_frame.lock().unwrap() = Some((PixBuf::retain(pixel_buffer), at));
-        self.submit(pixel_buffer);
+        self.submit(pixel_buffer, None);
     }
 
     fn is_black(pixel_buffer: CVPixelBufferRef) -> bool {
@@ -212,16 +224,22 @@ impl Pipeline {
         }
     }
 
-    /// Encodes `pixel_buffer`, first making sure the encoder has the buffer's size.
-    fn submit(&self, pixel_buffer: CVPixelBufferRef) {
+    /// Encodes `pixel_buffer`, first making sure the encoder has the buffer's size. A
+    /// keepalive thread passes its epoch, so one of an earlier run cannot submit after a restart.
+    fn submit(&self, pixel_buffer: CVPixelBufferRef, epoch: Option<u64>) {
         let inner = &self.inner;
         let (w, h) =
             unsafe { (CVPixelBufferGetWidth(pixel_buffer) as i32, CVPixelBufferGetHeight(pixel_buffer) as i32) };
         let mut encoder = inner.encoder.lock().unwrap();
-        if !inner.running.load(Relaxed) {
-            return; // stopped meanwhile; `stop` clears the encoder under this lock
+        if !inner.running.load(Relaxed) || epoch.is_some_and(|e| e != inner.epoch.load(Relaxed)) {
+            return; // stopped or restarted meanwhile; `stop` clears the encoder under this lock
         }
         if encoder.as_ref().map(|e| (e.width(), e.height())) != Some((w, h)) {
+            // After a failure nothing is retried for a while, so a broken encoder costs one log
+            // line per window and not one per captured frame.
+            if !inner.encoder_gate.lock().unwrap().ready(Instant::now()) {
+                return;
+            }
             let plan = *inner.plan.lock().unwrap();
             let config = EncoderConfig {
                 width: w,
@@ -231,8 +249,12 @@ impl Pipeline {
                 key_interval: KEY_INTERVAL,
             };
             match Encoder::new(config, self.frame_sink()) {
-                Ok(new) => *encoder = Some(new), // starts with a keyframe request
+                Ok(new) => {
+                    inner.encoder_gate.lock().unwrap().succeeded();
+                    *encoder = Some(new); // starts with a keyframe request
+                }
                 Err(e) => {
+                    inner.encoder_gate.lock().unwrap().failed(Instant::now());
                     eprintln!("[pipeline] encoder: {e}");
                     return;
                 }
@@ -260,7 +282,7 @@ impl Pipeline {
                 keyframe_pending: pending,
             };
             if should_resubmit(&ages) {
-                self.submit(pixel_buffer.0);
+                self.submit(pixel_buffer.0, Some(epoch));
             }
             // One line every ten seconds while someone watches, never per frame.
             if report.0.elapsed() >= Duration::from_secs(10) {

@@ -5,8 +5,9 @@
 use super::ffi::*;
 use crate::frame::EncodedFrame;
 use std::ffi::c_void;
+use crate::http::LogLimiter;
 use std::sync::atomic::{AtomicBool, Ordering::Relaxed};
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock, Mutex};
 use std::time::{Duration, Instant};
 
 pub type FrameSink = Arc<dyn Fn(EncodedFrame) + Send + Sync>;
@@ -36,17 +37,34 @@ struct Submitted {
 }
 
 const FOURCC_AVC1: u32 = 0x61766331;
+/// `VTEncodeInfoFlags::kVTEncodeInfo_FrameDropped`: the real-time encoder skipped the frame.
+const ENCODE_INFO_FRAME_DROPPED: u32 = 1 << 1;
+
+static ERROR_LOG: LazyLock<Mutex<LogLimiter>> = LazyLock::new(|| Mutex::new(LogLimiter::default()));
+
+/// Error lines from the per-frame paths: at most one a second, counting what was held back.
+fn log_error(text: &str) {
+    let note = ERROR_LOG.lock().map(|mut limiter| limiter.note(Instant::now())).unwrap_or(None);
+    match note {
+        Some(0) => eprintln!("{text}"),
+        Some(held) => eprintln!("{text} (and {held} more since the last line)"),
+        None => {}
+    }
+}
 
 extern "C" fn output_cb(
     refcon: *mut c_void,
     frame_refcon: *mut c_void,
     status: OSStatus,
-    _flags: u32,
+    flags: u32,
     sb: CMSampleBufferRef,
 ) {
     let submitted: Box<Submitted> = unsafe { Box::from_raw(frame_refcon as *mut Submitted) };
+    if status == 0 && (flags & ENCODE_INFO_FRAME_DROPPED != 0 || sb.is_null()) {
+        return; // a frame the real-time encoder dropped under load: normal, and silent
+    }
     if status != 0 || sb.is_null() {
-        eprintln!("[enc] callback status {status}");
+        log_error(&format!("[enc] callback status {status}"));
         return;
     }
     let sink: &FrameSink = unsafe { &*(refcon as *const FrameSink) };
@@ -275,7 +293,8 @@ impl Encoder {
     #[allow(clippy::not_unsafe_ptr_arg_deref)] // the caller holds a live buffer from the framework
     pub fn encode(&mut self, pixel_buffer: CVPixelBufferRef) {
         let now = Instant::now();
-        let force = self.force_key.swap(false, Relaxed) || now.duration_since(self.last_key) >= self.cfg.key_interval;
+        let (was_requested, previous_key) = (self.force_key.swap(false, Relaxed), self.last_key);
+        let force = was_requested || now.duration_since(self.last_key) >= self.cfg.key_interval;
         let props = if force {
             self.last_key = now;
             Some(cf_dict(&[(unsafe { kVTEncodeFrameOptionKey_ForceKeyFrame }, bool_cf(true))]))
@@ -297,8 +316,13 @@ impl Encoder {
             )
         };
         if status != 0 {
-            eprintln!("[enc] EncodeFrame failed: OSStatus {status}");
+            log_error(&format!("[enc] EncodeFrame failed: OSStatus {status}"));
             drop(unsafe { Box::from_raw(refcon as *mut Submitted) });
+            // The keyframe never went out: ask for it again.
+            if force {
+                self.last_key = previous_key;
+                self.force_key.store(true, Relaxed);
+            }
         }
     }
 }
