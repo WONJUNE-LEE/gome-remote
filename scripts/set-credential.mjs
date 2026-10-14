@@ -161,13 +161,14 @@ const usage =
   "--agent-token is for (and required by) Mac agent targets; the token itself is typed at the prompt.";
 
 // One argument is the target ID and the config path is implied; two arguments name both.
-// The only flag is a bare --agent-token: a token (or anything else) attached to it, or any
-// other flag, is a usage error, so a secret can never travel in the argument list.
+// The only flag is the exact, bare --agent-token; anything else (even `--agent-token=...`, or
+// an ID that starts with a dash, which the ID pattern allows) is positional. A token or any
+// further argument given with it is therefore one positional too many: a usage error, so a
+// secret can never travel in the argument list.
 function resolveArguments(argv, env, home) {
-  const flags = argv.filter((a) => a.startsWith("-"));
-  const positional = argv.filter((a) => !a.startsWith("-"));
-  if (flags.length > 1 || flags.some((f) => f !== "--agent-token"))
-    return undefined;
+  const flags = argv.filter((a) => a === "--agent-token");
+  const positional = argv.filter((a) => a !== "--agent-token");
+  if (flags.length > 1) return undefined;
   const agentToken = flags.length === 1;
   if (positional.length === 2) return [...positional, agentToken];
   if (positional.length === 1)
@@ -203,13 +204,21 @@ export async function main({
   try {
     config = await loadConfig(configPath);
   } catch (error) {
+    // A token pasted where the config path goes must not come back out in the message.
+    if (AGENT_TOKEN.test(configPath))
+      return fail("Cannot use the given configuration path.");
     return fail(`Cannot use ${configPath}: ${error.message}`);
   }
   const target = config.targets.find((t) => t.id === targetId);
-  if (!target)
+  if (!target) {
+    const configured = `Configured targets: ${config.targets.map((t) => t.id).join(", ")}`;
+    // A token pasted where the target ID goes is not echoed.
     return fail(
-      `Unknown target "${targetId}". Configured targets: ${config.targets.map((t) => t.id).join(", ")}`,
+      AGENT_TOKEN.test(targetId)
+        ? `Unknown target. ${configured}`
+        : `Unknown target "${targetId}". ${configured}`,
     );
+  }
   // The input must fit the method of the target: nothing is prompted otherwise.
   if (target.protocol === "agent" && !agentToken)
     return fail(

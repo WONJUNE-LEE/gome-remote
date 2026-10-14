@@ -192,6 +192,87 @@ test("a token can never be passed as an argument, and unknown or repeated flags 
   }
 });
 
+// Final review 4: only the exact flag is a flag, and a pasted token is never echoed back.
+test("a token pasted after the flag is never echoed in an error, wherever it lands", async (t) => {
+  const { configPath, dir } = await setup(t);
+  const env = {};
+  for (const argv of [
+    [configPath, "--agent-token", TOKEN], // the token becomes the target id
+    ["--agent-token", TOKEN], // ... with the config implied
+    ["--agent-token", TOKEN, "mac"], // ... or the config path
+    [TOKEN, "mac"],
+    [configPath, "mac", TOKEN], // too many positionals
+    [configPath, "mac", "extra", "--agent-token"],
+  ]) {
+    const result = await run(argv, [], { env, home: dir });
+    assert.notEqual(result.code, 0, argv.join(" "));
+    assert.ok(
+      !result.err.includes(TOKEN) && !result.out.includes(TOKEN),
+      `echoed the token for: ${argv.map((a) => (a === TOKEN ? "<token>" : a)).join(" ")}`,
+    );
+  }
+  // A target id that does not look like a token is still named, so a typo is easy to find.
+  const typo = await run([configPath, "mca", "--agent-token"], [], {
+    env,
+    home: dir,
+  });
+  assert.equal(typo.code, 1);
+  assert.match(typo.err, /Unknown target "mca"/);
+  // A token-shaped unknown id says so without the value, and still lists the real targets.
+  const shaped = await run([configPath, "--agent-token", TOKEN], [], {
+    env,
+    home: dir,
+  });
+  assert.equal(shaped.code, 1);
+  assert.match(shaped.err, /Unknown target\b/);
+  assert.match(shaped.err, /ubuntu-server, mac-vnc, mac/);
+  assert.doesNotMatch(shaped.err, /Unknown target "/);
+});
+
+test("more positional arguments than expected is a usage error that echoes no value", async (t) => {
+  const { configPath, dir } = await setup(t);
+  const result = await run([configPath, "mac", "secret-looking-extra"], [], {
+    env: {},
+    home: dir,
+  });
+  assert.equal(result.code, 2);
+  assert.match(result.err, /Usage/);
+  assert.ok(!result.err.includes("secret-looking-extra"));
+});
+
+test(
+  "a target id that starts with a dash is a positional argument, not a flag",
+  { skip: !posix },
+  async (t) => {
+    const { dir } = await setup(t);
+    const configPath = join(dir, "dash.json");
+    await writeFile(
+      configPath,
+      JSON.stringify({
+        socketPath: "/home/user/.local/state/gome-remote/gateway.sock",
+        publicOrigin: "http://127.0.0.1:38991",
+        allowedLogins: ["owner@example.com"],
+        credentialsFile: join(dir, "state", "credentials.json"),
+        targets: [
+          {
+            id: "-mac",
+            name: "Mac (대시)",
+            platform: "mac",
+            protocol: "agent",
+            hostname: "100.64.0.20",
+          },
+        ],
+      }),
+    );
+    const result = await run(
+      [configPath, "-mac", "--agent-token"],
+      [`${TOKEN}\n`],
+    );
+    assert.equal(result.code, 0, result.err);
+    assert.match(result.out, /저장했습니다: -mac/);
+  },
+);
+
 test(
   "with one positional argument the config comes from GOME_REMOTE_CONFIG, as for the other targets",
   { skip: !posix },
