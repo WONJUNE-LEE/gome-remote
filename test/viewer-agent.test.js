@@ -432,3 +432,23 @@ test("the text dialog types through the agent and never uses the clipboard path"
   v.el("text-form").onsubmit({ preventDefault() {} });
   assert.equal(v.agents[0].texts.length, 1, "an empty text sends nothing");
 });
+
+test("the measurement panel is added to the page only when the address asks for it", async () => {
+  for (const hash of ["", "#", "#something", "#measured"]) {
+    const plainPage = await viewer({ targets: [mac], hash });
+    assert.deepEqual(plainPage.body.children, [], hash);
+    assert.deepEqual(
+      plainPage.measureUse,
+      [],
+      `${hash}: the measurement module touched no document, timer or message port`,
+    );
+  }
+  const measuring = await viewer({ targets: [mac], hash: "#measure" });
+  assert.equal(measuring.body.children.length, 1);
+  assert.equal(measuring.body.children[0].id, "measure-panel");
+  assert.notDeepEqual(
+    measuring.measureUse,
+    [],
+    "the same recorder does see the panel",
+  );
+});

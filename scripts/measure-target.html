@@ -1,0 +1,56 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>flip target</title>
+    <style>
+      html,
+      body {
+        margin: 0;
+        height: 100%;
+        overflow: hidden;
+        user-select: none;
+        -webkit-user-select: none;
+      }
+      /* No transition or animation: the colour must change in a single paint on mousedown. */
+      #flip {
+        position: fixed;
+        inset: 0;
+        background: #e00000;
+      }
+      /* Large, so the counter can still be read in a screenshot of the remote picture. */
+      #cap {
+        position: fixed;
+        left: 24px;
+        top: 16px;
+        font: 64px monospace;
+        color: #fff;
+        mix-blend-mode: difference;
+        pointer-events: none;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="flip"></div>
+    <div id="cap">flips: <span id="n">0</span> (F: fullscreen)</div>
+    <script>
+      // Every mouse press flips the whole window between two colours. The measurement mode
+      // (#measure in the gateway page) clicks and times how long the remote picture takes to
+      // show the flip. The counter proves that every click was delivered exactly once.
+      const A = "#e00000",
+        B = "#00c0ff";
+      let state = false,
+        n = 0;
+      const el = document.getElementById("flip");
+      addEventListener("mousedown", () => {
+        state = !state;
+        el.style.background = state ? B : A;
+        document.getElementById("n").textContent = ++n;
+      });
+      addEventListener("keydown", (e) => {
+        if (e.key === "f" || e.key === "F")
+          document.documentElement.requestFullscreen?.();
+      });
+    </script>
+  </body>
+</html>

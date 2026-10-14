@@ -25,6 +25,9 @@ export async function loadTs(name, globals = {}, modules = {}) {
       );
     return modules[specifier];
   };
-  vm.runInNewContext(outputText, { exports, require, window: {}, ...globals });
+  const sandbox = { exports, require, window: {}, ...globals };
+  vm.runInNewContext(outputText, sandbox);
+  // The module's global scope, for a test that checks what the module left in it.
+  Object.defineProperty(exports, "__sandbox", { value: sandbox });
   return exports;
 }

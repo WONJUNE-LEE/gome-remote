@@ -3,6 +3,7 @@ import { ApiError, api, appMode, autoResolution } from "./api";
 import { createAgentSession, type AgentSession } from "./agent";
 import { endText, startFailureReason } from "./agent-messages";
 import { connectFailure, createSessionFlow, errorScreen } from "./flow";
+import { guacamoleSource, initMeasure, videoSource } from "./measure";
 import { createResolution, sizeFor } from "./resolution";
 import {
   connectingText,
@@ -554,4 +555,15 @@ api.onViewerAction((action) => {
 });
 window.addEventListener("blur", releaseInput);
 window.addEventListener("beforeunload", stop);
+// Measurement mode: does nothing unless the address has #measure (src/measure.ts).
+initMeasure({
+  hash: location.hash,
+  source: () =>
+    agent
+      ? videoSource(agent.video, (fx, fy) => agent?.clickAt(fx, fy))
+      : client
+        ? guacamoleSource(client, el("display"))
+        : undefined,
+  soak: (ms) => agent?.watchFrames(ms),
+});
 void refresh();

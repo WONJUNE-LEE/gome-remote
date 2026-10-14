@@ -12,6 +12,7 @@ class FakeElement {
     this.id = id;
     this.hidden = hidden;
     this.textContent = "";
+    this.style = {};
     this.disabled = false;
     this.value = "";
     this.open = false;
@@ -103,6 +104,7 @@ export async function viewer({
   bridgeVersion = 3,
   targets,
   fetchHandler,
+  hash = "",
   agentStart,
 } = {}) {
   const fetches = [];
@@ -342,6 +344,28 @@ export async function viewer({
   });
   const flow = await loadTs("flow.ts");
   const agentMessages = await loadTs("agent-messages.ts");
+  // The measurement module is given recording stand-ins: a page without #measure must
+  // leave `measureUse` empty (no document access, no timer, no message port).
+  const measureUse = [];
+  const measure = await loadTs("measure.ts", {
+    document: new Proxy(document, {
+      get(target, name) {
+        measureUse.push(`document.${String(name)}`);
+        return target[name];
+      },
+    }),
+    MessageChannel: class extends MessageChannel {
+      constructor() {
+        super();
+        measureUse.push("MessageChannel");
+      }
+    },
+    performance,
+    setTimeout: (...args) => {
+      measureUse.push("setTimeout");
+      return setTimeout(...args);
+    },
+  });
   const resolution = await loadTs("resolution.ts", {
     setTimeout: fakeSetTimeout,
     clearTimeout: fakeClearTimeout,
@@ -351,6 +375,7 @@ export async function viewer({
     {
       window,
       document,
+      location: { hash },
       Event,
       ResizeObserver: class {
         constructor(callback) {
@@ -373,6 +398,7 @@ export async function viewer({
       "./flow": flow,
       "./agent": { createAgentSession: (deps) => new FakeAgent(deps) },
       "./agent-messages": agentMessages,
+      "./measure": measure,
       "./resolution": resolution,
       "./style.css": {},
     },
@@ -389,6 +415,8 @@ export async function viewer({
     clients,
     tunnels,
     agents,
+    body,
+    measureUse,
     bridgeCalls,
     settle,
     // The viewer element changes size (CSS pixels): every live observer is told.
