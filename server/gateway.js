@@ -150,8 +150,10 @@ export function createGateway(
     dist = resolve("dist"),
     now = Date.now,
     agent = createAgentClient({ now }),
+    log = console.error,
   } = {},
 ) {
+  const firstLine = (value) => String(value ?? "").split(/\r?\n/, 1)[0];
   const tickets = new Tickets(now);
   const sockets = new WebSocketServer({
     noServer: true,
@@ -327,6 +329,12 @@ export function createGateway(
                 error: AGENT_MESSAGES[error.code],
                 code: error.code,
               });
+            // Anything that is not the client's own error is a bug here: say so once, in one
+            // line with no secret (the token is cut out of the message, the stack is dropped).
+            if (!(error instanceof AgentError))
+              log(
+                `Mac agent session for "${target.id}" failed unexpectedly: ${String(error?.name ?? "Error")}: ${firstLine(error?.message).split(credential.agentToken).join("[token]")}`,
+              );
             // Bad token, timeout, unreachable, nonsense: the page only learns "unavailable".
             return json(res, 424, {
               error: AGENT_MESSAGES.unavailable,

@@ -66,7 +66,7 @@ function request(
   });
 }
 
-async function fixture(t, { token = TOKEN } = {}) {
+async function fixture(t, { token = TOKEN, wrapAgent } = {}) {
   const seen = []; // what the fake agent received
   const agentBehaviour = {
     status: (_req, res) => reply(res, 200, HEALTHY),
@@ -102,6 +102,7 @@ async function fixture(t, { token = TOKEN } = {}) {
 
   let clock = 1_000_000;
   const logs = [];
+  const gatewayLogs = []; // the gateway's own lines
   const entries = { mac: token ? { agentToken: token } : undefined };
   const credentials = {
     entries,
@@ -126,7 +127,8 @@ async function fixture(t, { token = TOKEN } = {}) {
   const gateway = createGateway(config, {
     credentials,
     probe: async () => true,
-    agent,
+    agent: wrapAgent ? wrapAgent(agent) : agent,
+    log: (line) => gatewayLogs.push(line),
     now: () => clock,
   });
   await listenOnSocket(gateway.server, socketPath);
@@ -154,6 +156,7 @@ async function fixture(t, { token = TOKEN } = {}) {
   return {
     seen,
     logs,
+    gatewayLogs,
     agentBehaviour,
     call,
     post,
@@ -650,5 +653,42 @@ test(
     const [a, b] = await Promise.all([f.post(good), f.post(good)]);
     assert.deepEqual([a.status, b.status], [200, 200]);
     assert.deepEqual(new Set([a.json.sdp, b.json.sdp]), new Set(answers));
+  },
+);
+
+// Final review 7: an error that is not the agent client's own is a bug in the gateway; the
+// page still only learns "unavailable", but the log must say that something broke.
+test(
+  "an unexpected error while opening a session is logged once, without secrets, and answers 424",
+  { skip: !posix },
+  async (t) => {
+    const f = await fixture(t, {
+      wrapAgent: (agent) => ({
+        ...agent,
+        createSession: async (_target, token) => {
+          throw new TypeError(
+            `cannot read properties (token ${token})\n    at secret/stack/line`,
+          );
+        },
+      }),
+    });
+    const { status, json, text } = await f.post(good);
+    assert.equal(status, 424);
+    assert.deepEqual(json, {
+      error: AGENT_MESSAGES.unavailable,
+      code: "unavailable",
+    });
+    assert.ok(!text.includes("TypeError") && !text.includes(TOKEN));
+    assert.equal(f.gatewayLogs.length, 1, f.gatewayLogs.join("\n"));
+    const [line] = f.gatewayLogs;
+    assert.ok(!line.includes("\n"), "one line");
+    assert.ok(!line.includes(TOKEN), "no token");
+    assert.match(line, /TypeError/);
+    assert.match(line, /mac/, "names the target");
+    // The client's own failures are not double-reported by the gateway.
+    const g = await fixture(t);
+    g.agentBehaviour.session = (_req, res) => reply(res, 500, {});
+    assert.equal((await g.post(good)).status, 424);
+    assert.deepEqual(g.gatewayLogs, []);
   },
 );
