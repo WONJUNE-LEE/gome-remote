@@ -39,8 +39,9 @@ export function connectFailure(
 export interface SessionEffects {
   // Starts exactly one connection attempt.
   begin(input: ConnectInput): void;
-  // Shows that the session is over.
-  ended(): void;
+  // Shows that the session is over. `reason` is why, when the session knows (Mac agent
+  // sessions: "permission", "locked", "unavailable", ...); Guacamole sessions give none.
+  ended(reason?: string): void;
 }
 
 // A connection attempt starts only from an explicit user action: open() for a tile
@@ -74,9 +75,9 @@ export function createSessionFlow(effects: SessionEffects) {
     stopped() {
       active = false;
     },
-    ended() {
+    ended(reason?: string) {
       active = false;
-      effects.ended();
+      effects.ended(reason);
     },
     // Leaving the viewer: there is nothing to reconnect to any more.
     discard() {

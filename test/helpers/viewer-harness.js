@@ -100,9 +100,10 @@ const BRIDGE_1_RESOLUTIONS = ["1440x900", "1920x1080", "2560x1440"];
 // on any resolution but the fixed sizes.
 export async function viewer({
   appMode = false,
-  bridgeVersion = 2,
+  bridgeVersion = 3,
   targets,
   fetchHandler,
+  agentStart,
 } = {}) {
   const fetches = [];
   const elements = new Map();
@@ -210,6 +211,12 @@ export async function viewer({
   const defaultFetch = async (path, init) => {
     if (path === "/api/targets")
       return { status: 200, ok: true, json: async () => ({ targets }) };
+    if (path === "/api/agent-sessions")
+      return {
+        status: 200,
+        ok: true,
+        json: async () => ({ sdp: "v=0\r\nanswer" }),
+      };
     return {
       status: 201,
       ok: true,
@@ -267,6 +274,46 @@ export async function viewer({
       this.sizes.push([width, height]);
     }
   }
+  // The Mac (agent) session is replaced by a recorder: src/agent.ts has its own tests with
+  // a fake RTCPeerConnection. Here only main.ts's wiring is under test. By default `start`
+  // relays a fake offer through the page's own signalling function, as the real one does.
+  const agents = [];
+  class FakeAgent {
+    constructor(deps) {
+      this.deps = deps;
+      this.element = new FakeElement("div");
+      this.video = new FakeElement("video");
+      this.sizes = [];
+      this.texts = [];
+      this.releases = 0;
+      this.closed = 0;
+      this.focused = 0;
+      this.answer = undefined;
+      agents.push(this);
+    }
+    async start() {
+      if (agentStart) return agentStart(this);
+      this.answer = await this.deps.signal("v=0\r\nfake-offer");
+    }
+    sendSize(width, height) {
+      this.sizes.push([width, height]);
+    }
+    sendText(text) {
+      this.texts.push(text);
+      return true;
+    }
+    release() {
+      this.releases++;
+    }
+    focus() {
+      this.focused++;
+    }
+    close() {
+      this.closed++;
+    }
+    clickAt() {}
+    watchFrames() {}
+  }
   const Guacamole = {
     WebSocketTunnel: Tunnel,
     Client,
@@ -287,6 +334,7 @@ export async function viewer({
     JSON,
   });
   const flow = await loadTs("flow.ts");
+  const agentMessages = await loadTs("agent-messages.ts");
   const resolution = await loadTs("resolution.ts", {
     setTimeout: fakeSetTimeout,
     clearTimeout: fakeClearTimeout,
@@ -316,6 +364,8 @@ export async function viewer({
       "./api": api,
       "./tiles": tiles,
       "./flow": flow,
+      "./agent": { createAgentSession: (deps) => new FakeAgent(deps) },
+      "./agent-messages": agentMessages,
       "./resolution": resolution,
       "./style.css": {},
     },
@@ -331,6 +381,7 @@ export async function viewer({
     fetches,
     clients,
     tunnels,
+    agents,
     bridgeCalls,
     settle,
     // The viewer element changes size (CSS pixels): every live observer is told.
@@ -349,6 +400,10 @@ export async function viewer({
       fetches.filter((f) => f.path === "/api/sessions").map((f) => f.body),
     action: (name) => actionListener?.(name),
     posts: () => fetches.filter((f) => f.path === "/api/sessions").length,
+    agentRequests: () =>
+      fetches
+        .filter((f) => f.path === "/api/agent-sessions")
+        .map((f) => f.body),
     gets: () => fetches.filter((f) => f.path === "/api/targets").length,
     tiles: () => el("tiles").children,
   };
