@@ -6,6 +6,7 @@ import {
   copyFile,
   mkdir,
   mkdtemp,
+  readdir,
   readFile,
   rm,
   stat,
@@ -25,10 +26,21 @@ const BIND = "100.64.0.20";
 
 const STUBS = {
   // Every call is appended to $STUB_LOG as one line.
-  codesign: `echo "codesign $*" >> "$STUB_LOG"`,
+  // STUB_CODESIGN_FAIL: a glob; a call whose arguments match it fails.
+  codesign: `
+echo "codesign $*" >> "$STUB_LOG"
+case "$*" in *\${STUB_CODESIGN_FAIL:-@@none@@}*) exit 1 ;; esac
+exit 0`,
   launchctl: `echo "launchctl $*" >> "$STUB_LOG"`,
   plutil: `echo "plutil $*" >> "$STUB_LOG"`,
-  sleep: ``,
+  // A fake clock: sleeping advances it and \`date +%s\` reads it, so the 10 second
+  // deadline of the health check runs without waiting.
+  sleep: `echo $(($(cat "$STUB_CLOCK") + \${1:-0})) > "$STUB_CLOCK"`,
+  date: `[ "$1" = +%s ] && exec cat "$STUB_CLOCK"; PATH="\${PATH#*:}"; exec date "$@"`,
+  // STUB_UID stands in for the user id; STUB_OPENSSL_RAND_FAIL makes \`openssl rand\` fail.
+  id: `[ "$1" = -u ] && [ -n "\${STUB_UID-}" ] && { echo "$STUB_UID"; exit 0; }; PATH="\${PATH#*:}"; exec id "$@"`,
+  openssl: `[ "$1" = rand ] && [ -n "\${STUB_OPENSSL_RAND_FAIL-}" ] && exit 1; PATH="\${PATH#*:}"; exec openssl "$@"`,
+  sudo: `echo "sudo $*" >> "$STUB_LOG"; exit 1`,
   // The Mac's own address, when the test wants one to be suggested.
   tailscale: `[ -n "\${STUB_TAILSCALE_IP-}" ] && echo "$STUB_TAILSCALE_IP" || exit 1`,
   security: `
@@ -69,20 +81,28 @@ async function lab(t) {
     "binary v1",
   );
   await writeFile(join(root, "codes"), "403\n");
-  const env = (extra = {}) => ({
-    PATH: `${stubs}:${process.env.PATH}`,
-    HOME: home,
-    TMPDIR: root,
-    STUB_LOG: join(root, "log"),
-    STUB_CODES: join(root, "codes"),
-    GOME_SKIP_BUILD: "1",
-    GOME_SUDO: "",
-    GOME_ROOT_OWNER: "",
-    GOME_PREFIX: prefix,
-    GOME_AGENT_BIND: BIND,
-    GOME_AGENT_GATEWAY: GATEWAY,
-    ...extra,
-  });
+  await writeFile(join(root, "clock"), "1000\n");
+  const env = (extra = {}) => {
+    const full = {
+      PATH: `${stubs}:${process.env.PATH}`,
+      HOME: home,
+      TMPDIR: root,
+      STUB_LOG: join(root, "log"),
+      STUB_CODES: join(root, "codes"),
+      STUB_CLOCK: join(root, "clock"),
+      GOME_SKIP_BUILD: "1",
+      GOME_SUDO: "",
+      GOME_ROOT_OWNER: "",
+      GOME_PREFIX: prefix,
+      GOME_AGENT_BIND: BIND,
+      GOME_AGENT_GATEWAY: GATEWAY,
+      ...extra,
+    };
+    // null removes a variable.
+    for (const [key, value] of Object.entries(full))
+      if (value === null) delete full[key];
+    return full;
+  };
   const run = (script, args = [], extra = {}, input = "") =>
     spawnSync("bash", [join(agent, script), ...args], {
       encoding: "utf8",
@@ -450,8 +470,15 @@ test(
   async (t) => {
     const l = await lab(t);
     await l.codes(["000"]);
-    assert.notEqual(l.run("install.sh").status, 0);
-    await assert.rejects(stat(l.paths.bin), { code: "ENOENT" });
+    const failed = l.run("install.sh");
+    assert.notEqual(failed.status, 0);
+    assert.match(failed.stderr, /run install\.sh again/);
+    for (const gone of [l.paths.bin, l.paths.plist, l.paths.config])
+      await assert.rejects(stat(gone), { code: "ENOENT" }, gone);
+    const polls = (await l.log())
+      .split("\n")
+      .filter((line) => line.startsWith("curl "));
+    assert.equal(polls.length, 10, "ten polls fill the 10 second deadline");
     const token = await readFile(join(l.paths.support, "token"), "utf8");
     await l.codes(["403"]);
     const r = l.run("install.sh");
@@ -496,5 +523,143 @@ test(
     await stat(l.paths.plist);
     await stat(join(l.paths.support, "token"));
     await stat(join(l.paths.support, "sign"));
+  },
+);
+
+test(
+  "an operational install refuses the test-only overrides, as root, and a prefix outside the temporary directory",
+  { skip: !posix },
+  async (t) => {
+    const none = {
+      GOME_PREFIX: "",
+      GOME_SUDO: null,
+      GOME_ROOT_OWNER: null,
+      GOME_SKIP_BUILD: null,
+    };
+    const cases = [
+      [{ GOME_SUDO: "" }, /GOME_SUDO is only for the test suite/],
+      [{ GOME_ROOT_OWNER: "" }, /GOME_ROOT_OWNER is only for the test suite/],
+      [{ GOME_SKIP_BUILD: "1" }, /GOME_SKIP_BUILD is only for the test suite/],
+      [{ STUB_UID: "0" }, /not with sudo/],
+      [{ GOME_PREFIX: "/usr/local" }, /GOME_PREFIX is for the test suite/],
+      [{ GOME_PREFIX: tmpdir() }, /GOME_PREFIX is for the test suite/],
+    ];
+    for (const [extra, message] of cases) {
+      for (const args of [[], ["--dev"]]) {
+        const l = await lab(t);
+        const r = l.run("install.sh", args, { ...none, ...extra });
+        assert.notEqual(r.status, 0, JSON.stringify(extra));
+        assert.match(r.stderr, message);
+        const log = await l.log();
+        assert.doesNotMatch(log, /sudo|security|codesign|launchctl|curl/);
+        await assert.rejects(stat(join(l.home, "Library")), { code: "ENOENT" });
+      }
+    }
+    for (const [extra, message] of [
+      [{ GOME_SUDO: "" }, /GOME_SUDO is only for the test suite/],
+      [{ STUB_UID: "0" }, /not with sudo/],
+      [{ GOME_PREFIX: "/usr/local" }, /GOME_PREFIX is for the test suite/],
+    ]) {
+      const l = await lab(t);
+      const r = l.run("uninstall.sh", ["--yes"], {
+        GOME_PREFIX: "",
+        GOME_SUDO: null,
+        ...extra,
+      });
+      assert.notEqual(r.status, 0, JSON.stringify(extra));
+      assert.match(r.stderr, message);
+      assert.doesNotMatch(await l.log(), /sudo|launchctl|security/);
+    }
+  },
+);
+
+test(
+  "a program built with the dev-install feature is never installed as the operational agent",
+  { skip: !posix },
+  async (t) => {
+    const l = await lab(t);
+    await l.build("binary with Gome Remote Agent Dev paths");
+    const r = l.run("install.sh");
+    assert.notEqual(r.status, 0);
+    assert.match(r.stderr, /dev-install feature/);
+    await assert.rejects(stat(l.paths.bin), { code: "ENOENT" });
+    assert.equal(l.run("install.sh", ["--dev"]).status, 0, "fine for --dev");
+  },
+);
+
+test(
+  "the staged program's signature is checked before it replaces the running one",
+  { skip: !posix },
+  async (t) => {
+    const l = await lab(t);
+    assert.equal(l.run("install.sh").status, 0);
+    assert.match(
+      await l.log(),
+      /codesign --verify --strict .*gome-remote-agent\.new/,
+    );
+    await l.build("binary v2");
+    const r = l.run("install.sh", [], { STUB_CODESIGN_FAIL: ".new" });
+    assert.notEqual(r.status, 0);
+    assert.match(r.stderr, /signature/);
+    assert.equal(await readFile(l.paths.bin, "utf8"), "binary v1");
+    await assert.rejects(stat(`${l.paths.bin}.new`), { code: "ENOENT" });
+  },
+);
+
+test(
+  "an empty token file counts as missing, and a failed token creation leaves no file behind",
+  { skip: !posix },
+  async (t) => {
+    const l = await lab(t);
+    await mkdir(l.paths.support, { recursive: true });
+    await writeFile(join(l.paths.support, "token"), "");
+    const r = l.run("install.sh");
+    assert.equal(r.status, 0, r.stderr);
+    const token = await readFile(join(l.paths.support, "token"), "utf8");
+    assert.match(token, /^[A-Za-z0-9_-]{43}$/);
+    assert.ok(r.stdout.includes(token));
+    assert.equal(
+      (await stat(join(l.paths.support, "token"))).mode & 0o777,
+      0o600,
+    );
+
+    const failing = await lab(t);
+    const f = failing.run("install.sh", [], { STUB_OPENSSL_RAND_FAIL: "1" });
+    assert.notEqual(f.status, 0);
+    assert.match(f.stderr, /token/);
+    await assert.rejects(stat(join(failing.paths.support, "token")), {
+      code: "ENOENT",
+    });
+    const leftovers = (await readdir(failing.paths.support)).filter((name) =>
+      name.startsWith("token"),
+    );
+    assert.deepEqual(leftovers, []);
+  },
+);
+
+test(
+  "characters that mean something in the LaunchAgent's XML in the home directory stop the install before anything is replaced",
+  { skip: !posix },
+  async (t) => {
+    const l = await lab(t);
+    const home = join(l.root, "a&b");
+    await mkdir(home);
+    const r = l.run("install.sh", [], { HOME: home });
+    assert.notEqual(r.status, 0);
+    assert.match(r.stderr, /LaunchAgent file cannot hold/);
+    await assert.rejects(stat(l.paths.bin), { code: "ENOENT" });
+    await assert.rejects(stat(join(home, "Library")), { code: "ENOENT" });
+  },
+);
+
+test(
+  "uninstall also removes a staged program left behind by an interrupted update",
+  { skip: !posix },
+  async (t) => {
+    const l = await lab(t);
+    assert.equal(l.run("install.sh").status, 0);
+    await writeFile(`${l.paths.bin}.new`, "half");
+    assert.equal(l.run("uninstall.sh", ["--yes"]).status, 0);
+    await assert.rejects(stat(`${l.paths.bin}.new`), { code: "ENOENT" });
   },
 );

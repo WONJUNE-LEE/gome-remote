@@ -9,8 +9,11 @@
 #
 # It cannot remove the entries in System Settings > Privacy & Security; it tells you to.
 #
-# GOME_SUDO and GOME_PREFIX exist for the test suite; leave them alone.
+# GOME_SUDO and GOME_PREFIX exist for the test suite. Without GOME_PREFIX (a directory under
+# the temporary directory) the script refuses to run when GOME_SUDO is set.
 set -euo pipefail
+
+die() { printf 'uninstall.sh: %s\n' "$*" >&2; exit 1; }
 
 DEV=0
 YES=0
@@ -22,8 +25,19 @@ for arg in "$@"; do
   esac
 done
 
-SUDO="${GOME_SUDO-sudo}"
 PREFIX="${GOME_PREFIX-}"
+if [ -n "$PREFIX" ]; then
+  tmp_root="${TMPDIR:-/tmp}"
+  tmp_root="${tmp_root%/}"
+  case "$PREFIX" in
+    "$tmp_root"/?*) ;;
+    *) die "GOME_PREFIX is for the test suite and must be a directory under $tmp_root" ;;
+  esac
+else
+  [ "$(id -u)" != 0 ] || die "run this as the logged-in user, not with sudo or as root; it asks for the administrator password itself"
+  if [ -n "${GOME_SUDO+x}" ]; then die "GOME_SUDO is only for the test suite and is not accepted here (unset it)"; fi
+fi
+SUDO="${GOME_SUDO-sudo}"
 SUPPORT="$HOME/Library/Application Support/Gome Remote Agent"
 AS_ROOT=()
 if [ "$DEV" = 0 ] && [ -n "$SUDO" ]; then AS_ROOT=("$SUDO"); fi
@@ -60,7 +74,7 @@ if [ "$DEV" = 1 ]; then
     remove_keychain
   fi
 else
-  root rm -f "$PREFIX/usr/local/libexec/gome-remote-agent" "$PREFIX/usr/local/libexec/gome-remote-agent.prev"
+  root rm -f "$PREFIX/usr/local/libexec/gome-remote-agent" "$PREFIX/usr/local/libexec/gome-remote-agent.prev" "$PREFIX/usr/local/libexec/gome-remote-agent.new"
   root rm -rf "$PREFIX/usr/local/etc/gome-remote-agent"
   rm -f "$SUPPORT/token"
   if [ ! -e "$HOME/Library/LaunchAgents/net.gome.remote-agent-dev.plist" ]; then

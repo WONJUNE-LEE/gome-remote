@@ -12,17 +12,38 @@
 # the previous program is put back.
 #
 # GOME_SUDO, GOME_ROOT_OWNER, GOME_PREFIX, GOME_AGENT_BIND, GOME_AGENT_GATEWAY and
-# GOME_SKIP_BUILD exist for the test suite (test/agent-install.test.js); leave them alone.
+# GOME_SKIP_BUILD exist for the test suite (test/agent-install.test.js). Without
+# GOME_PREFIX (a directory under the temporary directory) the script refuses to run when
+# GOME_SUDO, GOME_ROOT_OWNER or GOME_SKIP_BUILD is set, so none of them can weaken a real
+# install.
 set -euo pipefail
+
+say() { printf '%s\n' "$*"; }
+die() { printf 'install.sh: %s\n' "$*" >&2; exit 1; }
 
 DEV=0
 for arg in "$@"; do
   if [ "$arg" = --dev ] && [ "$DEV" = 0 ]; then DEV=1; else echo "usage: $0 [--dev]" >&2; exit 2; fi
 done
 
+PREFIX="${GOME_PREFIX-}"
+if [ -n "$PREFIX" ]; then
+  tmp_root="${TMPDIR:-/tmp}"
+  tmp_root="${tmp_root%/}"
+  case "$PREFIX" in
+    "$tmp_root"/?*) ;;
+    *) die "GOME_PREFIX is for the test suite and must be a directory under $tmp_root" ;;
+  esac
+else
+  # Run as root, the keychain, token and LaunchAgent would belong to root and the agent
+  # could not be loaded into the user's session.
+  [ "$(id -u)" != 0 ] || die "run this as the logged-in user, not with sudo or as root; it asks for the administrator password itself"
+  for name in GOME_SUDO GOME_ROOT_OWNER GOME_SKIP_BUILD; do
+    if [ -n "${!name+x}" ]; then die "$name is only for the test suite and is not accepted here (unset it)"; fi
+  done
+fi
 SUDO="${GOME_SUDO-sudo}"
 ROOT_OWNER="${GOME_ROOT_OWNER-root:wheel}"
-PREFIX="${GOME_PREFIX-}"
 HERE="$(cd "$(dirname "$0")" && pwd)"
 SUPPORT="$HOME/Library/Application Support/Gome Remote Agent"
 SIGN_DIR="$SUPPORT/sign"
@@ -57,8 +78,13 @@ fi
 PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
 DOMAIN="gui/$(id -u)"
 
-say() { printf '%s\n' "$*"; }
-die() { printf 'install.sh: %s\n' "$*" >&2; exit 1; }
+# These end up inside the LaunchAgent's XML; a character with a meaning there would change
+# what the file says. Checked before anything is replaced.
+xml_special='[&<>"]'
+case "$HOME$BIN$LOG" in
+  *$xml_special*) die "the home directory or the install paths contain one of & < > \" and the LaunchAgent file cannot hold them" ;;
+esac
+
 root() { ${AS_ROOT[@]+"${AS_ROOT[@]}"} "$@"; }
 owner_of() { if [ "$(uname)" = Darwin ]; then stat -f %u "$1"; else stat -c %u "$1"; fi; }
 mode_of() { if [ "$(uname)" = Darwin ]; then stat -f %Lp "$1"; else stat -c %a "$1"; fi; }
@@ -128,6 +154,11 @@ if [ -z "${GOME_SKIP_BUILD-}" ]; then
 fi
 BUILT="$HERE/target/release/gome-remote-agent"
 [ -f "$BUILT" ] || die "the build produced no $BUILT"
+# A program built for the development install reads its settings from a directory the
+# user owns; it must never become the root-owned one (spec D2). Its paths are in the file.
+if [ "$DEV" = 0 ] && grep -aq "Gome Remote Agent Dev" "$BUILT"; then
+  die "$BUILT was built with the dev-install feature and cannot be installed as the operational agent"
+fi
 
 # ---- 3. sign: a self-signed code-signing certificate in a keychain of its own, hardened runtime ----
 make_identity() {
@@ -175,41 +206,52 @@ codesign --verify --strict "$SIGNED"
 # ---- 4. put the files in place ----
 # The new program is written next to the old one and renamed over it: a program that is
 # running keeps its own file, and macOS never sees a signed file rewritten in place.
+# (For a development install `root` runs the command as the user itself.)
+# swap_in puts the staged "$BIN.new" in place, but only while its signature is intact.
+swap_in() {
+  if ! codesign --verify --strict "$BIN.new"; then
+    root rm -f "$BIN.new"
+    return 1
+  fi
+  root mv -f "$BIN.new" "$BIN"
+}
 FRESH=0
 [ -f "$BIN" ] || FRESH=1
 if [ "$DEV" = 1 ]; then
   mkdir -p "$DATA/bin"
   chmod 700 "$DATA"
-  if [ -f "$BIN" ]; then cp -p "$BIN" "$BIN.prev"; fi
-  install -m 755 "$SIGNED" "$BIN.new"
-  mv -f "$BIN.new" "$BIN"
 else
   if [ -n "$SUDO" ]; then say "The administrator password is needed to write under /usr/local."; root -v; fi
   root mkdir -p "$(dirname "$BIN")" "$CONFIG_DIR"
-  if [ -f "$BIN" ]; then root cp -p "$BIN" "$BIN.prev"; fi
-  root install ${OWN[@]+"${OWN[@]}"} -m 755 "$SIGNED" "$BIN.new"
-  root mv -f "$BIN.new" "$BIN"
 fi
+if [ -f "$BIN" ]; then root cp -p "$BIN" "$BIN.prev"; fi
+root install ${OWN[@]+"${OWN[@]}"} -m 755 "$SIGNED" "$BIN.new"
+swap_in || die "the staged program does not pass the signature check; nothing was replaced"
 
 if [ "$FIRST_INSTALL" = 1 ]; then
   json="$(printf '{\n  "bind": "%s",\n  "port": %s,\n  "gateway": "%s"\n}\n' "$BIND" "$PORT" "$GATEWAY")"
   printf '%s\n' "$json" > "$WORK/agent.json"
-  if [ "$DEV" = 1 ]; then
-    install -m 644 "$WORK/agent.json" "$CONFIG"
-  else
-    root install ${OWN[@]+"${OWN[@]}"} -m 644 "$WORK/agent.json" "$CONFIG"
-  fi
+  root install ${OWN[@]+"${OWN[@]}"} -m 644 "$WORK/agent.json" "$CONFIG"
 fi
 
 # ---- 5. the token: 32 random bytes, base64url, created once ----
+# An empty or damaged token file counts as missing. The new token is written beside the
+# old place and renamed into it only when it is complete.
+token_ok() { [ -f "$1" ] && [ "$(tr -d '\n' < "$1" | grep -Ec '^[A-Za-z0-9_-]{43}$')" = 1 ]; }
 NEW_TOKEN=0
-if [ ! -f "$TOKEN_FILE" ]; then
-  mkdir -p "$(dirname "$TOKEN_FILE")"
-  chmod 700 "$(dirname "$TOKEN_FILE")"
-  (umask 077; openssl rand -base64 32 | tr '+/' '-_' | tr -d '=\n' > "$TOKEN_FILE")
-  chmod 600 "$TOKEN_FILE"
+mkdir -p "$(dirname "$TOKEN_FILE")"
+chmod 700 "$(dirname "$TOKEN_FILE")"
+if ! token_ok "$TOKEN_FILE"; then
+  TOKEN_TMP="$(mktemp "$(dirname "$TOKEN_FILE")/token.XXXXXX")"
+  if ! (umask 077; openssl rand -base64 32 | tr '+/' '-_' | tr -d '=\n' > "$TOKEN_TMP") || ! token_ok "$TOKEN_TMP"; then
+    rm -f "$TOKEN_TMP"
+    die "could not create the token (openssl failed)"
+  fi
+  chmod 600 "$TOKEN_TMP"
+  mv -f "$TOKEN_TMP" "$TOKEN_FILE"
   NEW_TOKEN=1
 fi
+chmod 600 "$TOKEN_FILE"
 
 # ---- 6. the LaunchAgent: starts at login and is started again if it ever stops ----
 # Standard output and error go to one file: the agent caps the log through its standard
@@ -254,12 +296,13 @@ answers() {
   [ "$code" = 401 ] || [ "$code" = 403 ] || [ "$code" = 200 ]
 }
 wait_for_answer() {
-  local i
-  for i in 1 2 3 4 5 6 7 8 9 10; do
+  local deadline
+  deadline=$(($(date +%s) + 10))
+  while :; do
     answers && return 0
     sleep 1
+    [ "$(date +%s)" -lt "$deadline" ] || return 1
   done
-  return 1
 }
 restart
 if ! wait_for_answer; then
@@ -268,15 +311,21 @@ if ! wait_for_answer; then
   if [ -f "$BIN.prev" ]; then
     say "Putting the previous version back..."
     root cp -p "$BIN.prev" "$BIN.new"
-    root mv -f "$BIN.new" "$BIN"
+    swap_in || die "the previous version's signature is no longer intact; nothing was changed further"
     restart
     if wait_for_answer; then die "the new version failed and was rolled back; the previous version is running again"; fi
     die "the new version failed, and the previous version did not answer either"
   fi
-  # Nothing to go back to: stop it so it does not keep restarting, and make the next run a fresh install.
+  # Nothing to go back to: stop it so it does not keep restarting, and undo this run's
+  # installation, so that the next run is a fresh install again (the token is kept).
   stop_agent
   root rm -f "$BIN"
-  die "the agent did not start and there is no previous version to go back to (settings and token were kept)"
+  rm -f "$PLIST"
+  if [ "$FIRST_INSTALL" = 1 ]; then
+    root rm -f "$CONFIG"
+    die "the agent did not start and there is no previous version to go back to; the program, the LaunchAgent and the settings of this run were removed (the token was kept). Fix the cause (see the log above, $LOG) and run install.sh again; you will be asked for the addresses again"
+  fi
+  die "the agent did not start and there is no previous version to go back to; the program and the LaunchAgent were removed (settings and token were kept). Fix the cause (see the log above, $LOG) and run install.sh again"
 fi
 say "The agent is running ($LABEL, $BIND:$PORT)."
 
