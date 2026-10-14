@@ -64,5 +64,7 @@ jobs:
       - run: cargo test --locked --features dev-install
       # The installer runs under the system bash (3.2) on a Mac, not the newer one on PATH.
       - run: /bin/bash -n install.sh uninstall.sh
-      - run: cargo install cargo-deny --locked
+      # Pinned: deny.toml is validated against this version; a newer release could change
+      # the checks and turn CI red without any change here. Raise it together with deny.toml.
+      - run: cargo install cargo-deny --version 0.20.2 --locked
       - run: cargo deny check

@@ -42,8 +42,36 @@ test("Cargo.lock is committed and pins the WebRTC stack; deny.toml allows permis
   assert.match(deny, /unknown-registry = "deny"/);
   assert.match(deny, /unknown-git = "deny"/);
   assert.match(deny, /yanked = "deny"/);
-  for (const copyleft of ["GPL", "AGPL", "SSPL", "LGPL"])
-    assert.ok(!new RegExp(`"${copyleft}`).test(deny), copyleft);
+  // The exact allow-list: adding a licence (copyleft or not) is a decision that changes this test.
+  const allow = deny
+    .match(/^allow = \[([^\]]*)\]/m)[1]
+    .match(/"[^"]+"/g)
+    .map((s) => s.slice(1, -1));
+  assert.deepEqual(allow, [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Unicode-3.0",
+    "Zlib",
+    "OpenSSL",
+    "CC0-1.0",
+  ]);
+  assert.doesNotMatch(
+    deny,
+    /^\s*exceptions\s*=/m,
+    "no per-crate licence exceptions",
+  );
+});
+
+test("cargo-deny is installed at the version deny.toml was validated with, from its lock file", () => {
+  assert.match(
+    job,
+    /run: cargo install cargo-deny --version 0\.20\.2 --locked\n/,
+  );
+  assert.doesNotMatch(job, /cargo install cargo-deny(?!.*--version 0\.20\.2)/);
 });
 
 test("the crate takes no dependency from a git repository or a path outside itself", async () => {
