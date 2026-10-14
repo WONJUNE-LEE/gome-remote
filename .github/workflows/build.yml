@@ -64,6 +64,13 @@ jobs:
       - run: cargo test --locked --features dev-install
       # The installer runs under the system bash (3.2) on a Mac, not the newer one on PATH.
       - run: /bin/bash -n install.sh uninstall.sh
+      # install.sh refuses a program that contains the name of the development directory (a
+      # dev-install build). Build both ways and look for that name in the real binaries, so a
+      # change of the path or of the check cannot make the refusal silently useless.
+      - run: cargo build --release --locked --features dev-install
+      - run: grep -aq 'Gome Remote Agent Dev' target/release/gome-remote-agent
+      - run: cargo build --release --locked
+      - run: "! grep -aq 'Gome Remote Agent Dev' target/release/gome-remote-agent"
       # Pinned: deny.toml is validated against this version; a newer release could change
       # the checks and turn CI red without any change here. Raise it together with deny.toml.
       - run: cargo install cargo-deny --version 0.20.2 --locked

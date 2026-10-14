@@ -23,6 +23,52 @@ test("the agent job runs on macOS from agent/mac with every check of the spec", 
   assert.match(job, /\/bin\/bash -n install\.sh uninstall\.sh/);
 });
 
+// What install.sh looks for in the program to tell a development build from the real one.
+const installSource = await read("agent/mac/install.sh");
+const refusal = installSource.match(
+  /\[ "\$DEV" = 0 \] && grep -aq "([^"]+)" "\$BUILT"/,
+);
+const marker = refusal?.[1];
+
+test("install.sh refuses a program that holds the development directory's name, and that name is in the dev-install path", async () => {
+  assert.ok(marker, "install.sh checks the built program for a marker");
+  const paths = await read("agent/mac/src/paths.rs");
+  const dev = paths.slice(paths.indexOf('#[cfg(feature = "dev-install")]'));
+  const literal = dev.match(/home\.join\("([^"]+)"\)/)?.[1];
+  assert.ok(literal, "the dev-install paths are built from one literal");
+  assert.ok(
+    literal.includes(marker),
+    `the install check ${JSON.stringify(marker)} must be part of ${JSON.stringify(literal)}`,
+  );
+  // And the operational build's paths do not contain it.
+  const operational = paths.slice(
+    paths.indexOf('#[cfg(not(feature = "dev-install"))]'),
+    paths.indexOf('#[cfg(feature = "dev-install")]'),
+  );
+  assert.ok(!operational.includes(marker));
+  // The refusal happens before anything is signed or installed.
+  assert.ok(
+    installSource.indexOf(refusal[0]) < installSource.indexOf("# ---- 3. sign"),
+  );
+});
+
+test("CI builds both ways and looks for the same marker in the real binaries", () => {
+  assert.ok(marker);
+  const steps = job.split("\n").map((line) => line.trim());
+  const dev = steps.indexOf(
+    "- run: cargo build --release --locked --features dev-install",
+  );
+  const found = steps.indexOf(
+    `- run: grep -aq '${marker}' target/release/gome-remote-agent`,
+  );
+  const plain = steps.indexOf("- run: cargo build --release --locked");
+  const absent = steps.indexOf(
+    `- run: "! grep -aq '${marker}' target/release/gome-remote-agent"`,
+  );
+  assert.ok(dev >= 0 && found > dev, "a dev-install build contains the marker");
+  assert.ok(plain > found && absent > plain, "a plain build does not");
+});
+
 test("no cargo command in the job can change Cargo.lock", () => {
   const commands = job
     .split("\n")
