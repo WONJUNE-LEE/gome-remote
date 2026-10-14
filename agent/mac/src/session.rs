@@ -76,10 +76,14 @@ impl Closer for SessionHandle {
 struct Core {
     parts: Parts,
     slot: Slot<SessionHandle>,
-    /// Serialises the steps that change what runs (install, capture start, capture stop), so
-    /// a session's cleanup cannot interleave with its replacement's set-up. The slot's own
-    /// lock is taken inside it, never the other way round.
+    /// Held only for the short steps that install a session or end one, never across anything
+    /// slow. The slot's own lock is taken inside it, never the other way round.
     lifecycle: Mutex<()>,
+    /// Serialises the capture's own start and stop (which can take many seconds), so they
+    /// never overlap. Only the threads that start or stop the capture wait on it: answers,
+    /// the peers' hooks and the slot do not. Holds whether the capture may be running.
+    /// Taken before `lifecycle` or the slot, never while holding either.
+    capture_on: Mutex<bool>,
 }
 
 impl Core {
@@ -94,7 +98,14 @@ pub struct Sessions {
 
 impl Sessions {
     pub fn new(parts: Parts) -> Sessions {
-        Sessions { core: Arc::new(Core { parts, slot: Slot::default(), lifecycle: Mutex::new(()) }) }
+        Sessions {
+            core: Arc::new(Core {
+                parts,
+                slot: Slot::default(),
+                lifecycle: Mutex::new(()),
+                capture_on: Mutex::new(false),
+            }),
+        }
     }
 }
 
@@ -154,41 +165,105 @@ impl PeerHooks for Hooks {
     }
 
     fn closed(&self) {
-        let _life = self.core.lifecycle();
+        let core = &self.core;
         // A replaced session's late end is a no-op: its keys were released when it was
         // replaced, and the capture belongs to the session that replaced it.
-        if self.core.slot.finished(self.id()) {
-            self.core.parts.input.release_all();
-            self.core.parts.capture.stop();
-            println!("[session] ended; capture stopped");
+        let ended = {
+            let _life = core.lifecycle();
+            let ended = core.slot.finished(self.id());
+            if ended {
+                core.parts.input.release_all();
+            }
+            ended
+        };
+        if ended {
+            // Waits behind a capture start that is still running, then stops what it started.
+            let mut on = core.capture_on.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            stop_if_idle(core, &mut on);
         }
     }
 }
 
+/// Stops the capture when no session is left to watch it. Caller holds `capture_on`.
+fn stop_if_idle(core: &Core, on: &mut bool) {
+    if *on && core.slot.is_empty() {
+        core.parts.capture.stop();
+        *on = false;
+        println!("[session] ended; capture stopped");
+    }
+}
+
+/// What `begin_capture` found when it looked at its session.
+enum Plan {
+    /// Replaced or ended meanwhile: the session that replaced it starts the capture itself,
+    /// and an ended one has stopped it.
+    Skip,
+    /// Its peer died before the capture started.
+    Dead,
+    Go(Size, u32),
+}
+
 /// Starts (or re-targets) the capture for session `id`, after its answer has gone out.
+///
+/// No lock is held while the capture starts (ScreenCaptureKit can take tens of seconds when
+/// the system is unhappy), apart from the one that keeps captures from starting or stopping
+/// at the same time. A takeover that arrives meanwhile answers at once; its own start waits
+/// its turn and re-targets the capture this one started.
 fn begin_capture(core: &Core, hooks: &Hooks, id: u64, peer: &PeerHandle) {
-    let _life = core.lifecycle();
-    let started = core.slot.with_current(id, || {
-        if !peer.is_alive() {
-            return Err("the peer ended before capture started".to_string());
-        }
-        let size = *hooks.size.lock().unwrap();
-        let bitrate = hooks.controller.lock().unwrap().current();
-        core.parts.capture.start(size, bitrate, Arc::new(peer.clone()))
-    });
-    match started {
-        Some(Ok(())) => {}
-        // Replaced or ended meanwhile: whoever replaced it starts the capture for itself.
-        None => {}
-        Some(Err(e)) => {
-            eprintln!("[session] capture did not start: {e}");
-            peer.close();
-            // Nothing may keep capturing without a session.
-            if core.slot.finished(id) {
-                core.parts.input.release_all();
-                core.parts.capture.stop();
+    let mut on = core.capture_on.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let plan = core
+        .slot
+        .with_current(id, || {
+            if !peer.is_alive() {
+                return Plan::Dead;
             }
+            Plan::Go(*hooks.size.lock().unwrap(), hooks.controller.lock().unwrap().current())
+        })
+        .unwrap_or(Plan::Skip);
+    let (size, bitrate) = match plan {
+        Plan::Skip => return,
+        Plan::Dead => {
+            let ended = {
+                let _life = core.lifecycle();
+                core.slot.finished(id)
+            };
+            if ended {
+                core.parts.input.release_all();
+            }
+            stop_if_idle(core, &mut on);
+            return;
         }
+        Plan::Go(size, bitrate) => (size, bitrate),
+    };
+    *on = true;
+    let result = core.parts.capture.start(size, bitrate, Arc::new(peer.clone()));
+    if let Err(e) = result {
+        eprintln!("[session] capture did not start: {e}");
+        peer.close();
+        let ended = {
+            let _life = core.lifecycle();
+            core.slot.finished(id)
+        };
+        if ended {
+            core.parts.input.release_all();
+        }
+        // Nothing may keep capturing without a session.
+        stop_if_idle(core, &mut on);
+        return;
+    }
+    if core.slot.is_current(id) {
+        // The page may have resized or the estimate moved while the capture was starting.
+        let (latest, current) = (*hooks.size.lock().unwrap(), hooks.controller.lock().unwrap().current());
+        if latest != size {
+            core.parts.capture.resize(latest, bitrate_cap(latest)).unwrap_or_else(|e| eprintln!("[session] {e}"));
+        }
+        if current != bitrate {
+            core.parts.capture.set_bitrate(current);
+        }
+    } else {
+        // Superseded or ended while starting: a replacement's own start re-targets this
+        // capture when it gets its turn; with no replacement the capture goes at once.
+        stop_if_idle(core, &mut on);
     }
 }
 
@@ -281,23 +356,43 @@ mod tests {
         start_delay: Mutex<Duration>,
         suspect: AtomicBool,
         last_capture: Mutex<Option<u64>>,
+        /// What the capture is doing now: `None` stopped, else the size it was last started at.
+        running: Mutex<Option<Size>>,
+        /// Starts and stops in progress; more than one at a time is a bug in the caller.
+        busy: AtomicUsize,
+        overlapped: AtomicBool,
+    }
+    impl FakeCapture {
+        fn enter(&self) {
+            if self.busy.fetch_add(1, SeqCst) > 0 {
+                self.overlapped.store(true, SeqCst);
+            }
+        }
     }
     impl Capture for Arc<FakeCapture> {
         fn start(&self, size: Size, bitrate: u32, _target: Arc<dyn FrameTarget>) -> Result<(), String> {
-            std::thread::sleep(*self.start_delay.lock().unwrap());
+            self.enter();
+            let delay = *self.start_delay.lock().unwrap();
+            std::thread::sleep(delay);
             self.log.add(format!("start {}x{} {bitrate}", size.w, size.h));
-            if self.fail_start.load(SeqCst) {
+            let result = if self.fail_start.load(SeqCst) {
                 Err("no displays".into())
             } else {
+                *self.running.lock().unwrap() = Some(size);
                 Ok(())
-            }
+            };
+            self.busy.fetch_sub(1, SeqCst);
+            result
         }
         fn resize(&self, size: Size, cap: u32) -> Result<(), String> {
             self.log.add(format!("resize {}x{} {cap}", size.w, size.h));
             Ok(())
         }
         fn stop(&self) {
+            self.enter();
             self.log.add("stop");
+            *self.running.lock().unwrap() = None;
+            self.busy.fetch_sub(1, SeqCst);
         }
         fn request_keyframe(&self) {
             self.log.add("keyframe");
@@ -357,7 +452,7 @@ mod tests {
         }
     }
 
-    type Peers = Arc<Mutex<Vec<(Arc<dyn PeerHooks>, PeerHandle)>>>;
+    type Peers = Arc<Mutex<Vec<(Arc<dyn PeerHooks>, PeerHandle, String)>>>;
 
     /// The test's grip on one agent: fakes for everything outside it, and the hooks of every
     /// peer it accepted (a test calls them the way the peer thread would).
@@ -377,6 +472,9 @@ mod tests {
             start_delay: Mutex::new(Duration::ZERO),
             suspect: AtomicBool::new(false),
             last_capture: Mutex::new(None),
+            running: Mutex::new(None),
+            busy: AtomicUsize::new(0),
+            overlapped: AtomicBool::new(false),
         });
         let platform = Arc::new(FakePlatform {
             screen: AtomicBool::new(true),
@@ -389,11 +487,11 @@ mod tests {
         let accept_log = log.clone();
         let accept: Accept = Box::new(move |sdp, _params, hooks| {
             accept_log.add("accept");
-            if sdp != "v=0 offer" {
+            if !sdp.starts_with("v=0 offer") {
                 anyhow::bail!("bad offer");
             }
             let handle = PeerHandle::detached();
-            recorded.lock().unwrap().push((hooks, handle.clone()));
+            recorded.lock().unwrap().push((hooks, handle.clone(), sdp.to_string()));
             Ok(("v=0 answer".to_string(), handle))
         });
         let agent = Sessions::new(Parts {
@@ -408,12 +506,17 @@ mod tests {
 
     impl Rig {
         fn offer(&self) -> SessionRequest {
-            SessionRequest { size: Size { w: 1280, h: 720 }, sdp: "v=0 offer".into() }
+            self.offer_of_width(1280)
+        }
+        /// A 16:9 request of the given width; the offer text carries the width so a test can
+        /// tell which offer a peer was made for.
+        fn offer_of_width(&self, w: u32) -> SessionRequest {
+            SessionRequest { size: Size { w, h: w * 9 / 16 }, sdp: format!("v=0 offer {w}") }
         }
         /// A new session; returns the hooks and the handle of the peer it was given.
         fn open(&self) -> (Arc<dyn PeerHooks>, PeerHandle) {
             assert!(self.agent.start_session(self.offer()).is_ok(), "the session was refused");
-            self.peers.lock().unwrap().last().cloned().unwrap()
+            self.peers.lock().unwrap().last().cloned().map(|(hooks, peer, _)| (hooks, peer)).unwrap()
         }
         /// Waits for a capture start thread to have done its work.
         fn settle(&self, expected: impl Fn(&Log) -> bool) {
@@ -649,9 +752,14 @@ mod tests {
         let rig = rig();
         *rig.capture.start_delay.lock().unwrap() = Duration::from_millis(300);
         let (hooks, _peer) = rig.open();
+        std::thread::sleep(Duration::from_millis(60)); // the start has read the size it begins with
         hooks.input(br#"{"type":"size","w":1920,"h":1080}"#);
         rig.settle(|log| log.count("start") == 1);
-        assert!(rig.log.all().contains(&"start 1920x1080 6000000".to_string()), "{:?}", rig.log.all());
+        // The start used the size known when it began; the page's size is applied right after.
+        rig.settle(|log| log.all().last().is_some_and(|l| l == "resize 1920x1080 12000000"));
+        let log = rig.log.all();
+        let started = log.iter().position(|l| l.starts_with("start")).unwrap();
+        assert!(log.iter().rposition(|l| l.starts_with("resize")).unwrap() > started, "{log:?}");
     }
 
     #[test]
@@ -712,5 +820,84 @@ mod tests {
         assert_eq!(rig.log.count("start"), 1, "no second start for a dead peer");
         assert_eq!(rig.log.count("stop"), 1, "the capture of the dead session is stopped");
         assert!(core.slot.is_empty());
+    }
+
+    #[test]
+    fn a_slow_capture_start_blocks_neither_a_takeover_answer_nor_the_hooks() {
+        let rig = rig();
+        *rig.capture.start_delay.lock().unwrap() = Duration::from_millis(1000);
+        let (first_hooks, first) = rig.open();
+        std::thread::sleep(Duration::from_millis(100)); // its capture start is under way
+        *rig.capture.start_delay.lock().unwrap() = Duration::ZERO;
+
+        // The first session's own peer thread keeps working while its capture starts.
+        let began = Instant::now();
+        first_hooks.input(KEY_A);
+        first_hooks.estimate(3_000_000);
+        first_hooks.request_keyframe();
+        assert!(began.elapsed() < Duration::from_millis(300), "the hooks waited: {:?}", began.elapsed());
+        assert_eq!(rig.log.count("input"), 1);
+
+        // And a takeover is answered at once, not after the first start.
+        let began = Instant::now();
+        let answer = rig.agent.start_session(rig.offer_of_width(1920));
+        assert!(answer.is_ok());
+        assert!(began.elapsed() < Duration::from_millis(400), "the takeover waited: {:?}", began.elapsed());
+        assert!(!first.is_alive());
+        assert_eq!(rig.log.count("start"), 0, "the first start was still running");
+
+        // Afterwards exactly one capture runs, for the session that took over.
+        rig.settle(|log| log.count("start") == 2);
+        assert_eq!(rig.log.count("stop"), 0);
+        assert_eq!(*rig.capture.running.lock().unwrap(), Some(Size { w: 1920, h: 1080 }));
+        assert!(!rig.capture.overlapped.load(SeqCst), "two capture starts or stops overlapped");
+        assert_eq!(rig.platform.wakes_held.load(SeqCst), 1);
+    }
+
+    #[test]
+    fn a_session_that_ends_during_a_slow_start_leaves_no_capture_running() {
+        let rig = rig();
+        *rig.capture.start_delay.lock().unwrap() = Duration::from_millis(500);
+        let (hooks, _peer) = rig.open();
+        std::thread::sleep(Duration::from_millis(100));
+        // The peer thread's end waits for the start, then stops what it started.
+        hooks.closed();
+        assert_eq!(rig.log.count("start"), 1);
+        rig.settle(|log| log.count("stop") == 1);
+        assert_eq!(*rig.capture.running.lock().unwrap(), None);
+        assert!(!rig.capture.overlapped.load(SeqCst));
+    }
+
+    #[test]
+    fn two_offers_arriving_together_end_with_one_peer_one_wake_lock_and_one_capture() {
+        for round in 0..5 {
+            let rig = rig();
+            *rig.capture.start_delay.lock().unwrap() = Duration::from_millis(40);
+            let (a, b) = (rig.offer_of_width(1280), rig.offer_of_width(1920));
+            std::thread::scope(|scope| {
+                scope.spawn(|| assert!(rig.agent.start_session(a).is_ok()));
+                scope.spawn(|| assert!(rig.agent.start_session(b).is_ok()));
+            });
+            // Wait for the capture work of both sessions to be over.
+            rig.settle(|_| rig.capture.running.lock().unwrap().is_some());
+            std::thread::sleep(Duration::from_millis(250));
+
+            let peers = rig.peers.lock().unwrap().clone();
+            let alive: Vec<_> = peers.iter().filter(|(_, peer, _)| peer.is_alive()).collect();
+            assert_eq!(alive.len(), 1, "round {round}: exactly one live peer");
+            assert_eq!(rig.platform.wakes_held.load(SeqCst), 1, "round {round}: one wake lock");
+            assert!(!rig.capture.overlapped.load(SeqCst), "round {round}: capture operations overlapped");
+            let width: u32 = alive[0].2.trim_start_matches("v=0 offer ").parse().unwrap();
+            assert_eq!(
+                rig.capture.running.lock().unwrap().map(|size| size.w),
+                Some(width),
+                "round {round}: the running capture is the live session's: {:?}",
+                rig.log.all()
+            );
+            // A superseded start is re-targeted by its replacement, never left behind, and no
+            // stop was needed while a session was always installed.
+            let starts = rig.log.count("start");
+            assert!((1..=2).contains(&starts) && rig.log.count("stop") == 0, "round {round}: {:?}", rig.log.all());
+        }
     }
 }
