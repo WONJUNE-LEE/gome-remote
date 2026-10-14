@@ -232,9 +232,9 @@ test("when the session ends the ended card appears, no new attempt starts, and ë
   assert.equal(v.agentRequests().length, 2);
   assert.equal(v.agents.length, 2);
   assert.equal(
-    v.agents[0].closed >= 1,
-    true,
-    "the old session is closed (and released its keys)",
+    v.agents[0].closed,
+    1,
+    "the old session is closed once (and released its keys)",
   );
   // A live session is not reconnected by the menu.
   v.agents[1].deps.onFirstFrame();
@@ -359,7 +359,7 @@ test("the ended card goes back to its usual words after an agent refusal", async
 
 // ---- input hand-over, size, text ----
 
-test("fullscreen changes, dialogs, blur and the end of the session all release the Mac's keys", async () => {
+test("fullscreen changes, dialogs and window blur release the Mac's keys, and disconnect closes the session", async () => {
   const v = await opened();
   v.agents[0].deps.onFirstFrame();
   const before = v.agents[0].releases;
@@ -370,8 +370,18 @@ test("fullscreen changes, dialogs, blur and the end of the session all release t
   await v.settle();
   assert.ok(v.agents[0].releases > afterDialog, "fullscreen switch");
   const afterFullscreen = v.agents[0].releases;
+  v.windowEvent("blur");
+  assert.ok(v.agents[0].releases > afterFullscreen, "window blur");
   v.el("disconnect").click();
   assert.equal(v.agents[0].closed, 1, "disconnect closes the session once");
+});
+
+test("the end of a Mac session releases the Mac's keys", async () => {
+  const v = await opened();
+  v.agents[0].deps.onFirstFrame();
+  const before = v.agents[0].releases;
+  v.agents[0].deps.onEnded("disconnected");
+  assert.ok(v.agents[0].releases > before, "ended");
 });
 
 test("leaving the viewer closes the Mac session", async () => {
@@ -379,7 +389,7 @@ test("leaving the viewer closes the Mac session", async () => {
   v.agents[0].deps.onFirstFrame();
   v.el("back").click();
   await v.settle();
-  assert.ok(v.agents[0].closed >= 1);
+  assert.equal(v.agents[0].closed, 1);
   assert.equal(v.el("display").classes.has("agent-display"), false);
 });
 

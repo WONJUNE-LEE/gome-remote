@@ -275,7 +275,11 @@ export function createAgentSession(deps: AgentDeps): AgentSession {
             end("disconnected");
         };
         await connection.setLocalDescription(await connection.createOffer());
+        if (closed || ended) return;
         await gathered(connection);
+        // The page may have let go while candidates were gathering: an offer posted now
+        // would make the agent replace a live session with this stale one.
+        if (closed || ended) return;
         const answer = await deps.signal(connection.localDescription!.sdp);
         if (closed || ended) return;
         await connection.setRemoteDescription({

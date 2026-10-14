@@ -183,7 +183,14 @@ export async function viewer({
       }
     : undefined;
   // devicePixelRatio is read from the window each time, as in a browser.
-  const window = { desktop, devicePixelRatio: 1, addEventListener() {} };
+  const windowListeners = {};
+  const window = {
+    desktop,
+    devicePixelRatio: 1,
+    addEventListener(type, listener) {
+      (windowListeners[type] ??= []).push(listener);
+    },
+  };
 
   // Timers the test advances by hand, so a debounce is tested without waiting.
   let now = 0;
@@ -399,6 +406,9 @@ export async function viewer({
     sessionRequests: () =>
       fetches.filter((f) => f.path === "/api/sessions").map((f) => f.body),
     action: (name) => actionListener?.(name),
+    // Delivers an event to the listeners the page registered on the window (blur).
+    windowEvent: (type) =>
+      (windowListeners[type] ?? []).forEach((l) => l({ type })),
     posts: () => fetches.filter((f) => f.path === "/api/sessions").length,
     agentRequests: () =>
       fetches

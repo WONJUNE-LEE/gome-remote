@@ -85,6 +85,25 @@ test("a gateway refusal rejects start with that error, closes the connection and
   assert.equal(h.deps.frames, 0);
 });
 
+test("closing the session while candidates are gathered posts no offer, even after the gathering limit", async () => {
+  const h = await agentHarness({ gathering: "never" });
+  const started = h.session.start();
+  await h.settle();
+  const pc = h.peers[0];
+  h.session.close();
+  h.advance(1500);
+  await h.settle();
+  await started;
+  assert.deepEqual(h.deps.offers, [], "a stale offer would take the Mac over");
+  assert.equal(pc.closed, 1);
+  assert.equal(pc.remote, undefined);
+  assert.deepEqual(h.deps.ended, []);
+  // Candidates arriving late change nothing either.
+  pc.completeGathering();
+  await h.settle();
+  assert.deepEqual(h.deps.offers, []);
+});
+
 // ---- the picture and the ending ----
 
 test("the first picture reports the connection once; a picture that never comes ends it after 20 seconds", async () => {
