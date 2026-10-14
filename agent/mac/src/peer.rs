@@ -44,6 +44,9 @@ pub trait PeerHooks: Send + Sync + 'static {
     fn estimate(&self, bps: u64);
     /// One data channel message from the page.
     fn input(&self, data: &[u8]);
+    /// The `input` data channel closed while the peer lives on: whatever the page still
+    /// held down must be released (spec D4).
+    fn input_closed(&self) {}
     /// The peer thread ended for any reason (input must release everything held).
     fn closed(&self);
 }
@@ -67,6 +70,11 @@ impl PeerHandle {
     }
     pub fn close(&self) {
         self.alive.store(false, Relaxed);
+    }
+    /// A handle with no peer behind it, for tests of whatever holds handles.
+    #[cfg(test)]
+    pub fn detached() -> PeerHandle {
+        PeerHandle { alive: Arc::new(AtomicBool::new(true)), frames: channel().0 }
     }
 }
 impl FrameTarget for PeerHandle {
@@ -216,6 +224,7 @@ fn run(
                         hooks.estimate(estimate.as_u64());
                     }
                     Event::ChannelData(data) => hooks.input(&data.data),
+                    Event::ChannelClose(_) => hooks.input_closed(),
                     Event::Closed => return Ok(()),
                     _ => {}
                 },

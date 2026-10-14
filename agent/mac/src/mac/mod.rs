@@ -1,4 +1,5 @@
 //! macOS side: framework bindings and the process entry point.
+pub mod agent;
 pub mod capture;
 pub mod encoder;
 pub mod ffi;
@@ -9,9 +10,8 @@ pub mod wake;
 
 use crate::auth::Guard;
 use crate::config::{self, AgentConfig, FileMeta, Kind};
-use crate::http::{self, Backend, Router, SessionFailure, SessionRequest};
+use crate::http::{self, Router};
 use crate::paths::{self, ConfigOwner, Paths};
-use crate::status::{Accessibility, Screen, Status};
 use std::net::SocketAddr;
 use std::os::unix::fs::MetadataExt;
 use std::path::Path;
@@ -53,27 +53,6 @@ fn load_token(paths: &Paths, user_uid: u32) -> Result<String, String> {
     config::parse_token(&text).map_err(|e| e.to_string())
 }
 
-/// The agent as of this task: it answers `/v1/status` truthfully and refuses to start
-/// sessions (capture, WebRTC and input arrive in the next tasks).
-struct StatusOnly;
-
-impl Backend for StatusOnly {
-    fn status(&self) -> Status {
-        Status {
-            screen: if system::screen_recording_granted() { Screen::Granted } else { Screen::Denied },
-            accessibility: if system::accessibility_granted() { Accessibility::Granted } else { Accessibility::Denied },
-            display: system::display_state(),
-            locked: system::screen_locked(),
-            last_capture_at: None,
-            version: env!("CARGO_PKG_VERSION"),
-        }
-    }
-
-    fn start_session(&self, _request: SessionRequest) -> Result<String, SessionFailure> {
-        Err(SessionFailure::Internal("this build cannot start sessions yet".into()))
-    }
-}
-
 pub fn run() {
     let refuse = |message: String| -> ! {
         eprintln!("gome-remote-agent refused to start: {message}");
@@ -98,7 +77,9 @@ pub fn run() {
     });
 
     let address = SocketAddr::new(config.bind, config.port);
-    let router = Arc::new(Router::new(Guard::new(address, config.gateway, token), Arc::new(StatusOnly)));
+    let guard = Guard::new(address, config.gateway, token);
+    let backend = Arc::new(agent::Agent::new(config.bind));
+    let router = Arc::new(Router::new(guard, backend));
     std::thread::spawn(move || {
         if let Err(e) = http::serve(address, router) {
             eprintln!("gome-remote-agent: {e:#}");
