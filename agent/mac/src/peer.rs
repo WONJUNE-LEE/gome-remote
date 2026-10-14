@@ -33,8 +33,9 @@ pub fn source_allowed(source: SocketAddr) -> bool {
     is_tailnet_ip(source.ip())
 }
 
-pub fn idle_expired(last_rx: Instant, now: Instant) -> bool {
-    now.saturating_duration_since(last_rx) > IDLE_LIMIT
+/// The limit is a parameter so a test can use a short one; the peer thread passes `IDLE_LIMIT`.
+pub fn idle_expired(limit: Duration, last_rx: Instant, now: Instant) -> bool {
+    now.saturating_duration_since(last_rx) > limit
 }
 
 /// The session's side of the peer. Called from the peer thread.
@@ -85,6 +86,29 @@ impl PeerHandle {
     fn detached_with_queue(capacity: usize) -> (PeerHandle, std::sync::mpsc::Receiver<Msg>) {
         let (frames, rx) = sync_channel(capacity);
         (PeerHandle { alive: Arc::new(AtomicBool::new(true)), frames, repair: Arc::default() }, rx)
+    }
+    /// A handle whose frame queue a test (of whatever holds handles) can look into.
+    #[cfg(test)]
+    pub(crate) fn observed(capacity: usize) -> (PeerHandle, QueueProbe) {
+        let (handle, rx) = PeerHandle::detached_with_queue(capacity);
+        (handle, QueueProbe(rx))
+    }
+}
+
+/// What a test sees of the frames that reached one peer's queue.
+#[cfg(test)]
+pub(crate) struct QueueProbe(Receiver<Msg>);
+#[cfg(test)]
+impl QueueProbe {
+    /// The payload of every frame that arrived since the last call.
+    pub(crate) fn frames(&self) -> Vec<Vec<u8>> {
+        self.0
+            .try_iter()
+            .filter_map(|m| match m {
+                Msg::Frame(frame) => Some(frame.data),
+                Msg::Udp(..) => None,
+            })
+            .collect()
     }
 }
 impl FrameTarget for PeerHandle {
@@ -196,9 +220,9 @@ fn set_socket_buffers(socket: &UdpSocket, bytes: usize) {
     }
 }
 
-/// Handles an SDP offer: returns the answer and a handle to feed frames and close the peer.
-pub fn accept(offer_sdp: &str, params: PeerParams, hooks: Arc<dyn PeerHooks>) -> Result<(String, PeerHandle)> {
-    let offer = prepare_offer(offer_sdp)?;
+/// The agent's side of a connection before any negotiation: H.264 only, RTX history, and
+/// the bandwidth estimator started and capped as the session asks.
+fn new_rtc(params: &PeerParams) -> Rtc {
     let mut rtc = RtcConfig::new()
         .clear_codecs()
         .enable_h264(true)
@@ -207,6 +231,13 @@ pub fn accept(offer_sdp: &str, params: PeerParams, hooks: Arc<dyn PeerHooks>) ->
         .set_stats_interval(Some(Duration::from_secs(1)))
         .build(Instant::now());
     rtc.bwe().set_desired_bitrate(Bitrate::bps(params.desired_bitrate as u64));
+    rtc
+}
+
+/// Handles an SDP offer: returns the answer and a handle to feed frames and close the peer.
+pub fn accept(offer_sdp: &str, params: PeerParams, hooks: Arc<dyn PeerHooks>) -> Result<(String, PeerHandle)> {
+    let offer = prepare_offer(offer_sdp)?;
+    let mut rtc = new_rtc(&params);
 
     // The media socket is bound to the tailnet address, which is also the only host candidate.
     let socket = UdpSocket::bind(SocketAddr::new(params.bind_ip, 0))?;
@@ -240,7 +271,8 @@ pub fn accept(offer_sdp: &str, params: PeerParams, hooks: Arc<dyn PeerHooks>) ->
     std::thread::spawn(move || {
         // The guard runs `closed` on every way out, a panic included, exactly once.
         let _released = ReleaseOnDrop { alive: thread_alive.clone(), hooks: hooks.clone() };
-        if let Err(e) = run(rtc, socket, local, rx, &thread_alive, &repair, hooks.as_ref()) {
+        let signals = Signals { alive: &thread_alive, repair: &repair, idle_limit: IDLE_LIMIT };
+        if let Err(e) = run(rtc, socket, local, rx, signals, hooks.as_ref()) {
             eprintln!("[peer] ended with error: {e:?}");
         }
     });
@@ -259,15 +291,26 @@ impl Drop for ReleaseOnDrop {
     }
 }
 
+/// What the peer thread watches besides its queue.
+#[derive(Clone, Copy)]
+struct Signals<'a> {
+    /// Cleared to end the peer.
+    alive: &'a AtomicBool,
+    /// Set when a frame was dropped (see `PeerHandle::repair`).
+    repair: &'a AtomicBool,
+    /// How long without an accepted datagram ends the session (`IDLE_LIMIT`).
+    idle_limit: Duration,
+}
+
 fn run(
     mut rtc: Rtc,
     socket: UdpSocket,
     local: SocketAddr,
     rx: Receiver<Msg>,
-    alive: &AtomicBool,
-    repair: &AtomicBool,
+    signals: Signals<'_>,
     hooks: &dyn PeerHooks,
 ) -> Result<()> {
+    let Signals { alive, repair, idle_limit } = signals;
     let epoch = Instant::now();
     let mut mid: Option<Mid> = None;
     let mut payload_type = None;
@@ -324,8 +367,8 @@ fn run(
         if !rtc.is_alive() || !alive.load(Relaxed) {
             return Ok(());
         }
-        if idle_expired(last_rx, Instant::now()) {
-            println!("[peer] idle for {IDLE_LIMIT:?}, closing");
+        if idle_expired(idle_limit, last_rx, Instant::now()) {
+            println!("[peer] idle for {idle_limit:?}, closing");
             return Ok(());
         }
         let wait = timeout.saturating_duration_since(Instant::now()).min(Duration::from_millis(200));
@@ -372,9 +415,9 @@ mod tests {
     #[test]
     fn idle_expires_only_after_ten_seconds() {
         let t0 = Instant::now();
-        assert!(!idle_expired(t0, t0 + Duration::from_secs(10)));
-        assert!(idle_expired(t0, t0 + Duration::from_secs(10) + Duration::from_millis(1)));
-        assert!(!idle_expired(t0 + Duration::from_secs(5), t0), "a clock that went backwards is not idle");
+        assert!(!idle_expired(IDLE_LIMIT, t0, t0 + Duration::from_secs(10)));
+        assert!(idle_expired(IDLE_LIMIT, t0, t0 + Duration::from_secs(10) + Duration::from_millis(1)));
+        assert!(!idle_expired(IDLE_LIMIT, t0 + Duration::from_secs(5), t0), "a clock that went backwards is not idle");
     }
 
     #[test]
@@ -567,6 +610,273 @@ mod tests {
         };
         let (_answer, handle) = accept(&offer, params, Arc::new(Quiet)).expect("an answer");
         handle.close();
+    }
+
+    // ---- a whole session against a second str0m playing the browser ----
+
+    use std::sync::atomic::{AtomicUsize, Ordering::SeqCst};
+    use std::sync::Mutex;
+    use str0m::channel::ChannelId;
+    use str0m::media::{Direction, KeyframeRequestKind, MediaKind};
+
+    /// What the peer thread told its session.
+    #[derive(Default)]
+    struct Recorder {
+        keyframes: AtomicUsize,
+        estimates: Mutex<Vec<u64>>,
+        inputs: Mutex<Vec<Vec<u8>>>,
+        input_closed: AtomicUsize,
+        closed: AtomicUsize,
+    }
+    impl PeerHooks for Recorder {
+        fn request_keyframe(&self) {
+            self.keyframes.fetch_add(1, SeqCst);
+        }
+        fn estimate(&self, bps: u64) {
+            self.estimates.lock().unwrap().push(bps);
+        }
+        fn input(&self, data: &[u8]) {
+            self.inputs.lock().unwrap().push(data.to_vec());
+        }
+        fn input_closed(&self) {
+            self.input_closed.fetch_add(1, SeqCst);
+        }
+        fn closed(&self) {
+            self.closed.fetch_add(1, SeqCst);
+        }
+    }
+
+    /// The browser's side: a str0m of its own on a real loopback socket.
+    struct Browser {
+        rtc: Rtc,
+        socket: UdpSocket,
+        addr: SocketAddr,
+        channel: ChannelId,
+        mid: Mid,
+        connected: bool,
+        channel_open: bool,
+        pictures: usize,
+    }
+
+    /// The agent's peer thread (`run`, exactly as production runs it, with a short idle limit)
+    /// and the browser, joined by two loopback sockets that the test pumps by hand.
+    struct Call {
+        browser: Browser,
+        /// The agent's socket as the test reads it (the peer thread only sends on its own copy).
+        agent_socket: UdpSocket,
+        queue: SyncSender<Msg>,
+        hooks: Arc<Recorder>,
+        alive: Arc<AtomicBool>,
+        thread: Option<std::thread::JoinHandle<()>>,
+    }
+
+    impl Call {
+        fn start(idle_limit: Duration) -> Call {
+            let params = PeerParams {
+                bind_ip: "127.0.0.1".parse().unwrap(),
+                initial_bitrate: 6_000_000,
+                desired_bitrate: 12_000_000,
+            };
+            let socket = UdpSocket::bind("127.0.0.1:0").unwrap();
+            socket.set_nonblocking(true).unwrap();
+            let addr = socket.local_addr().unwrap();
+            let mut rtc = RtcConfig::new().clear_codecs().enable_h264(true).build(Instant::now());
+            rtc.add_local_candidate(Candidate::host(addr, "udp").unwrap());
+            let mut api = rtc.sdp_api();
+            let mid = api.add_media(MediaKind::Video, Direction::RecvOnly, None, None, None);
+            let channel = api.add_channel("input".to_string());
+            let (offer, pending) = api.apply().expect("an offer");
+
+            let mut agent = new_rtc(&params);
+            let agent_socket = UdpSocket::bind("127.0.0.1:0").unwrap();
+            let local = agent_socket.local_addr().unwrap();
+            agent.add_local_candidate(Candidate::host(local, "udp").unwrap());
+            let answer = agent.sdp_api().accept_offer(offer).expect("an answer");
+            rtc.sdp_api().accept_answer(pending, answer).expect("the answer is accepted");
+
+            let (queue, rx) = sync_channel::<Msg>(QUEUE_CAPACITY);
+            let (alive, repair) = (Arc::new(AtomicBool::new(true)), Arc::new(AtomicBool::new(false)));
+            let hooks = Arc::new(Recorder::default());
+            let sender = agent_socket.try_clone().unwrap();
+            agent_socket.set_read_timeout(Some(Duration::from_millis(2))).unwrap();
+            let thread = {
+                let (alive, repair, hooks) = (alive.clone(), repair.clone(), hooks.clone());
+                std::thread::spawn(move || {
+                    let signals = Signals { alive: &alive, repair: &repair, idle_limit };
+                    let result = run(agent, sender, local, rx, signals, hooks.as_ref());
+                    if let Err(e) = result {
+                        eprintln!("[test peer] ended with error: {e:?}");
+                    }
+                    hooks.closed();
+                })
+            };
+            let browser =
+                Browser { rtc, socket, addr, channel, mid, connected: false, channel_open: false, pictures: 0 };
+            Call { browser, agent_socket, queue, hooks, alive, thread: Some(thread) }
+        }
+
+        /// One round: the browser's output and timers, then every datagram either side has waiting.
+        fn step(&mut self) {
+            let b = &mut self.browser;
+            loop {
+                match b.rtc.poll_output().expect("the browser's str0m") {
+                    Output::Timeout(_) => break,
+                    Output::Transmit(t) => {
+                        let _ = b.socket.send_to(&t.contents, t.destination);
+                    }
+                    Output::Event(Event::Connected) => b.connected = true,
+                    Output::Event(Event::ChannelOpen(..)) => b.channel_open = true,
+                    Output::Event(Event::MediaData(_)) => b.pictures += 1,
+                    Output::Event(_) => {}
+                }
+            }
+            let mut buf = vec![0u8; 2048];
+            while let Ok((n, source)) = b.socket.recv_from(&mut buf) {
+                let contents = buf[..n].try_into().unwrap();
+                let input = Input::Receive(
+                    Instant::now(),
+                    Receive { proto: Protocol::Udp, source, destination: b.addr, contents },
+                );
+                b.rtc.handle_input(input).unwrap();
+            }
+            b.rtc.handle_input(Input::Timeout(Instant::now())).unwrap();
+            // The datagrams reach the peer thread as the read thread would hand them over, apart
+            // from the tailnet source check, which has its own tests (`forward`).
+            while let Ok((n, source)) = self.agent_socket.recv_from(&mut buf) {
+                let _ = self.queue.try_send(Msg::Udp(Instant::now(), source, buf[..n].to_vec()));
+            }
+        }
+
+        /// Pumps until `done` or the time is up; says which.
+        fn until(&mut self, within: Duration, mut done: impl FnMut(&Call) -> bool) -> bool {
+            let deadline = Instant::now() + within;
+            while Instant::now() < deadline {
+                self.step();
+                if done(self) {
+                    return true;
+                }
+            }
+            false
+        }
+
+        fn connect(&mut self) {
+            assert!(
+                self.until(Duration::from_secs(10), |c| c.browser.connected && c.browser.channel_open),
+                "the browser never connected"
+            );
+        }
+
+        fn send_text(&mut self, text: &str) {
+            let id = self.browser.channel;
+            let accepted = self.browser.rtc.channel(id).expect("the channel").write(false, text.as_bytes());
+            assert!(accepted.unwrap(), "the data channel took the message");
+        }
+
+        fn finished(&self) -> bool {
+            self.hooks.closed.load(SeqCst) > 0
+        }
+    }
+    impl Drop for Call {
+        fn drop(&mut self) {
+            self.alive.store(false, SeqCst);
+            if let Some(thread) = self.thread.take() {
+                let _ = thread.join();
+            }
+        }
+    }
+
+    fn picture(key: bool) -> EncodedFrame {
+        // Annex B: SPS, PPS and an IDR slice for a keyframe, a non-IDR slice otherwise.
+        let mut data = Vec::new();
+        if key {
+            data.extend_from_slice(&[0, 0, 0, 1, 0x67, 0x42, 0xc0, 0x1f, 0x8c, 0x8d, 0x40]);
+            data.extend_from_slice(&[0, 0, 0, 1, 0x68, 0xce, 0x3c, 0x80]);
+            data.extend_from_slice(&[0, 0, 0, 1, 0x65, 0x88, 0x84, 0x00, 0x33, 0xff]);
+        } else {
+            data.extend_from_slice(&[0, 0, 0, 1, 0x41, 0x9a, 0x24, 0x6c, 0x41, 0xff]);
+        }
+        EncodedFrame { data, key, submitted: Instant::now() }
+    }
+
+    #[test]
+    fn a_session_connects_asks_for_a_keyframe_and_hands_the_pages_messages_to_its_session() {
+        let mut call = Call::start(IDLE_LIMIT);
+        call.connect();
+        assert_eq!(call.hooks.keyframes.load(SeqCst), 1, "a new viewer wants a keyframe");
+
+        let message = r#"{"type":"key","code":"KeyA","down":true}"#;
+        call.send_text(message);
+        assert!(call.until(Duration::from_secs(5), |c| !c.hooks.inputs.lock().unwrap().is_empty()));
+        assert_eq!(*call.hooks.inputs.lock().unwrap(), vec![message.as_bytes().to_vec()]);
+        assert_eq!(call.hooks.input_closed.load(SeqCst), 0);
+
+        // Closing the channel (not the peer) is reported once, and the peer lives on.
+        let channel = call.browser.channel;
+        call.browser.rtc.direct_api().close_data_channel(channel);
+        assert!(call.until(Duration::from_secs(5), |c| c.hooks.input_closed.load(SeqCst) > 0));
+        assert_eq!(call.hooks.input_closed.load(SeqCst), 1);
+        assert!(!call.finished(), "the session outlives its input channel");
+    }
+
+    #[test]
+    fn frames_sent_to_a_connected_peer_reach_the_page_and_its_picture_loss_request_reaches_the_session() {
+        let mut call = Call::start(IDLE_LIMIT);
+        // Before the connection is up a frame is not sent anywhere (the peer waits for a keyframe).
+        call.connect();
+        let before = call.hooks.keyframes.load(SeqCst);
+        let mut seen = false;
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !seen && Instant::now() < deadline {
+            call.queue.send(Msg::Frame(picture(true))).unwrap();
+            seen = call.until(Duration::from_millis(100), |c| c.browser.pictures > 0);
+        }
+        assert!(seen, "no picture reached the browser");
+
+        let mid = call.browser.mid;
+        call.browser.rtc.writer(mid).expect("the video").request_keyframe(None, KeyframeRequestKind::Pli).unwrap();
+        assert!(
+            call.until(Duration::from_secs(5), |c| c.hooks.keyframes.load(SeqCst) > before),
+            "the page's picture loss indication never reached the session"
+        );
+    }
+
+    #[test]
+    fn the_bandwidth_estimate_str0m_reports_reaches_the_session() {
+        let mut call = Call::start(IDLE_LIMIT);
+        call.connect();
+        let deadline = Instant::now() + Duration::from_secs(20);
+        // A steady stream of large keyframes gives the estimator feedback to work with.
+        let mut data = picture(true).data;
+        data.resize(6000, 0x55);
+        while call.hooks.estimates.lock().unwrap().is_empty() && Instant::now() < deadline {
+            let frame = EncodedFrame { data: data.clone(), key: true, submitted: Instant::now() };
+            let _ = call.queue.try_send(Msg::Frame(frame));
+            call.until(Duration::from_millis(15), |_| false);
+        }
+        let estimates = call.hooks.estimates.lock().unwrap().clone();
+        assert!(!estimates.is_empty(), "no bandwidth estimate reached the session");
+        assert!(estimates.iter().all(|&bps| bps > 0), "{estimates:?}");
+    }
+
+    #[test]
+    fn accepted_datagrams_keep_a_session_alive_and_silence_ends_it() {
+        let limit = Duration::from_secs(2);
+        let mut call = Call::start(limit);
+        call.connect();
+        // Four limits' worth of traffic from the page: the session stays.
+        let began = Instant::now();
+        while began.elapsed() < limit * 2 {
+            call.send_text(r#"{"type":"pointer","x":0.5,"y":0.5}"#);
+            call.until(Duration::from_millis(100), |_| false);
+            assert!(!call.finished(), "the session closed while the page was sending ({:?})", began.elapsed());
+        }
+        // Nothing more is pumped: the page is gone, and the session ends by itself.
+        let silent_since = Instant::now();
+        while !call.finished() && silent_since.elapsed() < limit * 4 {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(call.finished(), "silence did not end the session");
+        assert!(silent_since.elapsed() >= limit / 2, "it ended at once, not after the idle limit");
     }
 
     #[test]

@@ -84,6 +84,8 @@ struct Core {
     /// the peers' hooks and the slot do not. Holds whether the capture may be running.
     /// Taken before `lifecycle` or the slot, never while holding either.
     capture_on: Mutex<bool>,
+    /// Whether a locked screen refuses a session (P1's switch, `REFUSE_WHEN_LOCKED`).
+    refuse_when_locked: bool,
 }
 
 impl Core {
@@ -98,12 +100,18 @@ pub struct Sessions {
 
 impl Sessions {
     pub fn new(parts: Parts) -> Sessions {
+        Sessions::with_lock_policy(parts, REFUSE_WHEN_LOCKED)
+    }
+
+    /// `new` with P1's lock-screen switch given, so both of its values can be exercised.
+    fn with_lock_policy(parts: Parts, refuse_when_locked: bool) -> Sessions {
         Sessions {
             core: Arc::new(Core {
                 parts,
                 slot: Slot::default(),
                 lifecycle: Mutex::new(()),
                 capture_on: Mutex::new(false),
+                refuse_when_locked,
             }),
         }
     }
@@ -289,7 +297,7 @@ impl Backend for Sessions {
         let parts = &core.parts;
         // Only permission and (by P1's choice) a locked screen refuse. A black-frame suspicion
         // and a stale `lastCaptureAt` do not: a session is how they are cleared.
-        self.status().gate(REFUSE_WHEN_LOCKED).map_err(SessionFailure::Gate)?;
+        self.status().gate(core.refuse_when_locked).map_err(SessionFailure::Gate)?;
         let wake = parts.platform.wake_display();
         let display_px = parts.platform.native_pixels().unwrap_or(FALLBACK_DISPLAY);
         let size = fit_to_display(request.size, display_px);
@@ -325,6 +333,8 @@ impl Backend for Sessions {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::frame::EncodedFrame;
+    use crate::peer::QueueProbe;
     use crate::status::{Gate, Screen};
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering::SeqCst};
     use std::time::{Duration, Instant};
@@ -354,6 +364,8 @@ mod tests {
         /// Starts and stops in progress; more than one at a time is a bug in the caller.
         busy: AtomicUsize,
         overlapped: AtomicBool,
+        /// Where the capture was last told to send its frames (what the real one keeps).
+        target: Mutex<Option<Arc<dyn FrameTarget>>>,
     }
     impl FakeCapture {
         fn enter(&self) {
@@ -363,7 +375,7 @@ mod tests {
         }
     }
     impl Capture for Arc<FakeCapture> {
-        fn start(&self, size: Size, bitrate: u32, _target: Arc<dyn FrameTarget>) -> Result<(), String> {
+        fn start(&self, size: Size, bitrate: u32, target: Arc<dyn FrameTarget>) -> Result<(), String> {
             self.enter();
             let delay = *self.start_delay.lock().unwrap();
             std::thread::sleep(delay);
@@ -372,6 +384,7 @@ mod tests {
                 Err("no displays".into())
             } else {
                 *self.running.lock().unwrap() = Some(size);
+                *self.target.lock().unwrap() = Some(target);
                 Ok(())
             };
             self.busy.fetch_sub(1, SeqCst);
@@ -455,9 +468,22 @@ mod tests {
         capture: Arc<FakeCapture>,
         platform: Arc<FakePlatform>,
         peers: Peers,
+        /// The frame queue of every peer accepted, in the order of `peers`.
+        queues: Arc<Mutex<Vec<QueueProbe>>>,
+        /// What every accepted peer was asked to be built with.
+        params: Arc<Mutex<Vec<PeerParams>>>,
     }
 
     fn rig() -> Rig {
+        build_rig(None)
+    }
+
+    /// An agent whose lock-screen switch is set by the test instead of by P1's constant.
+    fn rig_with_lock_policy(refuse_when_locked: bool) -> Rig {
+        build_rig(Some(refuse_when_locked))
+    }
+
+    fn build_rig(lock_policy: Option<bool>) -> Rig {
         let log = Arc::new(Log::default());
         let capture = Arc::new(FakeCapture {
             log: log.clone(),
@@ -468,6 +494,7 @@ mod tests {
             running: Mutex::new(None),
             busy: AtomicUsize::new(0),
             overlapped: AtomicBool::new(false),
+            target: Mutex::new(None),
         });
         let platform = Arc::new(FakePlatform {
             screen: AtomicBool::new(true),
@@ -476,25 +503,33 @@ mod tests {
             wakes_held: Arc::new(AtomicUsize::new(0)),
         });
         let peers: Peers = Arc::default();
-        let recorded = peers.clone();
+        let queues: Arc<Mutex<Vec<QueueProbe>>> = Arc::default();
+        let params: Arc<Mutex<Vec<PeerParams>>> = Arc::default();
+        let (recorded, recorded_queues, recorded_params) = (peers.clone(), queues.clone(), params.clone());
         let accept_log = log.clone();
-        let accept: Accept = Box::new(move |sdp, _params, hooks| {
+        let accept: Accept = Box::new(move |sdp, peer_params, hooks| {
             accept_log.add("accept");
             if !sdp.starts_with("v=0 offer") {
                 anyhow::bail!("bad offer");
             }
-            let handle = PeerHandle::detached();
+            let (handle, queue) = PeerHandle::observed(8);
+            recorded_params.lock().unwrap().push(peer_params);
+            recorded_queues.lock().unwrap().push(queue);
             recorded.lock().unwrap().push((hooks, handle.clone(), sdp.to_string()));
             Ok(("v=0 answer".to_string(), handle))
         });
-        let agent = Sessions::new(Parts {
+        let parts = Parts {
             bind: "127.0.0.1".parse().unwrap(),
             platform: Box::new(platform.clone()),
             capture: Box::new(capture.clone()),
             input: Box::new(FakeInput(log.clone())),
             accept,
-        });
-        Rig { agent, log, capture, platform, peers }
+        };
+        let agent = match lock_policy {
+            None => Sessions::new(parts),
+            Some(refuse) => Sessions::with_lock_policy(parts, refuse),
+        };
+        Rig { agent, log, capture, platform, peers, queues, params }
     }
 
     impl Rig {
@@ -544,17 +579,33 @@ mod tests {
     }
 
     #[test]
-    fn a_locked_screen_refuses_with_locked_and_permission_wins_over_it() {
-        #[allow(clippy::assertions_on_constants)] // the test is about the value P1 will change
-        {
-            assert!(REFUSE_WHEN_LOCKED, "P1 has flipped it: this test follows the new value");
-        }
-        let rig = rig();
+    fn with_the_switch_on_a_locked_screen_refuses_with_locked_and_permission_wins_over_it() {
+        let rig = rig_with_lock_policy(true);
         rig.platform.locked.store(true, SeqCst);
         assert_eq!(refused(rig.agent.start_session(rig.offer())), Gate::Locked);
         rig.platform.screen.store(false, SeqCst);
         assert_eq!(refused(rig.agent.start_session(rig.offer())), Gate::Permission);
         assert!(rig.log.all().is_empty());
+    }
+
+    #[test]
+    fn with_the_switch_off_a_locked_screen_starts_a_session_and_permission_still_refuses() {
+        let rig = rig_with_lock_policy(false);
+        rig.platform.locked.store(true, SeqCst);
+        assert!(rig.agent.status().locked, "the status still reports the lock");
+        assert!(rig.agent.start_session(rig.offer()).is_ok(), "a locked screen refused the session");
+        rig.settle(|log| log.count("start") == 1);
+        rig.platform.screen.store(false, SeqCst);
+        assert_eq!(refused(rig.agent.start_session(rig.offer())), Gate::Permission);
+    }
+
+    #[test]
+    fn the_agent_is_built_with_the_p1_switch_as_it_stands() {
+        // Whichever way P1 sets `REFUSE_WHEN_LOCKED`, `Sessions::new` must pass it on.
+        let rig = rig();
+        rig.platform.locked.store(true, SeqCst);
+        let result = rig.agent.start_session(rig.offer());
+        assert_eq!(result.is_err(), REFUSE_WHEN_LOCKED, "Sessions::new must pass the constant on");
     }
 
     #[test]
@@ -892,5 +943,48 @@ mod tests {
             let starts = rig.log.count("start");
             assert!((1..=2).contains(&starts) && rig.log.count("stop") == 0, "round {round}: {:?}", rig.log.all());
         }
+    }
+
+    #[test]
+    fn the_peer_is_built_for_the_bound_address_the_start_rate_and_the_streams_ceiling() {
+        let rig = rig();
+        rig.open();
+        rig.settle(|log| log.count("start") == 1);
+        // A request larger than the screen is fitted to it: 2560x1440 gets the 1440p ceiling.
+        assert!(rig.agent.start_session(rig.offer_of_width(3200)).is_ok());
+        let params = rig.params.lock().unwrap().clone();
+        assert_eq!(params.len(), 2);
+        for p in &params {
+            assert_eq!(p.bind_ip, rig.agent.core.parts.bind, "the media socket is bound to the agent's own address");
+            assert_eq!(p.initial_bitrate, crate::bitrate::START_BPS);
+        }
+        assert_eq!(params[0].desired_bitrate, bitrate_cap(Size { w: 1280, h: 720 }));
+        assert_eq!(params[1].desired_bitrate, bitrate_cap(Size { w: 2560, h: 1440 }), "fitted to the screen first");
+    }
+
+    #[test]
+    fn frames_from_the_capture_reach_the_current_sessions_peer_and_after_a_takeover_only_the_new_one() {
+        let rig = rig();
+        rig.open();
+        rig.settle(|log| log.count("start") == 1);
+        let frame = |tag: u8| EncodedFrame { data: vec![tag], key: true, submitted: Instant::now() };
+        let first = rig.capture.target.lock().unwrap().clone().expect("the capture was given a target");
+        assert!(first.send_frame(frame(1)), "the live peer takes the frame");
+        {
+            let queues = rig.queues.lock().unwrap();
+            assert_eq!(queues[0].frames(), vec![vec![1u8]], "the frame is in the first session's queue");
+        }
+
+        // A takeover re-targets the capture: its frames go to the new peer and not the old one.
+        rig.open();
+        rig.settle(|log| log.count("start") == 2);
+        let second = rig.capture.target.lock().unwrap().clone().expect("a target");
+        assert!(second.send_frame(frame(2)));
+        let queues = rig.queues.lock().unwrap();
+        assert_eq!(queues[1].frames(), vec![vec![2u8]], "the frame reaches the new session's peer");
+        assert!(queues[0].frames().is_empty(), "and nothing reaches the replaced one");
+        // The old target, if something still held it, finds a closed peer and says so.
+        assert!(!first.send_frame(frame(3)), "a frame for the replaced peer is refused so the sender drops it");
+        assert!(queues[0].frames().is_empty());
     }
 }
