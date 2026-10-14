@@ -293,8 +293,9 @@ code signing, auto-update, unattended Mac login after a FileVault reboot.
   gui/$(id -u)/net.gome.remote-agent` on the Mac). **권한 필요**: allow the two permissions
   (or the 30-day reconfirmation) through Mac (VNC). **잠김**: unlock through Mac (VNC); the
   agent tile cannot be opened while the screen is locked. **권한 필요(의심)**: the screen
-  returned only black pictures for a few seconds; the tile still opens, and if the picture
-  stays black the permission is the first thing to check. After a token change on the Mac
+  returned only black pictures for a few seconds, or the system stopped the capture while the
+  permission still reads as granted; the tile still opens (the mark clears at the next
+  session), and if the picture stays black the permission is the first thing to check. After a token change on the Mac
   (delete `token` and run `install.sh`), run
   `node scripts/set-credential.mjs <gateway.json> <id> --agent-token` again; the
   gateway log says when a token was refused ("did not accept the gateway token").

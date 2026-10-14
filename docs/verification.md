@@ -164,32 +164,35 @@ authentication, 16-bit colour, local cursor), a headless Chrome on the gateway s
 the Mac tile, the Mac's screen appeared and clicks sent from the page changed what the Mac
 showed. Measured with canvas pixel polling: median 171 to 182 ms from click to picture, p95
 193 ms, with an occasional 1 to 2 second stall. The result files and conditions are in the
-owner's private handoff notes. This is the evidence for V4 below; V4 is therefore passed
-for the Mac account route, and the real-app part of V4 and V5 stays pending until the owner
+owner's private handoff notes. This is the evidence for redesign V4 below; redesign V4 is therefore passed
+for the Mac account route, and the real-app part of redesign V4 and V5 stays pending until the owner
 runs it.
 
-## Pending: Mac account authentication and V1–V6 (not yet run)
+## Pending: the redesign's owner and operator checks V1–V6 (the account-authentication check has been run)
 
-Nothing below has been run and no result is recorded. Each entry is filled in, with the
-date and the evidence, when the owner and the operator perform it. Do not edit an entry to
-say "pass" without that evidence. See `docs/redesign-spec.md` sections 3, 7 and 8 for the
-procedure.
+These are the checks of the 0.2.0 redesign, named V1 to V6 in `docs/redesign-spec.md`; the
+Mac agent has its own V1 to V6 in the next section, which are not these. Except for the
+Mac account authentication (first entry, run and passed) and the operator's part of
+redesign V4, nothing below has been run and no result is recorded. Each entry is filled in,
+with the date and the evidence, when the owner and the operator perform it. Do not edit an
+entry to say "pass" without that evidence. See `docs/redesign-spec.md` sections 3, 7 and 8
+for the procedure.
 
 - Mac account authentication (spec section 3). Whether guacd opens the real Mac screen
   with the account name and password: tested on 2026-10-08 and 2026-10-14, see the section
   above (it worked).
-- V1 (operator). UI, list and WebSocket through the new Serve port; no loopback TCP route
+- Redesign V1 (operator). UI, list and WebSocket through the new Serve port; no loopback TCP route
   to the gateway; negative test with a temporarily different `allowedLogins`
   (the real app shows the 403 screen), then restored.
-- V2 (owner). Windows app, Ubuntu tile, GDM, `gome`, desktop (S1). To record: `loginctl`
+- Redesign V2 (owner). Windows app, Ubuntu tile, GDM, `gome`, desktop (S1). To record: `loginctl`
   session ID and leader compared with P1.
-- V3 (owner). Disconnect and reconnect keeps the windows (S4); Windows Remote Desktop and
+- Redesign V3 (owner). Disconnect and reconnect keeps the windows (S4); Windows Remote Desktop and
   the app take the session from each other.
-- V4 (owner). Mac tile shows and controls the Mac with the stored account credentials (S2).
+- Redesign V4 (owner). Mac tile shows and controls the Mac with the stored account credentials (S2).
   The operator's run of 2026-10-14 is recorded above; the owner's check in the app is still
   to be done.
-- V5 (owner). Mac app repeats V2 and V4 (S5); light and dark screenshots approved (S6).
-- V6 (operator). Gateway restart comes back with Serve answering; each refusal condition
+- Redesign V5 (owner). Mac app repeats redesign V2 and V4 (S5); light and dark screenshots approved (S6).
+- Redesign V6 (operator). Gateway restart comes back with Serve answering; each refusal condition
   (empty `allowedLogins`, credentials file mode, open socket directory) leaves a clear
   line in the log.
 
@@ -211,7 +214,7 @@ address) when it is run. Do not edit an entry to say "pass" without that evidenc
 - Agent P4. The 30-day screen-recording reconfirmation (scheduled for 2026-11-12): whether capture
   continues and whether the Mac (VNC) tile can click the confirmation window.
 - Agent V1. The agent tile measured from the gateway server's Chrome against S2, S3 and S4.
-- Agent V2 (Windows app) and V3 (Mac app). (Both against S1 and S5.)
+- Agent V2 (Windows app) and Agent V3 (Mac app). (Both against S1 and S5.)
 - Agent V4. Agent states: lock screen, display sleep, takeover, agent restart, nothing left
   pressed after a session, missing permission.
 - Agent V5. Negative tests: wrong token, a caller other than the gateway, an `Origin` header, a
