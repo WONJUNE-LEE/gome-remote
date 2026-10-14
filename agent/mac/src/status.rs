@@ -1,0 +1,180 @@
+//! The agent's status (spec D5): enumerations and a timestamp, nothing about screen content.
+use std::fmt::Write as _;
+
+/// P1 decides this. `true` until the lock-screen pre-test shows that capture and key
+/// input both work on the login window; then the owner flips it (plan, Task 13).
+pub const REFUSE_WHEN_LOCKED: bool = true;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Screen {
+    Granted,
+    Denied,
+    /// Permission says yes but only content-free frames arrive (P4: the 30-day recheck).
+    Suspect,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Accessibility {
+    Granted,
+    Denied,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DisplayState {
+    Ok,
+    Asleep,
+    None,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Status {
+    pub screen: Screen,
+    pub accessibility: Accessibility,
+    pub display: DisplayState,
+    pub locked: bool,
+    /// Seconds since the epoch of the last captured frame that had content.
+    pub last_capture_at: Option<u64>,
+    pub version: &'static str,
+}
+
+/// Why a session is refused for a state reason; the gateway passes the code to the page.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Gate {
+    Permission,
+    Locked,
+}
+impl Gate {
+    pub fn code(self) -> &'static str {
+        match self {
+            Gate::Permission => "permission",
+            Gate::Locked => "locked",
+        }
+    }
+    pub fn http_status(self) -> u16 {
+        match self {
+            Gate::Permission => 403,
+            Gate::Locked => 423,
+        }
+    }
+}
+
+impl Status {
+    pub fn gate(&self, refuse_when_locked: bool) -> Result<(), Gate> {
+        // `Suspect` still lets a session start: a session is how the suspicion is cleared.
+        if self.screen == Screen::Denied || self.accessibility == Accessibility::Denied {
+            return Err(Gate::Permission);
+        }
+        if self.locked && refuse_when_locked {
+            return Err(Gate::Locked);
+        }
+        Ok(())
+    }
+
+    pub fn to_json(&self) -> String {
+        let screen = match self.screen {
+            Screen::Granted => "granted",
+            Screen::Denied => "denied",
+            Screen::Suspect => "suspect",
+        };
+        let accessibility = match self.accessibility {
+            Accessibility::Granted => "granted",
+            Accessibility::Denied => "denied",
+        };
+        let display = match self.display {
+            DisplayState::Ok => "ok",
+            DisplayState::Asleep => "asleep",
+            DisplayState::None => "none",
+        };
+        let mut out = String::new();
+        let _ = write!(
+            out,
+            "{{\"version\":\"{}\",\"screen\":\"{screen}\",\"accessibility\":\"{accessibility}\",\"display\":\"{display}\",\"locked\":{},\"lastCaptureAt\":",
+            self.version, self.locked
+        );
+        match self.last_capture_at {
+            Some(t) => {
+                let _ = write!(out, "{t}");
+            }
+            None => out.push_str("null"),
+        }
+        out.push('}');
+        out
+    }
+}
+
+// ---- tests ----
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn healthy() -> Status {
+        Status {
+            screen: Screen::Granted,
+            accessibility: Accessibility::Granted,
+            display: DisplayState::Ok,
+            locked: false,
+            last_capture_at: Some(1_760_400_000),
+            version: "0.1.0",
+        }
+    }
+
+    #[test]
+    fn json_carries_only_enumerations_and_a_time() {
+        let v: serde_json::Value = serde_json::from_str(&healthy().to_json()).unwrap();
+        assert_eq!(v["screen"], "granted");
+        assert_eq!(v["accessibility"], "granted");
+        assert_eq!(v["display"], "ok");
+        assert_eq!(v["locked"], false);
+        assert_eq!(v["lastCaptureAt"], 1_760_400_000u64);
+        assert_eq!(v["version"], "0.1.0");
+        assert_eq!(v.as_object().unwrap().len(), 6);
+        let mut s = healthy();
+        s.last_capture_at = None;
+        s.display = DisplayState::Asleep;
+        s.screen = Screen::Suspect;
+        s.locked = true;
+        let v: serde_json::Value = serde_json::from_str(&s.to_json()).unwrap();
+        assert_eq!(v["lastCaptureAt"], serde_json::Value::Null);
+        assert_eq!(v["display"], "asleep");
+        assert_eq!(v["screen"], "suspect");
+        assert_eq!(v["locked"], true);
+    }
+
+    #[test]
+    fn missing_permissions_refuse_sessions_with_the_permission_code() {
+        let mut s = healthy();
+        s.screen = Screen::Denied;
+        assert_eq!(s.gate(true), Err(Gate::Permission));
+        let mut s = healthy();
+        s.accessibility = Accessibility::Denied;
+        assert_eq!(s.gate(false), Err(Gate::Permission));
+        assert_eq!(Gate::Permission.code(), "permission");
+        assert_eq!(Gate::Permission.http_status(), 403);
+    }
+
+    #[test]
+    fn a_suspect_screen_still_allows_a_session_so_it_can_recover() {
+        let mut s = healthy();
+        s.screen = Screen::Suspect;
+        assert_eq!(s.gate(true), Ok(()));
+    }
+
+    #[test]
+    fn locked_refuses_only_while_the_p1_switch_says_so() {
+        let mut s = healthy();
+        s.locked = true;
+        assert_eq!(s.gate(true), Err(Gate::Locked));
+        assert_eq!(s.gate(false), Ok(()));
+        assert_eq!(Gate::Locked.code(), "locked");
+        assert_eq!(Gate::Locked.http_status(), 423);
+    }
+
+    #[test]
+    fn a_sleeping_or_missing_display_does_not_refuse_a_session() {
+        // The session start wakes the display (spec D3); no display at all fails later, in capture.
+        let mut s = healthy();
+        s.display = DisplayState::Asleep;
+        assert_eq!(s.gate(true), Ok(()));
+        s.display = DisplayState::None;
+        assert_eq!(s.gate(true), Ok(()));
+    }
+}

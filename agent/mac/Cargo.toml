@@ -1,0 +1,40 @@
+[package]
+name = "gome-remote-agent"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.85"
+publish = false
+description = "Gome Remote Mac agent: ScreenCaptureKit, VideoToolbox H.264, WebRTC (str0m), CGEvent input"
+
+[lib]
+name = "gome_agent"
+path = "src/lib.rs"
+
+[[bin]]
+name = "gome-remote-agent"
+path = "src/main.rs"
+
+[features]
+# Development install (spec O4): config and token live under a user directory so the
+# binary can be rebuilt and replaced without sudo. Never used for the operational install.
+dev-install = []
+
+[dependencies]
+str0m = { version = "0.24", default-features = false, features = ["aws-lc-rs"] }
+tiny_http = "0.12"
+serde_json = "1"
+anyhow = "1"
+libc = "0.2"
+subtle = "2"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+block2 = "0.6"
+dispatch2 = "0.3"
+objc2 = "0.6"
+objc2-foundation = "0.3"
+objc2-core-media = "0.3"
+objc2-screen-capture-kit = "0.3"
+
+[profile.release]
+opt-level = 3
+debug = 1
