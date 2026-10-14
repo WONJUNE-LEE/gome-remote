@@ -670,3 +670,17 @@ test(
     await assert.rejects(stat(`${l.paths.bin}.new`), { code: "ENOENT" });
   },
 );
+
+// macOS `security import` rejects the AES/SHA256 PKCS#12 that OpenSSL 3 writes by default;
+// on a Mac whose Terminal finds Homebrew's OpenSSL 3 first the identity was never created.
+test("the signing identity is exported in a PKCS#12 form macOS can import with any OpenSSL", async () => {
+  const install = await readScript("install.sh");
+  const line = install.match(/openssl pkcs12 -export(?:[^\n\\]|\\\n)*/);
+  assert.ok(line, "install.sh exports a PKCS#12 file");
+  for (const flag of [
+    "-keypbe PBE-SHA1-3DES",
+    "-certpbe PBE-SHA1-3DES",
+    "-macalg sha1",
+  ])
+    assert.ok(line[0].includes(flag), `pkcs12 export carries ${flag}`);
+});

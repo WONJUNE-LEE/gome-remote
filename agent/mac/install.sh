@@ -187,7 +187,10 @@ keyUsage = critical,digitalSignature
 extendedKeyUsage = critical,codeSigning
 EOF
   openssl req -x509 -newkey rsa:2048 -nodes -keyout "$work/key.pem" -out "$work/cert.pem" -days 3650 -config "$work/cs.cnf" 2> /dev/null
-  openssl pkcs12 -export -inkey "$work/key.pem" -in "$work/cert.pem" -out "$work/id.p12" -passout pass:gome
+  # SHA1/3DES: macOS `security import` cannot read the AES/SHA256 PKCS#12 that OpenSSL 3
+  # (e.g. Homebrew's, first on PATH in Terminal) writes by default; LibreSSL accepts these too.
+  openssl pkcs12 -export -inkey "$work/key.pem" -in "$work/cert.pem" -out "$work/id.p12" -passout pass:gome \
+    -keypbe PBE-SHA1-3DES -certpbe PBE-SHA1-3DES -macalg sha1
   rm -f "$KEYCHAIN"
   security create-keychain -p "$password" "$KEYCHAIN"
   security set-keychain-settings "$KEYCHAIN"
