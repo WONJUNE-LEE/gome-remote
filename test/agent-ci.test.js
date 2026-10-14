@@ -5,7 +5,9 @@ import { readFile } from "node:fs/promises";
 // The Mac agent cannot be compiled on Linux or Windows, so CI checks it on a macOS runner.
 // These tests keep that job (and the files it depends on) from being weakened by accident.
 const root = new URL("../", import.meta.url);
-const read = (path) => readFile(new URL(path, root), "utf8");
+// Windows checks files out with CRLF; every pattern below is written for LF.
+const read = async (path) =>
+  (await readFile(new URL(path, root), "utf8")).replace(/\r\n/g, "\n");
 const workflow = await read(".github/workflows/build.yml");
 const job = workflow.slice(workflow.indexOf("  agent-mac:"));
 

@@ -21,6 +21,9 @@ import { join } from "node:path";
 // LaunchAgent it writes, and the rollback when the new program does not answer.
 const posix = process.platform !== "win32";
 const here = new URL("../agent/mac/", import.meta.url);
+// Windows checks files out with CRLF; the patterns on the script text are written for LF.
+const readScript = async (name) =>
+  (await readFile(new URL(name, here), "utf8")).replace(/\r\n/g, "\n");
 const GATEWAY = "100.64.0.10";
 const BIND = "100.64.0.20";
 
@@ -426,8 +429,8 @@ test(
 );
 
 test("the scripts keep their safety properties", async () => {
-  const install = await readFile(new URL("install.sh", here), "utf8");
-  const uninstall = await readFile(new URL("uninstall.sh", here), "utf8");
+  const install = await readScript("install.sh");
+  const uninstall = await readScript("uninstall.sh");
   for (const script of [install, uninstall]) {
     assert.match(script, /^set -euo pipefail$/m);
     assert.doesNotMatch(
@@ -488,7 +491,7 @@ test(
 );
 
 test("the program is written beside the old one and renamed over it, never rewritten in place", async () => {
-  const install = await readFile(new URL("install.sh", here), "utf8");
+  const install = await readScript("install.sh");
   assert.match(install, /mv -f "\$BIN\.new" "\$BIN"/);
 });
 
