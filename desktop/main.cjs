@@ -77,7 +77,9 @@ function applyViewerState(state) {
   menu.getMenuItemById("reconnect").enabled = state.open && !state.connected;
   menu.getMenuItemById("text-input").enabled = state.open && state.connected;
   menu.getMenuItemById("resolution").enabled =
-    state.open && state.connected && state.protocol === "rdp";
+    state.open &&
+    state.connected &&
+    (state.protocol === "rdp" || state.protocol === "agent");
   for (const size of resolutions)
     menu.getMenuItemById(`resolution:${size}`).checked =
       size === state.resolution;
@@ -167,7 +169,7 @@ app
         !state ||
         typeof state.open !== "boolean" ||
         typeof state.connected !== "boolean" ||
-        ![null, "rdp", "vnc"].includes(state.protocol) ||
+        ![null, "rdp", "vnc", "agent"].includes(state.protocol) ||
         !resolutions.includes(state.resolution)
       )
         throw new Error("Invalid viewer state.");
@@ -304,7 +306,7 @@ app
       if (
         state.page !== setupPage ||
         state.title !== "Gome Remote" ||
-        state.bridgeVersion !== 2 ||
+        state.bridgeVersion !== 3 ||
         state.setup !== "function"
       )
         throw new Error("The address page or the bridge is not as expected.");
