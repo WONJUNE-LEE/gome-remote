@@ -1,0 +1,38 @@
+{
+  "input": [
+    { "type": "pointer", "x": 0.25, "y": 0.5 },
+    { "type": "button", "b": 0, "down": true, "x": 0.1, "y": 0.9 },
+    { "type": "button", "b": 1, "down": false, "x": 0.1, "y": 0.9 },
+    { "type": "button", "b": 2, "down": true, "x": 0, "y": 1 },
+    { "type": "wheel", "dx": 0, "dy": -120 },
+    { "type": "key", "code": "KeyA", "down": true },
+    { "type": "key", "code": "Lang1", "down": false },
+    { "type": "text", "s": "안녕 😀" },
+    { "type": "release" },
+    { "type": "size", "w": 1920, "h": 1080 }
+  ],
+  "status": [
+    {
+      "json": {
+        "version": "0.1.0",
+        "screen": "granted",
+        "accessibility": "granted",
+        "display": "ok",
+        "locked": false,
+        "lastCaptureAt": 1760400000
+      },
+      "page": { "issue": "none", "display": "ok", "lastCaptureAt": 1760400000 }
+    },
+    {
+      "json": {
+        "version": "0.1.0",
+        "screen": "suspect",
+        "accessibility": "granted",
+        "display": "asleep",
+        "locked": true,
+        "lastCaptureAt": null
+      },
+      "page": { "issue": "locked", "display": "asleep", "lastCaptureAt": null }
+    }
+  ]
+}
