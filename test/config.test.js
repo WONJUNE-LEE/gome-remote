@@ -245,5 +245,5 @@ test("the shipped example targets still validate", async () => {
       "utf8",
     ),
   );
-  assert.equal(validateConfig({ ...base, targets }).targets.length, 2);
+  assert.equal(validateConfig({ ...base, targets }).targets.length, 3);
 });

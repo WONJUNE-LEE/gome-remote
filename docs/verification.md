@@ -72,6 +72,58 @@ npm run build     # vite build
   state change (`src/flow.ts`, and `src/main.ts` itself run against a fake page and fake
   Guacamole); the cursor, overlay and in-flow toolbar rules, the palette and the exact
   screen texts (read from the source, as a fake page cannot show them).
+- **Mac agent, gateway side (agent spec D2, D7)**, `test/config-agent.test.js`,
+  `test/credentials-agent.test.js`, `test/set-credential-agent.test.js`,
+  `test/agent-relay.test.js`: an `agent` target needs platform mac, a tailnet address and no
+  RDP-only setting, and defaults to port 18471; every credential entry has the shape of
+  its target's method and a mismatch invalidates the file; `set-credential --agent-token`
+  requires the flag for agent targets, refuses it elsewhere, never takes a token as an
+  argument, trims a pasted token and replaces an old password entry; against a fake agent on
+  a real socket: the tile state (permission, locked, suspect, offline, setup) is built from
+  enumerations only, locked wins over suspect, status answers are cached for 10 s and shared
+  between simultaneous page loads, a new token is asked at once, `/api/agent-sessions`
+  checks login, Origin, content type, 64 KiB body (both sides of the limit), the offer and
+  the size before the agent hears of it, relays token, size and offer, passes the agent's
+  `permission` and `locked` refusals as codes, turns every other failure into "unavailable"
+  within the time limit and logs a refused token separately without printing it.
+- **Mac agent, page and app (agent spec D4, D5, D8)**, `test/agent-input.test.js`,
+  `test/agent-session.test.js`, `test/agent-style.test.js`, `test/viewer-agent.test.js`,
+  `test/measure.test.js`, `test/measure-drive.test.js`, `test/desktop.test.js`,
+  `test/preload.test.js`: against a fake `RTCPeerConnection`, the codec preference keeps
+  H.264 and `video/rtx`; a browser without H.264 ends at once; pointer positions are
+  fractions of the picture inside the letterbox (the stylesheet's `object-fit: contain` is
+  read from the source), a press on a black bar is not a click, a drag released outside
+  still releases; the wheel, key (including the Hangul key), text (emoji not split) and
+  size messages have the agent's exact shapes; blur, dialogs, fullscreen and the end of the
+  session send `release`; first picture, 20 s without one, a failed or closed connection and
+  a closed channel end the session once, and a session the page closed reports nothing;
+  main.ts connects an agent tile without touching Guacamole, keeps the ended card and the
+  single reconnect rule, shows each refusal in its own words, and sends the window size; a
+  permission-less tile is not openable, a "suspect" one is, and a locked one follows the
+  P1 switch; bridge 3 accepts the protocol "agent" and an older app is told "rdp"; the
+  `#measure` panel exists only when asked for and measures a video and a Guacamole canvas
+  with the same loop; the measuring driver's options and thresholds.
+- **Mac agent, program (agent spec D2-D6, D10)**, `cargo test --locked` in `agent/mac`
+  (macOS CI; most tests also run on Linux): Host, Origin, source address and bearer-token
+  checks (including an IPv4-mapped peer), body limits, backoff that never delays the
+  gateway; tailnet address ranges at both edges and the offer candidate filter; the
+  settings and token file ownership rules; the input message limits (512 bytes, 8 KiB for
+  text), the key table, double-click counting, the typed-text chunking; bitrate following the
+  estimate down to the 2 Mbps floor; the static-screen repeat timing; the black-frame
+  detector; status enumerations; one session with takeover; the 10 s idle rule; the log
+  cap; and that no source file reads arguments or the environment. `test/agent-install.test.js`
+  runs `install.sh` and `uninstall.sh` against stand-ins for the macOS tools: layout, token
+  mode, signing options, address checks before anything is installed, the 200/401/403 health check, refusal of test
+  overrides, root and development builds in the operational install, the rollback to
+  `.prev`, the development install and the shared keychain's removal.
+  `test/agent-ci.test.js` keeps the macOS job (fmt, clippy `-D warnings`, `--locked` tests,
+  `cargo deny`) from being weakened.
+- **Documentation and examples (agent spec D7)**, `test/ops.test.js`,
+  `test/ops-agent.test.js`, `test/config.test.js`: the example targets (Ubuntu RDP, Mac
+  agent on 18471, Mac VNC) are valid and hold no secret; `init-gateway` prints one
+  `set-credential` command per target, with `--agent-token` for agents only; the README
+  names the install, permissions, token, rollback and removal steps and the new tile words;
+  this file keeps the evidence below.
 - **Public repository (D7)**, `test/public-hygiene.test.js`: scans the files tracked by git
   (`git ls-files`) and rejects any email other than `example.com` or `noreply`, any
   `*.ts.net` tailnet name other than the placeholders, any tailnet (CGNAT range) address
@@ -104,6 +156,18 @@ pre-tests and V-checks below.
   Mac needs the macOS account name and password, which is what the `mac` target stores.
   The VNC password option is not needed.
 
+## Mac account authentication through the VNC route (V4 of the redesign), recorded 2026-10-14
+
+Not a unit test but a real run, on 2026-10-08 and again on 2026-10-14: with the 0.2.0
+gateway, guacd and the Mac's own account name and password (Apple Remote Desktop
+authentication, 16-bit colour, local cursor), a headless Chrome on the gateway server opened
+the Mac tile, the Mac's screen appeared and clicks sent from the page changed what the Mac
+showed. Measured with canvas pixel polling: median 171 to 182 ms from click to picture, p95
+193 ms, with an occasional 1 to 2 second stall. The result files and conditions are in the
+owner's private handoff notes. This is the evidence for V4 below; V4 is therefore passed
+for the Mac account route, and the real-app part of V4 and V5 stays pending until the owner
+runs it.
+
 ## Pending: Mac account authentication and V1–V6 (not yet run)
 
 Nothing below has been run and no result is recorded. Each entry is filled in, with the
@@ -112,8 +176,8 @@ say "pass" without that evidence. See `docs/redesign-spec.md` sections 3, 7 and 
 procedure.
 
 - Mac account authentication (spec section 3). Whether guacd opens the real Mac screen
-  with the account name and password has not been tested; it is checked as part of V4. If
-  it fails, the Mac leaves the scope and the owner decides.
+  with the account name and password: tested on 2026-10-08 and 2026-10-14, see the section
+  above (it worked).
 - V1 (operator). UI, list and WebSocket through the new Serve port; no loopback TCP route
   to the gateway; negative test with a temporarily different `allowedLogins`
   (the real app shows the 403 screen), then restored.
@@ -122,7 +186,34 @@ procedure.
 - V3 (owner). Disconnect and reconnect keeps the windows (S4); Windows Remote Desktop and
   the app take the session from each other.
 - V4 (owner). Mac tile shows and controls the Mac with the stored account credentials (S2).
+  The operator's run of 2026-10-14 is recorded above; the owner's check in the app is still
+  to be done.
 - V5 (owner). Mac app repeats V2 and V4 (S5); light and dark screenshots approved (S6).
 - V6 (operator). Gateway restart comes back with Serve answering; each refusal condition
   (empty `allowedLogins`, credentials file mode, open socket directory) leaves a clear
   line in the log.
+
+## Pending: the Mac agent's device checks (not yet run)
+
+The agent's automated checks above ran on Linux and, for the Rust program, on a macOS
+runner. Nothing about a real Mac, a real network path or a real client has been run for the
+agent, and no result is recorded. The pre-tests and verification runs are in section 3 and
+section 8 of `docs/mac-agent-spec.md`; each entry below is filled in by the operator or the
+owner with its date and evidence (numbers and words, no tailnet login, device name or
+address) when it is run. Do not edit an entry to say "pass" without that evidence.
+
+- Agent P1. Lock screen: capture and key input on the lock screen. Decides the P1 switch
+  (`REFUSE_WHEN_LOCKED` in `agent/mac/src/status.rs`, `LOCKED_TILE_ENABLED` in
+  `src/tiles.ts`); until it is run a locked Mac is refused and the tile says 잠김.
+- Agent P2. Real clients: the selected ICE pair and whether the path is direct, click-to-picture
+  at 2560x1440, still-screen hold with 1000 ms and 100 ms repeat, the decoder in use.
+- Agent P3. Permissions survive updates of the same signing certificate.
+- Agent P4. The 30-day screen-recording reconfirmation (scheduled for 2026-11-12): whether capture
+  continues and whether the Mac (VNC) tile can click the confirmation window.
+- Agent V1. The agent tile measured from the gateway server's Chrome against S2, S3 and S4.
+- Agent V2 (Windows app) and V3 (Mac app). (Both against S1 and S5.)
+- Agent V4. Agent states: lock screen, display sleep, takeover, agent restart, nothing left
+  pressed after a session, missing permission.
+- Agent V5. Negative tests: wrong token, a caller other than the gateway, an `Origin` header, a
+  login outside `allowedLogins`, an extra argument or environment variable.
+- Agent V6. Cutover and rollback rehearsal, including the installer's rollback to `.prev`.

@@ -22,14 +22,22 @@ const examples = JSON.parse(
 );
 const script = fileURLToPath(new URL("scripts/init-gateway.mjs", root));
 
-test("the example targets are the two spec targets and carry no secret or real address", () => {
+test("the example targets are Ubuntu, the Mac agent and the Mac over VNC, with no secret or real address", () => {
   assert.deepEqual(
     examples.map((t) => t.id),
-    ["ubuntu-server", "mac"],
+    ["ubuntu-server", "mac", "mac-vnc"],
   );
   assert.equal(examples[0].profile, "gnome-remote-login");
-  assert.equal(examples[1].protocol, "vnc");
-  assert.equal(examples[1].hostname, "100.64.0.20");
+  assert.equal(examples[1].protocol, "agent");
+  assert.equal(examples[1].platform, "mac");
+  assert.equal(examples[1].port, 18471);
+  assert.equal(examples[2].protocol, "vnc");
+  for (const mac of examples.slice(1))
+    assert.equal(mac.hostname, "100.64.0.20");
+  assert.ok(
+    !JSON.stringify(examples).match(/token|password|username/i),
+    "an example file never holds a secret",
+  );
   assert.doesNotThrow(() =>
     buildConfig({
       origin: "https://gateway.example.ts.net:8450",
