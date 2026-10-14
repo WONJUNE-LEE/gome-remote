@@ -168,7 +168,10 @@ const usage =
 function resolveArguments(argv, env, home) {
   const flags = argv.filter((a) => a === "--agent-token");
   const positional = argv.filter((a) => a !== "--agent-token");
-  if (flags.length > 1) return undefined;
+  // Any other `--...` is an unknown option (`--agent-token=<TOKEN>` included), never an ID
+  // or a path; the usage text does not echo it.
+  if (flags.length > 1 || positional.some((a) => a.startsWith("--")))
+    return undefined;
   const agentToken = flags.length === 1;
   if (positional.length === 2) return [...positional, agentToken];
   if (positional.length === 1)
@@ -180,6 +183,10 @@ function resolveArguments(argv, env, home) {
     ];
   return undefined;
 }
+
+// A pasted token must not come back out of an error message, wherever it sits in the
+// argument: any run of 43 token characters counts (the pattern itself is anchored).
+const hasToken = (value) => /[A-Za-z0-9_-]{43}/.test(value);
 
 export async function main({
   argv = process.argv.slice(2),
@@ -205,7 +212,7 @@ export async function main({
     config = await loadConfig(configPath);
   } catch (error) {
     // A token pasted where the config path goes must not come back out in the message.
-    if (AGENT_TOKEN.test(configPath))
+    if (hasToken(configPath))
       return fail("Cannot use the given configuration path.");
     return fail(`Cannot use ${configPath}: ${error.message}`);
   }
@@ -214,7 +221,7 @@ export async function main({
     const configured = `Configured targets: ${config.targets.map((t) => t.id).join(", ")}`;
     // A token pasted where the target ID goes is not echoed.
     return fail(
-      AGENT_TOKEN.test(targetId)
+      hasToken(targetId)
         ? `Unknown target. ${configured}`
         : `Unknown target "${targetId}". ${configured}`,
     );

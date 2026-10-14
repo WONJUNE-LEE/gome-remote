@@ -229,6 +229,37 @@ test("a token pasted after the flag is never echoed in an error, wherever it lan
   assert.doesNotMatch(shaped.err, /Unknown target "/);
 });
 
+// Re-review of item 4: the token can also arrive glued to an option or to other text.
+test("an option other than the exact --agent-token is a usage error, and no argument holding a token is echoed", async (t) => {
+  const { configPath, dir } = await setup(t);
+  const env = {};
+  for (const argv of [
+    [configPath, `--agent-token=${TOKEN}`],
+    [`--agent-token=${TOKEN}`, "mac"],
+    [configPath, "mac", `--agent-token=${TOKEN}`],
+    [configPath, `--foo=${TOKEN}`],
+    [`--foo=${TOKEN}`, "mac"],
+    [configPath, "--foo", TOKEN],
+  ]) {
+    const result = await run(argv, [], { env, home: dir });
+    assert.equal(result.code, 2, argv.join(" ").replace(TOKEN, "<token>"));
+    assert.match(result.err, /Usage/);
+    assert.ok(!result.err.includes(TOKEN), "stderr holds the token");
+    assert.ok(!result.out.includes(TOKEN), "stdout holds the token");
+  }
+  // A token inside a longer, non-option argument: unknown target / unusable path, not echoed.
+  for (const argv of [
+    [configPath, `x${TOKEN}`],
+    [configPath, `${TOKEN}-more`],
+    [join(dir, TOKEN, "gateway.json"), "mac"],
+    [`/nope/${TOKEN}`, "mac"],
+  ]) {
+    const result = await run(argv, [], { env, home: dir });
+    assert.equal(result.code, 1, argv.join(" ").replace(TOKEN, "<token>"));
+    assert.ok(!result.err.includes(TOKEN), "stderr holds the token");
+  }
+});
+
 test("more positional arguments than expected is a usage error that echoes no value", async (t) => {
   const { configPath, dir } = await setup(t);
   const result = await run([configPath, "mac", "secret-looking-extra"], [], {

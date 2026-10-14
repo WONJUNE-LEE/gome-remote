@@ -64,6 +64,9 @@ pub struct PeerParams {
 pub struct PeerHandle {
     alive: Arc<AtomicBool>,
     frames: SyncSender<Msg>,
+    /// Set when a frame was dropped for want of room: the picture is broken until the next
+    /// keyframe, so the peer thread asks the encoder for one.
+    repair: Arc<AtomicBool>,
 }
 impl PeerHandle {
     pub fn is_alive(&self) -> bool {
@@ -75,22 +78,28 @@ impl PeerHandle {
     /// A handle with no peer behind it, for tests of whatever holds handles.
     #[cfg(test)]
     pub fn detached() -> PeerHandle {
-        PeerHandle { alive: Arc::new(AtomicBool::new(true)), frames: sync_channel(1).0 }
+        PeerHandle { alive: Arc::new(AtomicBool::new(true)), frames: sync_channel(1).0, repair: Arc::default() }
     }
     /// Like `detached`, but the queue's other end is returned so a test can look into it.
     #[cfg(test)]
     fn detached_with_queue(capacity: usize) -> (PeerHandle, std::sync::mpsc::Receiver<Msg>) {
         let (frames, rx) = sync_channel(capacity);
-        (PeerHandle { alive: Arc::new(AtomicBool::new(true)), frames }, rx)
+        (PeerHandle { alive: Arc::new(AtomicBool::new(true)), frames, repair: Arc::default() }, rx)
     }
 }
 impl FrameTarget for PeerHandle {
     /// False when the peer is gone. A frame that finds the queue full is dropped (the peer
-    /// is behind; the next keyframe or PLI repairs the picture) and the peer is still there.
+    /// is behind) and the peer is still there; the drop is noted so the peer thread asks for
+    /// a keyframe, which is what repairs the picture. (The request is not made here: this
+    /// runs on the encoder's callback thread, which must not wait on the encoder.)
     fn send_frame(&self, frame: EncodedFrame) -> bool {
         self.is_alive()
             && match self.frames.try_send(Msg::Frame(frame)) {
-                Ok(()) | Err(TrySendError::Full(_)) => true,
+                Ok(()) => true,
+                Err(TrySendError::Full(_)) => {
+                    self.repair.store(true, Relaxed);
+                    true
+                }
                 Err(TrySendError::Disconnected(_)) => false,
             }
     }
@@ -117,6 +126,11 @@ fn forward(tx: &SyncSender<Msg>, at: Instant, source: SocketAddr, data: &[u8]) -
         return true;
     }
     !matches!(tx.try_send(Msg::Udp(at, source, data.to_vec())), Err(TrySendError::Disconnected(_)))
+}
+
+/// True once after every frame that was dropped; the peer thread then requests a keyframe.
+fn repair_due(flag: &AtomicBool) -> bool {
+    flag.swap(false, Relaxed)
 }
 
 /// The idle clock moves only for a datagram str0m accepted as part of this session.
@@ -220,12 +234,13 @@ pub fn accept(offer_sdp: &str, params: PeerParams, hooks: Arc<dyn PeerHooks>) ->
             }
         });
     }
-    let handle = PeerHandle { alive: alive.clone(), frames: tx };
+    let repair = Arc::new(AtomicBool::new(false));
+    let handle = PeerHandle { alive: alive.clone(), frames: tx, repair: repair.clone() };
     let thread_alive = alive.clone();
     std::thread::spawn(move || {
         // The guard runs `closed` on every way out, a panic included, exactly once.
         let _released = ReleaseOnDrop { alive: thread_alive.clone(), hooks: hooks.clone() };
-        if let Err(e) = run(rtc, socket, local, rx, &thread_alive, hooks.as_ref()) {
+        if let Err(e) = run(rtc, socket, local, rx, &thread_alive, &repair, hooks.as_ref()) {
             eprintln!("[peer] ended with error: {e:?}");
         }
     });
@@ -250,6 +265,7 @@ fn run(
     local: SocketAddr,
     rx: Receiver<Msg>,
     alive: &AtomicBool,
+    repair: &AtomicBool,
     hooks: &dyn PeerHooks,
 ) -> Result<()> {
     let epoch = Instant::now();
@@ -262,6 +278,9 @@ fn run(
     // A socket that fails does so for every packet: a line a second, not a line per packet.
     let (mut send_log, mut write_log) = (LogLimiter::default(), LogLimiter::default());
     loop {
+        if repair_due(repair) {
+            hooks.request_keyframe();
+        }
         let timeout = loop {
             match rtc.poll_output()? {
                 Output::Timeout(t) => break t,
@@ -457,6 +476,12 @@ mod tests {
             assert!(handle.send_frame(frame), "a frame dropped for want of room is not a dead peer");
         }
         assert_eq!(rx.try_iter().count(), 3, "the queue is bounded");
+        // A dropped frame breaks the picture until a keyframe: the peer thread is told, once.
+        assert!(repair_due(&handle.repair), "a dropped frame must lead to a keyframe request");
+        assert!(!repair_due(&handle.repair), "one request per drop, not one per loop");
+        let (quiet, _rx) = PeerHandle::detached_with_queue(3);
+        assert!(quiet.send_frame(EncodedFrame { data: vec![0], key: true, submitted: now }));
+        assert!(!repair_due(&quiet.repair), "nothing was dropped, nothing to repair");
     }
 
     #[test]
