@@ -261,7 +261,8 @@ Open the same address in a browser for the identical screen.
   다시 연결, 연결 종료. F11 and **View → 전체 화면** toggle full screen locally; Escape
   stays a remote key.
 - In a browser the same controls sit in a bar above the picture, never over it.
-- Only the remote cursor is drawn over a connected desktop.
+- One pointer is drawn over a connected desktop: the remote cursor on the Guacamole paths (RDP
+  and VNC), and your own device's pointer in a Mac (agent) session, whose picture has no cursor in it.
 - Resolution (Ubuntu, RDP) defaults to **자동 (창 크기)**: the remote desktop follows the window
   size and is resized shortly after the window stops changing. Fixed sizes remain in the menu.
 - A Mac (VNC) session uses guacd's local cursor: a normal pointer instead of a dot, moving without round-trip lag.
@@ -290,7 +291,7 @@ code signing, auto-update, unattended Mac login after a FileVault reboot.
   `sudo tailscale serve --https=8450 off`. Never reset all Serve routes.
 - **A Mac (agent) tile says 오프라인** when the agent does not answer: the Mac is off or
   asleep, nobody is logged in, or the program stopped (`launchctl print
-  gui/$(id -u)/net.gome.remote-agent` on the Mac). **권한 필요**: allow the two permissions
+gui/$(id -u)/net.gome.remote-agent` on the Mac). **권한 필요**: allow the two permissions
   (or the 30-day reconfirmation) through Mac (VNC). **잠김**: unlock through Mac (VNC); the
   agent tile cannot be opened while the screen is locked. **권한 필요(의심)**: the screen
   returned only black pictures for a few seconds, or the system stopped the capture while the

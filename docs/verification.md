@@ -153,7 +153,8 @@ pre-tests and V-checks below.
   (RFB security type 30) first, even with the separate VNC password option on, and guacd 1.6.0
   selects the first supported type from the server's list. Measured with a loopback fake RFB
   server that offers the same list. A password alone therefore does not authenticate: the
-  Mac needs the macOS account name and password, which is what the `mac` target stores.
+  Mac needs the macOS account name and password, which is what the VNC target stores (it was
+  called `mac` when this was measured; today the VNC target is `mac-vnc` and `mac` is the agent).
   The VNC password option is not needed.
 
 ## Mac account authentication through the VNC route (V4 of the redesign), recorded 2026-10-14
