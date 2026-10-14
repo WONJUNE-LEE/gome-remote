@@ -9,7 +9,7 @@ use std::io::Read;
 use std::net::{IpAddr, SocketAddr};
 use std::sync::atomic::{AtomicUsize, Ordering::SeqCst};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 pub const MAX_BODY: u64 = 64 * 1024;
 /// Requests handled at once. Each waits on its own thread, so a slowed-down failed
@@ -66,11 +66,17 @@ pub struct Router {
     guard: Guard,
     backend: Arc<dyn Backend>,
     backoff: Mutex<Backoff>,
+    refusal_log: Mutex<LogLimiter>,
 }
 
 impl Router {
     pub fn new(guard: Guard, backend: Arc<dyn Backend>) -> Self {
-        Router { guard, backend, backoff: Mutex::new(Backoff::default()) }
+        Router {
+            guard,
+            backend,
+            backoff: Mutex::new(Backoff::default()),
+            refusal_log: Mutex::new(LogLimiter::default()),
+        }
     }
 
     pub fn route(&self, head: &Head, body: &mut dyn Read) -> Reply {
@@ -79,11 +85,11 @@ impl Router {
         match self.guard.check(&meta) {
             Ok(()) => self.backoff.lock().unwrap().succeeded(),
             Err(Reject::Forbidden(why)) => {
-                eprintln!("[http] refused ({why})");
+                self.log_refusal(why);
                 return Reply::error(403, "forbidden");
             }
             Err(Reject::Unauthorized) => {
-                eprintln!("[http] refused (token)");
+                self.log_refusal("token");
                 let delay = self.backoff.lock().unwrap().failed();
                 return Reply { delay, ..Reply::error(401, "unauthorized") };
             }
@@ -95,6 +101,18 @@ impl Router {
             ("POST", "/v1/sessions") => self.create_session(head, body),
             (_, "/v1/status") | (_, "/v1/sessions") => Reply::error(405, "method not allowed"),
             _ => Reply::error(404, "not found"),
+        }
+    }
+
+    /// Refusals come from callers nobody vouches for, so they must not be able to fill the
+    /// log (and with the size cap, push earlier lines out of it): one line per second.
+    fn log_refusal(&self, why: &str) {
+        if let Some(suppressed) = self.refusal_log.lock().unwrap().note(Instant::now()) {
+            if suppressed == 0 {
+                eprintln!("[http] refused ({why})");
+            } else {
+                eprintln!("[http] refused ({why}); {suppressed} more refusals since the last line not logged");
+            }
         }
     }
 
@@ -141,21 +159,70 @@ impl Router {
     }
 }
 
+/// At most one log line per interval; the lines that were held back are counted so the
+/// next printed line can say how many.
+#[derive(Default)]
+pub struct LogLimiter {
+    last: Option<Instant>,
+    suppressed: u64,
+}
+impl LogLimiter {
+    pub const INTERVAL: Duration = Duration::from_secs(1);
+
+    /// `Some(n)`: print this line now (n lines were held back since the last one).
+    /// `None`: stay quiet.
+    pub fn note(&mut self, now: Instant) -> Option<u64> {
+        match self.last {
+            Some(last) if now.saturating_duration_since(last) < Self::INTERVAL => {
+                self.suppressed += 1;
+                None
+            }
+            _ => {
+                self.last = Some(now);
+                Some(std::mem::take(&mut self.suppressed))
+            }
+        }
+    }
+}
+
+/// The count of requests being handled. A slot is returned when its guard is dropped,
+/// including when the handler panics: a leaked slot would, after `MAX_IN_FLIGHT` panics,
+/// make the (still running, so never restarted) agent answer every request with 503.
+#[derive(Clone, Default)]
+pub struct Slots(Arc<AtomicUsize>);
+pub struct Slot(Arc<AtomicUsize>);
+impl Slots {
+    pub fn try_acquire(&self, limit: usize) -> Option<Slot> {
+        if self.0.fetch_add(1, SeqCst) >= limit {
+            self.0.fetch_sub(1, SeqCst);
+            return None;
+        }
+        Some(Slot(self.0.clone()))
+    }
+    pub fn in_flight(&self) -> usize {
+        self.0.load(SeqCst)
+    }
+}
+impl Drop for Slot {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, SeqCst);
+    }
+}
+
 /// Serves until the process ends. One thread per request, at most `MAX_IN_FLIGHT`.
 pub fn serve(bind: SocketAddr, router: Arc<Router>) -> anyhow::Result<()> {
     let server = tiny_http::Server::http(bind).map_err(|e| anyhow::anyhow!("cannot bind {bind}: {e}"))?;
     println!("[http] listening on {bind}");
-    let in_flight = Arc::new(AtomicUsize::new(0));
+    let slots = Slots::default();
     for request in server.incoming_requests() {
-        if in_flight.fetch_add(1, SeqCst) >= MAX_IN_FLIGHT {
-            in_flight.fetch_sub(1, SeqCst);
+        let Some(slot) = slots.try_acquire(MAX_IN_FLIGHT) else {
             let _ = request.respond(tiny_http::Response::from_string("busy").with_status_code(503));
             continue;
-        }
-        let (router, in_flight) = (router.clone(), in_flight.clone());
+        };
+        let router = router.clone();
         std::thread::spawn(move || {
+            let _slot = slot;
             handle(&router, request);
-            in_flight.fetch_sub(1, SeqCst);
         });
     }
     Ok(())
@@ -365,5 +432,44 @@ mod tests {
             401,
             "nothing is public"
         );
+    }
+
+    #[test]
+    fn a_slot_is_returned_even_when_the_handler_panics() {
+        let slots = Slots::default();
+        for _ in 0..(MAX_IN_FLIGHT * 2) {
+            let slot = slots.try_acquire(MAX_IN_FLIGHT).expect("a slot is free");
+            let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let _slot = slot;
+                panic!("handler failed");
+            }));
+            assert!(outcome.is_err());
+            assert_eq!(slots.in_flight(), 0, "the panicking handler gave its slot back");
+        }
+    }
+
+    #[test]
+    fn slots_are_limited_and_freed_one_by_one() {
+        let slots = Slots::default();
+        let held: Vec<_> = (0..MAX_IN_FLIGHT).map(|_| slots.try_acquire(MAX_IN_FLIGHT).unwrap()).collect();
+        assert!(slots.try_acquire(MAX_IN_FLIGHT).is_none());
+        assert_eq!(slots.in_flight(), MAX_IN_FLIGHT, "a refused attempt does not keep a slot");
+        drop(held);
+        assert_eq!(slots.in_flight(), 0);
+        assert!(slots.try_acquire(MAX_IN_FLIGHT).is_some());
+    }
+
+    #[test]
+    fn refusal_log_lines_are_limited_to_one_per_second_and_count_the_rest() {
+        let mut limiter = LogLimiter::default();
+        let t0 = Instant::now();
+        assert_eq!(limiter.note(t0), Some(0), "the first refusal is logged");
+        for i in 1..=50 {
+            assert_eq!(limiter.note(t0 + Duration::from_millis(i)), None);
+        }
+        assert_eq!(limiter.note(t0 + Duration::from_millis(999)), None);
+        assert_eq!(limiter.note(t0 + LogLimiter::INTERVAL), Some(51), "the held-back lines are counted");
+        assert_eq!(limiter.note(t0 + LogLimiter::INTERVAL + Duration::from_millis(10)), None);
+        assert_eq!(limiter.note(t0 + LogLimiter::INTERVAL * 3), Some(1));
     }
 }
