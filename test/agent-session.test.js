@@ -344,6 +344,21 @@ test("when the channel is backed up, moves are dropped but clicks are not", asyn
   assert.equal(h.messages().filter((m) => m.type === "button").length, 1);
 });
 
+test("a move is sent with exactly 64 KiB queued in the channel and dropped one byte over", async () => {
+  const h = await agentHarness();
+  await h.connect();
+  const pointers = () =>
+    h.messages().filter((m) => m.type === "pointer").length;
+  h.channel().bufferedAmount = 64 * 1024;
+  move(h, 300, 500);
+  h.flushFrame();
+  assert.equal(pointers(), 1, "exactly the limit still sends");
+  h.channel().bufferedAmount = 64 * 1024 + 1;
+  move(h, 400, 500);
+  h.flushFrame();
+  assert.equal(pointers(), 1, "one byte over drops the move");
+});
+
 // ---- the keyboard ----
 
 test("keys are sent by physical code, down and up, with the browser's own action suppressed", async () => {
@@ -375,6 +390,48 @@ test("modifiers keep their physical positions and key repeat sends every key-dow
     ["ControlLeft", "AltRight", "MetaLeft"],
   );
   assert.equal(keys.filter((m) => m.code === "KeyZ").length, 3);
+});
+
+test("when Command comes up, every other key still held is let go first (macOS browsers send no keyup for them)", async () => {
+  const h = await agentHarness();
+  await h.connect();
+  const keys = () => h.messages().filter((m) => m.type === "key");
+  for (const code of ["ShiftLeft", "MetaLeft", "KeyC", "KeyV"])
+    h.surface.fire("keydown", { code, key: "x" });
+  h.surface.fire("keyup", { code: "MetaLeft", key: "Meta" });
+  assert.deepEqual(keys().slice(4), [
+    { type: "key", code: "KeyC", down: false },
+    { type: "key", code: "KeyV", down: false },
+    { type: "key", code: "MetaLeft", down: false },
+  ]);
+  // Shift is a modifier with its own keyup and stays down; nothing is let go twice.
+  const before = h.messages().length;
+  h.surface.fire("keyup", { code: "ShiftLeft", key: "Shift" });
+  h.surface.fire("keyup", { code: "KeyC", key: "c" });
+  assert.deepEqual(h.messages().slice(before), [
+    { type: "key", code: "ShiftLeft", down: false },
+    { type: "key", code: "KeyC", down: false },
+  ]);
+  // Releasing the right Command key does the same, and without Command nothing is invented.
+  h.surface.fire("keydown", { code: "MetaRight", key: "Meta" });
+  h.surface.fire("keydown", { code: "KeyA", key: "a" });
+  h.surface.fire("keyup", { code: "MetaRight", key: "Meta" });
+  assert.deepEqual(keys().slice(-2), [
+    { type: "key", code: "KeyA", down: false },
+    { type: "key", code: "MetaRight", down: false },
+  ]);
+  h.surface.fire("keydown", { code: "KeyB", key: "b" });
+  h.surface.fire("keyup", { code: "ControlLeft", key: "Control" });
+  assert.deepEqual(keys().at(-1), {
+    type: "key",
+    code: "ControlLeft",
+    down: false,
+  });
+  assert.equal(
+    keys().filter((m) => m.code === "KeyB").length,
+    1,
+    "only a Command key-up lets the other keys go",
+  );
 });
 
 test("the Hangul key is sent as Lang1 however the browser names it; unnamed keys are not sent", async () => {
@@ -423,6 +480,53 @@ test("release() always sends a release, so a dialog, fullscreen switch or end ca
     { type: "release" },
     { type: "release" },
   ]);
+});
+
+for (const [how, end, reason] of [
+  ["the connection fails", (h, pc) => pc.setState("failed"), "disconnected"],
+  ["no picture ever arrives", (h) => h.advance(20_000), "timeout"],
+])
+  test(`when ${how}, a release is sent on the channel before it is closed`, async () => {
+    const h = await agentHarness();
+    const started = h.session.start();
+    await h.settle();
+    const pc = h.peers.at(-1);
+    const channel = pc.channels[0];
+    channel.open();
+    pc.setState("connected");
+    await started;
+    h.surface.fire("keydown", { code: "KeyA", key: "a" });
+    h.surface.fire("mousedown", { ...MIDDLE, button: 0 });
+    let closedWhenSent;
+    const send = channel.send.bind(channel);
+    channel.send = (text) => {
+      closedWhenSent = channel.closed;
+      send(text);
+    };
+    end(h, pc);
+    assert.deepEqual(h.deps.ended, [reason]);
+    assert.deepEqual(h.messages().at(-1), { type: "release" });
+    assert.equal(closedWhenSent, 0, "the release went out before the close");
+    assert.equal(channel.closed, 1);
+    assert.equal(
+      h.messages().filter((m) => m.type === "release").length,
+      1,
+      "once",
+    );
+  });
+
+test("a session that ends while its channel is already gone does not fail on the release", async () => {
+  const h = await agentHarness();
+  const pc = await h.connect();
+  const channel = pc.channels[0];
+  channel.readyState = "closed";
+  channel.onclose();
+  assert.deepEqual(h.deps.ended, ["disconnected"]);
+  assert.equal(
+    h.messages().filter((m) => m.type === "release").length,
+    0,
+    "nothing can be sent on a closed channel",
+  );
 });
 
 test("closing the session sends a release, then closes the channel and the connection, once", async () => {

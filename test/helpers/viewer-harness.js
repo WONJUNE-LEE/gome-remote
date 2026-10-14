@@ -1,4 +1,5 @@
 import { loadTs } from "./load-ts.js";
+import { agentHarness } from "./agent-harness.js";
 
 // A just-enough browser for src/main.ts: elements are created from the ids in the page
 // template, and Guacamole and fetch are fakes the test drives. Nothing here knows the
@@ -106,7 +107,11 @@ export async function viewer({
   fetchHandler,
   hash = "",
   agentStart,
+  // Use the real src/agent.ts (on the agent harness's fake RTCPeerConnection) instead of the
+  // recorder, for tests about what the page really sends the Mac.
+  realAgent = false,
 } = {}) {
+  const rig = realAgent ? await agentHarness() : undefined;
   const fetches = [];
   const elements = new Map();
   const dataClose = [];
@@ -396,7 +401,9 @@ export async function viewer({
       "./api": api,
       "./tiles": tiles,
       "./flow": flow,
-      "./agent": { createAgentSession: (deps) => new FakeAgent(deps) },
+      "./agent": rig
+        ? { createAgentSession: (deps) => rig.mod.createAgentSession(deps) }
+        : { createAgentSession: (deps) => new FakeAgent(deps) },
       "./agent-messages": agentMessages,
       "./measure": measure,
       "./resolution": resolution,
@@ -415,6 +422,7 @@ export async function viewer({
     clients,
     tunnels,
     agents,
+    rig,
     body,
     measureUse,
     bridgeCalls,

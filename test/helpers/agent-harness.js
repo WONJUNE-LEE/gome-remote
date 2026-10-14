@@ -10,6 +10,11 @@ export class FakeNode {
     this.children = [];
     this.attributes = {};
     this.classNames = new Set();
+    this.classList = {
+      add: (...names) => names.forEach((n) => this.classNames.add(n)),
+      remove: (...names) => names.forEach((n) => this.classNames.delete(n)),
+      contains: (name) => this.classNames.has(name),
+    };
     this.rect = { left: 0, top: 0, width: 1000, height: 1000 };
     this.clientHeight = 1000;
     this.focused = 0;

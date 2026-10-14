@@ -100,6 +100,15 @@ test("a Mac that needs permission is not openable; a locked one follows the P1 s
     false,
     "until P1 shows the lock screen can be controlled",
   );
+  // Both values of the switch, whatever it is set to today.
+  const locked = { ...mac, agent: { ...mac.agent, issue: "locked" } };
+  assert.equal(tileEnabled(locked, true), true, "P1 allows the lock screen");
+  assert.equal(tileEnabled(locked, false), false, "P1 does not");
+  assert.equal(
+    tileEnabled({ ...mac, agent: { ...mac.agent, issue: "permission" } }, true),
+    false,
+    "a missing permission is never overridden by the lock switch",
+  );
   assert.equal(tileEnabled({ ...mac, online: false, agent: undefined }), false);
   // A target that is not an agent never gets agent states, whatever the list says.
   assert.equal(
@@ -382,6 +391,42 @@ test("the end of a Mac session releases the Mac's keys", async () => {
   const before = v.agents[0].releases;
   v.agents[0].deps.onEnded("disconnected");
   assert.ok(v.agents[0].releases > before, "ended");
+});
+
+test("a Mac session that ends by itself really sends the release on its channel before the channel closes", async () => {
+  // The real src/agent.ts under main.ts, on a fake connection: the recorder above only
+  // counts calls, which a release sent after the channel was torn down would also satisfy.
+  const v = await opened({ realAgent: true });
+  const pc = v.rig.peers.at(-1);
+  const channel = pc.channels[0];
+  channel.open();
+  pc.setState("connected");
+  await v.settle();
+  const surface = v.el("display").children.at(-1);
+  surface.fire("keydown", { code: "KeyA", key: "a" });
+  let closedWhenSent;
+  const send = channel.send.bind(channel);
+  channel.send = (text) => {
+    closedWhenSent = channel.closed;
+    send(text);
+  };
+  pc.setState("failed");
+  await v.settle();
+  assert.equal(
+    v.el("overlay-title").textContent,
+    ENDED,
+    "the viewer shows the end",
+  );
+  assert.deepEqual(
+    channel.messages().map((m) => m.type),
+    ["key", "release"],
+  );
+  assert.equal(
+    closedWhenSent,
+    0,
+    "the release was sent while the channel was open",
+  );
+  assert.equal(channel.closed, 1);
 });
 
 test("leaving the viewer closes the Mac session", async () => {

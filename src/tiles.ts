@@ -36,12 +36,16 @@ export const stateText = (target: Target, state: TileState) =>
   target.protocol === "agent" && state === "offline"
     ? "오프라인"
     : stateLabel[state];
-export const tileEnabled = (target: Target) => {
+// `lockedEnabled` is P1's switch; a test passes it to exercise both of its values.
+export const tileEnabled = (
+  target: Target,
+  lockedEnabled: boolean = LOCKED_TILE_ENABLED,
+) => {
   const state = tileState(target);
   return (
     state === "online" ||
     state === "suspect" ||
-    (state === "locked" && LOCKED_TILE_ENABLED)
+    (state === "locked" && lockedEnabled)
   );
 };
 export const platformClass = (platform: Target["platform"]) =>

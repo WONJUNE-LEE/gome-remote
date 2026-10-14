@@ -55,6 +55,8 @@ export const FIRST_FRAME_LIMIT_MS = 20_000;
 // A move is not sent while this much is queued in the channel: the pointer catches up
 // with its newest position instead of replaying an old path.
 const MAX_BUFFERED = 64 * 1024;
+// The keys that hold a state of their own (they do get their keyup).
+const MODIFIER_CODE = /^(Shift|Control|Alt|Meta)(Left|Right)$/;
 
 export function createAgentSession(deps: AgentDeps): AgentSession {
   const surface = document.createElement("div");
@@ -154,6 +156,15 @@ export function createAgentSession(deps: AgentDeps): AgentSession {
     event.preventDefault();
     event.stopPropagation();
     if (!code) return;
+    // Browsers on macOS send no keyup for a key pressed while Command is held, so the Mac
+    // would keep that key down. When the Command key (the Meta key here) comes up, every
+    // other key still held is let go first, while Command is still down on the Mac.
+    if (!down && /^Meta(Left|Right)$/.test(code))
+      for (const held of [...pressedKeys]) {
+        if (MODIFIER_CODE.test(held)) continue;
+        pressedKeys.delete(held);
+        send(message.key(held, false));
+      }
     if (down) pressedKeys.add(code);
     else pressedKeys.delete(code);
     send(message.key(code, down));
@@ -201,6 +212,10 @@ export function createAgentSession(deps: AgentDeps): AgentSession {
   const end = (reason: EndReason) => {
     if (closed || ended) return;
     ended = true;
+    // Whatever the page still held down on the Mac is let go while the channel can still
+    // carry the message (a channel that is already gone cannot; the agent releases on its
+    // own when the channel closes).
+    release();
     teardown();
     deps.onEnded(reason);
   };
