@@ -40,3 +40,29 @@ jobs:
             release/*.exe
             release/*.AppImage
           if-no-files-found: error
+  # The Mac agent (agent/mac) needs the macOS frameworks, so it is built and tested on a
+  # macOS runner only. Everything runs with --locked: the committed Cargo.lock is what builds.
+  agent-mac:
+    runs-on: macos-latest
+    defaults:
+      run:
+        working-directory: agent/mac
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup component add rustfmt clippy
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            agent/mac/target
+          key: agent-mac-${{ runner.os }}-${{ hashFiles('agent/mac/Cargo.lock') }}
+      - run: cargo fmt --check
+      - run: cargo clippy --locked --all-targets -- -D warnings
+      - run: cargo test --locked
+      # The development-install build reads its settings from a user directory instead.
+      - run: cargo test --locked --features dev-install
+      # The installer runs under the system bash (3.2) on a Mac, not the newer one on PATH.
+      - run: /bin/bash -n install.sh uninstall.sh
+      - run: cargo install cargo-deny --locked
+      - run: cargo deny check
