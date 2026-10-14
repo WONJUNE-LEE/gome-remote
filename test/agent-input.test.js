@@ -215,6 +215,81 @@ test("text is cut into pieces that never split an emoji or a surrogate pair", ()
   assert.equal(splitText(emoji).join(""), emoji);
 });
 
+// Final review 3: the limit is on the JSON-encoded message, which escapes controls and quotes.
+const messageBytes = (piece) => Buffer.byteLength(message.text(piece));
+const assertAllFit = (pieces, label) => {
+  for (const piece of pieces) {
+    assert.ok(piece.length > 0, `${label}: empty piece`);
+    assert.ok(
+      messageBytes(piece) <= 8000,
+      `${label}: ${messageBytes(piece)} bytes`,
+    );
+  }
+};
+const wellFormed = (s) =>
+  !/[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/.test(
+    s,
+  );
+
+test("control characters and quotes, which JSON escapes, still fit 8000 bytes per message", () => {
+  for (const [name, text] of [
+    ["control characters", "\u0001".repeat(2000)],
+    ["many controls", "\u0001".repeat(9000)],
+    ["quotes", '"'.repeat(7000)],
+    ["backslashes", "\\".repeat(7000)],
+    ["newlines", "\n".repeat(9000)],
+    ["bmp text", "한".repeat(5000)],
+    ["emoji", "😀".repeat(3000)],
+    ["mixed", `a\u0000"\\${"😀한\u001f".repeat(1500)}`],
+  ]) {
+    const pieces = splitText(text);
+    assertAllFit(pieces, name);
+    assert.equal(pieces.join(""), text, `${name}: nothing lost`);
+  }
+  // 2000 control characters used to make a ~12 KB message.
+  assert.ok(splitText("\u0001".repeat(2000)).length > 1);
+  // Plain text keeps its 2000-unit pieces.
+  assert.deepEqual(
+    plain(splitText("a".repeat(4500)).map((p) => p.length)),
+    [2000, 2000, 500],
+  );
+});
+
+test("emoji and CR LF at the byte boundary move whole to the next piece", () => {
+  // 6-byte controls fill the budget up to a pair or a CR LF that no longer fits.
+  for (const tail of ["😀", "\r\n"]) {
+    for (let controls = 1300; controls <= 1330; controls++) {
+      const text = `${"\u0001".repeat(controls)}${tail}${"b".repeat(5)}`;
+      const pieces = splitText(text);
+      assertAllFit(pieces, `${controls} controls + ${JSON.stringify(tail)}`);
+      assert.equal(pieces.join(""), text);
+      for (const piece of pieces) {
+        assert.ok(wellFormed(piece), "a pair was split");
+        assert.ok(!piece.startsWith("\n") || piece === "\n", "LF cut from CR");
+      }
+      for (const piece of pieces.slice(0, -1))
+        assert.ok(!piece.endsWith("\r"), "CR cut from its LF");
+    }
+  }
+});
+
+test("lone surrogates become U+FFFD so every message is valid JSON for the agent", () => {
+  const lone = `a\ud800b\udc00c${"\ud83d"}`;
+  const pieces = splitText(lone);
+  assert.equal(pieces.join(""), "a\ufffdb\ufffdc\ufffd");
+  for (const piece of pieces) {
+    assert.ok(wellFormed(piece));
+    assert.ok(!/\\ud[89a-f]/i.test(message.text(piece)), "\\udXXX escape");
+  }
+  // A pair stays a pair, a reversed pair is two replacements.
+  assert.equal(splitText("😀").join(""), "😀");
+  assert.equal(splitText("\udc00\ud800").join(""), "\ufffd\ufffd");
+  // A pile of lone surrogates is still cut into messages that fit.
+  const pile = "\ud800".repeat(5000);
+  assertAllFit(splitText(pile), "pile");
+  assert.equal(splitText(pile).join(""), "\ufffd".repeat(5000));
+});
+
 test("every message has the shape agent/mac/src/protocol.rs parses", () => {
   assert.deepEqual(JSON.parse(message.pointer({ x: 0.25, y: 1 })), {
     type: "pointer",

@@ -91,23 +91,71 @@ export function keyCode(event: {
   return event.code && event.code !== "Unidentified" ? event.code : undefined;
 }
 
-// Cuts text into pieces of at most `max` UTF-16 units that never split a surrogate pair
-// or a CR LF pair, so every message stays far below the agent's 8 KiB limit (4 bytes per
-// pair at worst) and a line break reaches the Mac as one Return.
+// The agent refuses a data channel message over 8 KiB; stay a little under it.
+export const MAX_TEXT_MESSAGE_BYTES = 8000;
+// `{"type":"text","s":""}`: what a text message costs with nothing in it.
+const TEXT_OVERHEAD_BYTES = 22;
+
+// A lone surrogate cannot be sent: JSON.stringify writes it as a `\udXXX` escape, which the
+// agent's JSON parser rejects, and the whole piece would be lost. U+FFFD stands in.
+function wellFormed(text: string): string {
+  let out = "";
+  for (let i = 0; i < text.length; i++) {
+    const unit = text.charCodeAt(i);
+    if (unit >= 0xd800 && unit <= 0xdbff) {
+      const next = text.charCodeAt(i + 1);
+      if (next >= 0xdc00 && next <= 0xdfff) {
+        out += text.slice(i, i + 2);
+        i += 1;
+      } else out += "�";
+    } else if (unit >= 0xdc00 && unit <= 0xdfff) out += "�";
+    else out += text[i];
+  }
+  return out;
+}
+
+// UTF-8 bytes of one code point once JSON.stringify has escaped it.
+function jsonBytes(code: number): number {
+  if (code === 0x22 || code === 0x5c) return 2; // \" \\
+  if (code < 0x20)
+    return code === 8 || code === 9 || code === 10 || code === 12 || code === 13
+      ? 2 // \b \t \n \f \r
+      : 6; // \u00XX
+  if (code < 0x80) return 1;
+  if (code < 0x800) return 2;
+  return code < 0x10000 ? 3 : 4;
+}
+
+// Cuts text into pieces of at most `max` UTF-16 units whose JSON-encoded message is at most
+// MAX_TEXT_MESSAGE_BYTES, never splitting a surrogate pair or a CR LF pair (a line break
+// reaches the Mac as one Return). Lone surrogates are replaced with U+FFFD first. A piece
+// always holds at least one code point, so a limit too small for one still makes progress.
 export function splitText(text: string, max = 2000): string[] {
+  const clean = wellFormed(text);
+  const budget = MAX_TEXT_MESSAGE_BYTES - TEXT_OVERHEAD_BYTES;
   const pieces: string[] = [];
   let start = 0;
-  while (start < text.length) {
-    let end = Math.min(text.length, start + max);
-    if (end < text.length) {
-      const last = text.charCodeAt(end - 1);
-      const splitsPair =
-        (last >= 0xd800 && last <= 0xdbff) || // would end on a high surrogate
-        (last === 0x0d && text.charCodeAt(end) === 0x0a); // would end between CR and LF
-      // A limit too small to hold the pair at all cuts it rather than looping forever.
-      if (splitsPair && end - 1 > start) end -= 1;
+  while (start < clean.length) {
+    let end = start;
+    let bytes = 0;
+    while (end < clean.length) {
+      const code = clean.codePointAt(end)!;
+      const units = code > 0xffff ? 2 : 1;
+      const cost = jsonBytes(code);
+      if (end > start && (end + units - start > max || bytes + cost > budget))
+        break;
+      end += units;
+      bytes += cost;
     }
-    pieces.push(text.slice(start, end));
+    // Would end between CR and LF: the CR goes to the next piece with its LF.
+    if (
+      end < clean.length &&
+      end - 1 > start &&
+      clean.charCodeAt(end - 1) === 0x0d &&
+      clean.charCodeAt(end) === 0x0a
+    )
+      end -= 1;
+    pieces.push(clean.slice(start, end));
     start = end;
   }
   return pieces;
