@@ -9,10 +9,11 @@ use super::scale::Scaler;
 use super::system;
 use crate::black::{luma_is_black, BlackWatch};
 use crate::frame::FrameTarget;
-use crate::keepalive::{should_resubmit, Ages};
-use crate::refine::{boost_bps, Refine, Step};
+use crate::keepalive::Ages;
+use crate::refine::{apply_step, Encoding, Refine};
 use crate::retry::RetryGate;
 use crate::size::{bitrate_cap, fps_for, needs_scale, Size};
+use crate::stats::StatsReport;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering::Relaxed};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -352,7 +353,8 @@ impl Pipeline {
         let inner = &self.inner;
         let mut refine = Refine::default();
         // The counters run across sessions: start from their current values, not from zero.
-        let mut report = (Instant::now(), inner.sent_frames.load(Relaxed), inner.sent_bytes.load(Relaxed));
+        let mut report =
+            StatsReport::new(Instant::now(), inner.sent_frames.load(Relaxed), inner.sent_bytes.load(Relaxed));
         while inner.running.load(Relaxed) && inner.epoch.load(Relaxed) == epoch {
             std::thread::sleep(Duration::from_millis(2));
             let snapshot = inner.last_frame.lock().unwrap().as_ref().map(|(pb, at)| (PixBuf::retain(pb.0), *at));
@@ -363,37 +365,37 @@ impl Pipeline {
                 since_submit: inner.last_submit.lock().unwrap().elapsed(),
                 keyframe_pending: pending,
             };
-            match refine.poll(ages.since_capture) {
-                Step::Boost => {
-                    let (target, cap) = {
-                        let plan = inner.plan.lock().unwrap();
-                        (plan.bitrate, bitrate_cap(plan.size))
-                    };
-                    self.set_encoder_bitrate(boost_bps(target, cap));
-                    self.request_keyframe();
-                    self.submit(pixel_buffer.0, Some(epoch));
-                }
-                Step::Restore => {
-                    let target = inner.plan.lock().unwrap().bitrate;
-                    self.set_encoder_bitrate(target);
-                }
-                Step::Nothing => {
-                    if should_resubmit(&ages) {
-                        self.submit(pixel_buffer.0, Some(epoch));
-                    }
-                }
-            }
+            let step = refine.poll(ages.since_capture);
+            let (target, cap) = {
+                let plan = inner.plan.lock().unwrap();
+                (plan.bitrate, bitrate_cap(plan.size))
+            };
+            apply_step(step, target, cap, &ages, &mut Repeat { pipeline: self, pixel_buffer: pixel_buffer.0, epoch });
             // One line every ten seconds while someone watches, never per frame.
-            if report.0.elapsed() >= Duration::from_secs(10) {
-                let (frames, bytes) = (inner.sent_frames.load(Relaxed), inner.sent_bytes.load(Relaxed));
-                let secs = report.0.elapsed().as_secs_f64();
-                println!(
-                    "[stats] sent_fps={:.1} kbps={:.0}",
-                    (frames - report.1) as f64 / secs,
-                    (bytes - report.2) as f64 * 8.0 / 1000.0 / secs
-                );
-                report = (Instant::now(), frames, bytes);
+            let (frames, bytes) = (inner.sent_frames.load(Relaxed), inner.sent_bytes.load(Relaxed));
+            if let Some(line) = report.poll(Instant::now(), frames, bytes) {
+                println!("{line}");
             }
         }
+    }
+}
+
+/// The keepalive loop's hands on the encoder (see `refine::apply_step`): `pixel_buffer` is the
+/// last captured frame and `epoch` ends a repeat of an earlier run.
+struct Repeat<'a> {
+    pipeline: &'a Pipeline,
+    pixel_buffer: CVPixelBufferRef,
+    epoch: u64,
+}
+
+impl Encoding for Repeat<'_> {
+    fn set_bitrate(&mut self, bps: u32) {
+        self.pipeline.set_encoder_bitrate(bps);
+    }
+    fn request_keyframe(&mut self) {
+        self.pipeline.request_keyframe();
+    }
+    fn resubmit(&mut self) {
+        self.pipeline.submit(self.pixel_buffer, Some(self.epoch));
     }
 }

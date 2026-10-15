@@ -18,6 +18,7 @@ pub mod retry;
 pub mod session;
 pub mod size;
 pub mod slot;
+pub mod stats;
 pub mod status;
 pub mod tailnet;
 pub mod typing;
