@@ -19,6 +19,15 @@
         background: #e00000;
       }
       /* Large, so the counter can still be read in a screenshot of the remote picture. */
+      #warn {
+        position: fixed;
+        left: 24px;
+        top: 96px;
+        font: 32px monospace;
+        color: #fff;
+        mix-blend-mode: difference;
+        pointer-events: none;
+      }
       #cap {
         position: fixed;
         left: 24px;
@@ -33,6 +42,7 @@
   <body>
     <div id="flip"></div>
     <div id="cap">flips: <span id="n">0</span> (F: fullscreen)</div>
+    <div id="warn"></div>
     <script>
       // Every mouse press flips the whole window between two colours. The measurement mode
       // (#measure in the gateway page) clicks and times how long the remote picture takes to
@@ -42,15 +52,59 @@
       let state = false,
         n = 0;
       const el = document.getElementById("flip");
-      addEventListener("mousedown", () => {
+      // What the page itself saw, for working out why a click did not show: every press
+      // (with where it landed and whether the page was visible and focused), every change of
+      // visibility or focus, and every stretch of 100 ms or more without an animation frame
+      // (a throttled or covered window). Read it with `__target.events` from a debugger.
+      const events = [];
+      // Shown on the page too, so a screenshot of the remote picture says when the window
+      // lost the focus or went hidden (a covered page may not paint at all).
+      const warn = () => {
+        document.getElementById("warn").textContent =
+          document.visibilityState !== "visible"
+            ? "HIDDEN"
+            : document.hasFocus()
+              ? ""
+              : "NO FOCUS";
+      };
+      const note = (type, extra) => {
+        warn();
+        events.push({
+          t: Date.now(),
+          type,
+          visible: document.visibilityState,
+          focused: document.hasFocus(),
+          ...extra,
+        });
+      };
+      addEventListener("mousedown", (e) => {
         state = !state;
         el.style.background = state ? B : A;
         document.getElementById("n").textContent = ++n;
+        note("down", {
+          n,
+          x: e.clientX,
+          y: e.clientY,
+          w: innerWidth,
+          h: innerHeight,
+        });
       });
       addEventListener("keydown", (e) => {
         if (e.key === "f" || e.key === "F")
           document.documentElement.requestFullscreen?.();
       });
+      document.addEventListener("visibilitychange", () => note("visibility"));
+      addEventListener("focus", () => note("focus"));
+      addEventListener("blur", () => note("blur"));
+      let last = performance.now();
+      const frame = (now) => {
+        if (now - last >= 100)
+          note("frame-gap", { ms: Math.round(now - last) });
+        last = now;
+        requestAnimationFrame(frame);
+      };
+      requestAnimationFrame(frame);
+      window.__target = { events, count: () => n };
     </script>
   </body>
 </html>

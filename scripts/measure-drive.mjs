@@ -11,7 +11,16 @@
 // TILE_MATCH='VNC') and compare the medians. On the Mac, the page scripts/measure-target.html
 // must be open full screen in front: the Mac's pointer is moved by the clicks.
 import { createRequire } from "node:module";
-import { realpathSync, writeFileSync } from "node:fs";
+import {
+  closeSync,
+  openSync,
+  readFileSync,
+  realpathSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 // The thresholds are fixed before measuring and are not moved to fit a result (spec S2, S3).
@@ -81,6 +90,69 @@ export function verdictClick(summary, vncMedianMs) {
   return failed;
 }
 
+// Two drivers clicking the same Mac at once flip the target page twice per click (the
+// flips cancel, so clicks "never show", and one session sees the other's flips as
+// impossibly fast answers). One measurement at a time per machine running this script:
+// a lock file holds the pid of the driver that is running.
+export const LOCK_PATH = join(tmpdir(), "gome-measure.lock");
+const processAlive = (pid) => {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return error.code === "EPERM";
+  }
+};
+export function acquireLock(
+  path = LOCK_PATH,
+  pid = process.pid,
+  alive = processAlive,
+) {
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const fd = openSync(path, "wx");
+      writeFileSync(fd, String(pid));
+      closeSync(fd);
+      return () => {
+        try {
+          if (readFileSync(path, "utf8") === String(pid)) unlinkSync(path);
+        } catch {}
+      };
+    } catch (error) {
+      if (error.code !== "EEXIST") throw error;
+      const holder = Number(readFileSync(path, "utf8"));
+      if (Number.isInteger(holder) && holder > 0 && alive(holder))
+        throw new Error(
+          `another measurement is running (pid ${holder}); two sessions clicking the same Mac spoil both`,
+        );
+      unlinkSync(path); // its driver is gone: the lock is stale
+    }
+  }
+  throw new Error(`could not take the lock ${path}`);
+}
+
+// The first clicks of a run, before the N that count. A page that is covered by a window or
+// a dialog, behind another window, or not under the clicked place gets no flip at all, and
+// the run would otherwise spend 3 s per click finding out.
+export function pilotVerdict(samples) {
+  return samples.some((s) => s !== null)
+    ? []
+    : [
+        "no pilot click showed: the flip page (scripts/measure-target.html) is not under the clicked place or not in front on the Mac (a window or a dialog may cover it)",
+      ];
+}
+
+// Nothing real answers a click in under this; a sample below it is another session's flip.
+export const IMPOSSIBLY_FAST_MS = 20;
+export function suspectSamples(samples) {
+  const fast = samples.filter((s) => s !== null && s < IMPOSSIBLY_FAST_MS);
+  return fast.length
+    ? [
+        `${fast.length} samples under ${IMPOSSIBLY_FAST_MS} ms: something else is clicking or flipping the same page; discard this run`,
+      ]
+    : [];
+}
+
 // S3: no freeze longer than 500 ms during the dragging and scrolling.
 export function verdictSoak(report) {
   const failed = [];
@@ -102,6 +174,13 @@ async function main() {
       `${error.message}\nUsage: see the top of scripts/measure-drive.mjs`,
     );
     return 2;
+  }
+  let release;
+  try {
+    release = acquireLock();
+  } catch (error) {
+    console.error(`FAILED ${error.message}`);
+    return 1;
   }
   const require = createRequire(import.meta.url);
   const { chromium } = require(process.env.PW_CORE || "playwright-core");
@@ -135,6 +214,18 @@ async function main() {
     let result;
     let failed;
     if (options.mode === "measure") {
+      const pilot = await page.evaluate(
+        (o) =>
+          window.__gomeMeasure.run({
+            n: 2,
+            fx: o.fx,
+            fy: o.fy,
+            pauseMs: 500,
+          }),
+        options,
+      );
+      const refused = pilotVerdict(pilot?.samples ?? []);
+      if (refused.length) throw new Error(refused[0]);
       result = await page.evaluate(
         (o) =>
           window.__gomeMeasure.run({
@@ -145,7 +236,10 @@ async function main() {
           }),
         options,
       );
-      failed = verdictClick(result.summary, options.vncMedianMs);
+      failed = [
+        ...suspectSamples(result.samples),
+        ...verdictClick(result.summary, options.vncMedianMs),
+      ];
     } else {
       const soak = page.evaluate(
         (s) => window.__gomeMeasure.soak(s),
@@ -173,7 +267,7 @@ async function main() {
     console.log(failed.length ? `FAILED: ${failed.join("; ")}` : "PASSED");
     if (options.mode === "measure")
       console.log(
-        `Compare the flips counter on the Mac's target page in ${options.shots}-before.png and -after.png: it must have grown by exactly ${options.n}.`,
+        `Compare the flips counter on the Mac's target page in ${options.shots}-before.png and -after.png: it must have grown by exactly ${options.n + 2} (the 2 pilot clicks count).`,
       );
     if (options.out)
       writeFileSync(
@@ -190,6 +284,7 @@ async function main() {
     code = 1;
   } finally {
     await browser.close();
+    release();
   }
   return code;
 }

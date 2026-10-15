@@ -3,8 +3,15 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
+import { mkdtemp, writeFile } from "node:fs/promises";
+import { existsSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   LIMITS,
+  acquireLock,
+  pilotVerdict,
+  suspectSamples,
   readOptions,
   verdictClick,
   verdictSoak,
@@ -156,4 +163,41 @@ test("the target page flips on every press, counts the flips, and has no transit
   assert.match(html, /\+\+n/);
   const withoutComments = html.replace(/\/\*[\s\S]*?\*\//g, "");
   assert.doesNotMatch(withoutComments, /transition\s*:|animation\s*:/);
+});
+
+test("only one driver measures at a time: a live holder refuses, a dead holder's lock is taken over, release removes it", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "gome-lock-"));
+  const path = join(dir, "lock");
+  const release = acquireLock(path, 4001, () => true);
+  assert.throws(() => acquireLock(path, 4002, () => true), /pid 4001/);
+  release();
+  assert.equal(existsSync(path), false);
+  await writeFile(path, "4003");
+  const takeover = acquireLock(path, 4004, (pid) => pid !== 4003);
+  assert.equal(existsSync(path), true);
+  // A release by a driver that no longer owns the lock leaves it alone.
+  await writeFile(path, "4005");
+  takeover();
+  assert.equal(existsSync(path), true);
+  await writeFile(path, "garbage");
+  acquireLock(path, 4006, () => true)();
+  assert.equal(existsSync(path), false);
+});
+
+test("the pilot refuses a page that answers no click, and impossibly fast samples are named", () => {
+  assert.equal(pilotVerdict([null, null]).length, 1);
+  assert.match(pilotVerdict([null, null])[0], /in front/);
+  assert.deepEqual(pilotVerdict([null, 90]), []);
+  assert.deepEqual(suspectSamples([60, 95, null, 20]), []);
+  assert.equal(suspectSamples([60, 7.9, 12, null]).length, 1);
+  assert.match(suspectSamples([60, 7.9, 12])[0], /2 samples under 20 ms/);
+});
+
+test("the target page records presses, focus and visibility changes and long frame gaps for a debugger", async () => {
+  const html = await readFile(
+    new URL("../scripts/measure-target.html", import.meta.url),
+    "utf8",
+  );
+  for (const what of ["visibilitychange", "blur", "frame-gap", "__target"])
+    assert.ok(html.includes(what), what);
 });
