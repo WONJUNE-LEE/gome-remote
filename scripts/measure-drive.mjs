@@ -12,10 +12,10 @@
 // must be open full screen in front: the Mac's pointer is moved by the clicks.
 import { createRequire } from "node:module";
 import {
-  closeSync,
-  openSync,
+  linkSync,
   readFileSync,
   realpathSync,
+  renameSync,
   unlinkSync,
   writeFileSync,
 } from "node:fs";
@@ -103,32 +103,76 @@ const processAlive = (pid) => {
     return error.code === "EPERM";
   }
 };
+const sleepSync = (ms) =>
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+// The lock is created in one step with the pid already inside (written to a private file that
+// is then hard-linked to the lock path), so no driver can ever read a lock that is still
+// empty and mistake it for a stale one. An empty or unreadable holder (a lock not made by this
+// code) is retried for a short while and never treated as stale. A holder that is not a live
+// process is stale; it is moved out of the way and checked before it is deleted, so a driver
+// that took the lock meanwhile does not lose it.
 export function acquireLock(
   path = LOCK_PATH,
   pid = process.pid,
   alive = processAlive,
+  sleep = sleepSync,
 ) {
-  for (let attempt = 0; attempt < 2; attempt++) {
+  const mine = `${path}.${process.pid}.${pid}.tmp`;
+  writeFileSync(mine, String(pid));
+  const release = () => {
     try {
-      const fd = openSync(path, "wx");
-      writeFileSync(fd, String(pid));
-      closeSync(fd);
-      return () => {
-        try {
-          if (readFileSync(path, "utf8") === String(pid)) unlinkSync(path);
-        } catch {}
-      };
-    } catch (error) {
-      if (error.code !== "EEXIST") throw error;
-      const holder = Number(readFileSync(path, "utf8"));
+      if (readFileSync(path, "utf8") === String(pid)) unlinkSync(path);
+    } catch {}
+  };
+  try {
+    let unreadable = 0;
+    for (let attempt = 0; attempt < 20; attempt++) {
+      try {
+        linkSync(mine, path);
+        return release;
+      } catch (error) {
+        if (error.code !== "EEXIST") throw error;
+      }
+      let text;
+      try {
+        text = readFileSync(path, "utf8").trim();
+      } catch (error) {
+        if (error.code !== "ENOENT") throw error;
+        continue; // released between the link and the read: try again
+      }
+      if (text === "") {
+        if (++unreadable > 5)
+          throw new Error(
+            `the lock ${path} has no holder; remove it if no measurement is running`,
+          );
+        sleep(20);
+        continue;
+      }
+      const holder = Number(text);
       if (Number.isInteger(holder) && holder > 0 && alive(holder))
         throw new Error(
           `another measurement is running (pid ${holder}); two sessions clicking the same Mac spoil both`,
         );
-      unlinkSync(path); // its driver is gone: the lock is stale
+      // Stale: its driver is gone. Move it aside first, so that what is deleted is what was judged.
+      const grave = `${path}.${process.pid}.stale`;
+      try {
+        renameSync(path, grave);
+      } catch (error) {
+        if (error.code === "ENOENT") continue;
+        throw error;
+      }
+      if (readFileSync(grave, "utf8").trim() === text) unlinkSync(grave);
+      else {
+        try {
+          linkSync(grave, path); // a fresh lock of another driver: put it back
+        } catch {}
+        unlinkSync(grave);
+      }
     }
+    throw new Error(`could not take the lock ${path}`);
+  } finally {
+    unlinkSync(mine);
   }
-  throw new Error(`could not take the lock ${path}`);
 }
 
 // The first clicks of a run, before the N that count. A page that is covered by a window or

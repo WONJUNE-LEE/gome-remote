@@ -1,10 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
-import { readFile } from "node:fs/promises";
+import { spawn, spawnSync } from "node:child_process";
+import { readFile, readdir } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { mkdtemp, writeFile } from "node:fs/promises";
-import { existsSync } from "node:fs";
+import { existsSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -184,6 +184,89 @@ test("only one driver measures at a time: a live holder refuses, a dead holder's
   assert.equal(existsSync(path), false);
 });
 
+test("the lock holds its pid from the moment it exists, and leaves no private file behind", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "gome-lock-"));
+  const path = join(dir, "lock");
+  const release = acquireLock(path, 4101, () => true);
+  assert.equal(await readFile(path, "utf8"), "4101");
+  assert.deepEqual(await readdir(dir), ["lock"]);
+  release();
+  assert.deepEqual(await readdir(dir), []);
+});
+
+test("an empty lock is not stale: it is retried briefly, then refused, and a holder that appears meanwhile wins", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "gome-lock-"));
+  const path = join(dir, "lock");
+  await writeFile(path, "");
+  let sleeps = 0;
+  assert.throws(
+    () =>
+      acquireLock(
+        path,
+        4201,
+        () => false,
+        () => {
+          sleeps++;
+        },
+      ),
+    /has no holder/,
+  );
+  assert.ok(sleeps >= 1, "it waited before giving up");
+  assert.equal(existsSync(path), true, "the empty lock was left alone");
+  assert.deepEqual(await readdir(dir), ["lock"], "and no private file is left");
+  // The holder writes its pid while we wait: that holder is alive, so we are refused.
+  assert.throws(
+    () =>
+      acquireLock(
+        path,
+        4202,
+        () => true,
+        () => {
+          writeFileSync(path, "4203");
+        },
+      ),
+    /pid 4203/,
+  );
+  assert.equal(await readFile(path, "utf8"), "4203");
+});
+
+test("of several drivers starting together exactly one gets the lock", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "gome-lock-"));
+  const path = join(dir, "lock");
+  const code = `
+    import { acquireLock } from ${JSON.stringify(script)};
+    try {
+      acquireLock(${JSON.stringify(path)});
+      console.log("won");
+      await new Promise((resolve) => setTimeout(resolve, 600));
+    } catch (error) {
+      console.log("lost " + /pid \\d+/.test(error.message));
+    }
+  `;
+  const outputs = await Promise.all(
+    Array.from(
+      { length: 6 },
+      () =>
+        new Promise((resolve) => {
+          const child = spawn(process.execPath, [
+            "--input-type=module",
+            "-e",
+            code,
+          ]);
+          let out = "";
+          child.stdout.on("data", (d) => (out += d));
+          child.on("close", () => resolve(out.trim()));
+        }),
+    ),
+  );
+  assert.equal(outputs.filter((o) => o === "won").length, 1, outputs.join(","));
+  assert.equal(
+    outputs.filter((o) => o === "lost true").length,
+    5,
+    outputs.join(","),
+  );
+});
+
 test("the pilot refuses a page that answers no click, and impossibly fast samples are named", () => {
   assert.equal(pilotVerdict([null, null]).length, 1);
   assert.match(pilotVerdict([null, null])[0], /in front/);
@@ -198,6 +281,18 @@ test("the target page records presses, focus and visibility changes and long fra
     new URL("../scripts/measure-target.html", import.meta.url),
     "utf8",
   );
-  for (const what of ["visibilitychange", "blur", "frame-gap", "__target"])
-    assert.ok(html.includes(what), what);
+  // Code only: the page's comments name all of these too.
+  const code = html
+    .replace(/<!--[\s\S]*?-->/g, "")
+    .replace(/\/\*[\s\S]*?\*\//g, "")
+    .replace(/^\s*\/\/.*$/gm, "");
+  assert.match(code, /addEventListener\(["']mousedown["']/);
+  assert.match(code, /note\(["']down["']/);
+  assert.match(code, /addEventListener\(["']visibilitychange["']/);
+  assert.match(code, /addEventListener\(["']focus["']/);
+  assert.match(code, /addEventListener\(["']blur["']/);
+  assert.match(code, /note\(["']frame-gap["']/);
+  assert.match(code, /window\.__target\s*=/);
+  // The stripping really drops comments (positive control).
+  assert.doesNotMatch(code, /Read it with/);
 });
