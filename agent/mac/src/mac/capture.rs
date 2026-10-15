@@ -3,6 +3,7 @@
 //! the stream can be reconfigured and stopped, and `start` returns a handle instead of
 //! parking its thread for ever.
 use super::ffi::*;
+use crate::size::{capture_size, Size};
 use block2::RcBlock;
 use dispatch2::DispatchQueue;
 use objc2::rc::Retained;
@@ -19,6 +20,8 @@ use std::sync::mpsc::channel;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+/// `width` and `height` are the stream size; the frames delivered may be larger (the display's
+/// pixels) and are scaled by the pipeline.
 #[derive(Clone, Copy)]
 pub struct CaptureConfig {
     pub width: usize,
@@ -100,13 +103,32 @@ unsafe impl Sync for Capture {}
 fn configuration(cfg: &CaptureConfig) -> Retained<SCStreamConfiguration> {
     unsafe {
         let conf = SCStreamConfiguration::new();
-        conf.setWidth(cfg.width);
-        conf.setHeight(cfg.height);
+        // Smaller than the display: capture its real pixels, the pipeline scales (size::capture_size).
+        let stream = Size { w: cfg.width as u32, h: cfg.height as u32 };
+        let captured = capture_size(stream, super::system::native_pixels());
+        conf.setWidth(captured.w as usize);
+        conf.setHeight(captured.h as usize);
         conf.setMinimumFrameInterval(CMTime { value: 1, timescale: cfg.fps, flags: CMTimeFlags::Valid, epoch: 0 });
         conf.setPixelFormat(0x34323076); // '420v' NV12, video range
         conf.setShowsCursor(false);
         conf.setQueueDepth(cfg.queue_depth);
         conf
+    }
+}
+
+/// The configuration fields that decide what the pixels look like, read back from the object
+/// ScreenCaptureKit was given (for the log).
+fn describe_configuration(conf: &SCStreamConfiguration) -> String {
+    unsafe {
+        format!(
+            "[size {}x{} resolution {} scalesToFit {} preservesAspectRatio {} pixelFormat {:#x}]",
+            conf.width(),
+            conf.height(),
+            conf.captureResolution().0,
+            conf.scalesToFit(),
+            conf.preservesAspectRatio(),
+            conf.pixelFormat()
+        )
     }
 }
 
@@ -140,10 +162,11 @@ pub fn start(cfg: CaptureConfig, on_frame: FrameFn, on_stop: StopFn) -> Result<C
         let filter = SCContentFilter::initWithDisplay_excludingWindows(SCContentFilter::alloc(), &display, &excluded);
         let output = StreamOutput::alloc().set_ivars(Ivars { on_frame, on_stop });
         let output: Retained<StreamOutput> = msg_send![super(output), init];
+        let conf = configuration(&cfg);
         let stream = SCStream::initWithFilter_configuration_delegate(
             SCStream::alloc(),
             &filter,
-            &configuration(&cfg),
+            &conf,
             Some(ProtocolObject::from_ref(&*output)),
         );
         let queue = DispatchQueue::new("net.gome.remote-agent.capture", None);
@@ -172,7 +195,7 @@ pub fn start(cfg: CaptureConfig, on_frame: FrameFn, on_stop: StopFn) -> Result<C
                 return Err(format!("startCapture: {e}"));
             }
         }
-        println!("[capture] started {}x{}@{}", cfg.width, cfg.height, cfg.fps);
+        println!("[capture] started {}x{}@{} {}", cfg.width, cfg.height, cfg.fps, describe_configuration(&conf));
         Ok(capture)
     }
 }

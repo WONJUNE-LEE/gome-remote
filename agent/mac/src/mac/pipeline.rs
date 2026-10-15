@@ -5,13 +5,14 @@
 use super::capture::{self, Capture, CaptureConfig};
 use super::encoder::{Config as EncoderConfig, Encoder, FrameSink};
 use super::ffi::*;
+use super::scale::Scaler;
 use super::system;
 use crate::black::{luma_is_black, BlackWatch};
 use crate::frame::FrameTarget;
 use crate::keepalive::{should_resubmit, Ages};
 use crate::refine::{boost_bps, Refine, Step};
 use crate::retry::RetryGate;
-use crate::size::{bitrate_cap, fps_for, Size};
+use crate::size::{bitrate_cap, fps_for, needs_scale, Size};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering::Relaxed};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -31,6 +32,9 @@ struct Inner {
     /// Paces attempts to create an encoder session after one failed.
     encoder_gate: Mutex<RetryGate>,
     last_frame: Mutex<Option<(PixBuf, Instant)>>,
+    /// Created with the first frame that needs scaling; used on the capture queue only.
+    scaler: Mutex<Option<Scaler>>,
+    scale_failures: AtomicU64,
     last_submit: Mutex<Instant>,
     sink: Arc<Mutex<Option<Arc<dyn FrameTarget>>>>,
     capture: Mutex<Option<Capture>>,
@@ -58,6 +62,8 @@ impl Default for Pipeline {
                 encoder: Mutex::new(None),
                 encoder_gate: Mutex::new(RetryGate::default()),
                 last_frame: Mutex::new(None),
+                scaler: Mutex::new(None),
+                scale_failures: AtomicU64::new(0),
                 last_submit: Mutex::new(now),
                 sink: Arc::new(Mutex::new(None)),
                 capture: Mutex::new(None),
@@ -228,12 +234,46 @@ impl Pipeline {
         })
     }
 
+    /// The frame at the stream size: `pixel_buffer` scaled down when the capture is larger (it
+    /// is the display's real pixels, see `size::capture_size`), else `None`. When scaling
+    /// fails the frame goes on unscaled (the encoder follows its size) and one line in 600 is logged.
+    fn scaled(&self, pixel_buffer: CVPixelBufferRef) -> Option<PixBuf> {
+        let inner = &self.inner;
+        let frame = unsafe {
+            Size { w: CVPixelBufferGetWidth(pixel_buffer) as u32, h: CVPixelBufferGetHeight(pixel_buffer) as u32 }
+        };
+        let target = inner.plan.lock().unwrap().size;
+        if !needs_scale(frame, target) {
+            return None;
+        }
+        let mut scaler = inner.scaler.lock().unwrap();
+        let result = match scaler.as_mut() {
+            Some(scaler) => scaler.scale(pixel_buffer, target),
+            None => Scaler::new().and_then(|mut new| {
+                let out = new.scale(pixel_buffer, target);
+                *scaler = Some(new);
+                out
+            }),
+        };
+        match result {
+            Ok(out) => Some(out),
+            Err(e) => {
+                if inner.scale_failures.fetch_add(1, Relaxed) % 600 == 0 {
+                    eprintln!("[pipeline] scaling {}x{} to {}x{}: {e}", frame.w, frame.h, target.w, target.h);
+                }
+                None
+            }
+        }
+    }
+
     /// Runs on ScreenCaptureKit's queue for every delivered frame.
-    fn on_frame(&self, pixel_buffer: CVPixelBufferRef, at: Instant) {
+    fn on_frame(&self, captured: CVPixelBufferRef, at: Instant) {
         let inner = &self.inner;
         if !inner.running.load(Relaxed) {
             return; // a late frame of a stream that is being stopped
         }
+        let scaled = self.scaled(captured);
+        let pixel_buffer = scaled.as_ref().map_or(captured, |p| p.0);
         // 1. Black-frame detection, before the buffer goes to the encoder (locking it after
         //    the submit waits for the encoder to let go of it).
         if inner.black.lock().unwrap().frame(at, || Self::is_black(pixel_buffer)) == Some(false) {

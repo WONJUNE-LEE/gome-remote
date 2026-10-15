@@ -99,6 +99,16 @@ extern "C" {
 #[link(name = "CoreVideo", kind = "framework")]
 extern "C" {
     pub static kCVPixelBufferIOSurfacePropertiesKey: CFTypeRef;
+    pub static kCVPixelBufferWidthKey: CFTypeRef;
+    pub static kCVPixelBufferHeightKey: CFTypeRef;
+    pub static kCVPixelBufferPixelFormatTypeKey: CFTypeRef;
+    pub fn CVPixelBufferPoolCreate(
+        alloc: CFTypeRef,
+        pool_attrs: CFTypeRef,
+        buffer_attrs: CFTypeRef,
+        out: *mut CFTypeRef,
+    ) -> i32;
+    pub fn CVPixelBufferPoolCreatePixelBuffer(alloc: CFTypeRef, pool: CFTypeRef, out: *mut CVPixelBufferRef) -> i32;
     pub fn CVPixelBufferCreate(
         alloc: CFTypeRef,
         w: usize,
@@ -116,6 +126,13 @@ extern "C" {
     pub fn CVPixelBufferGetWidth(pb: CVPixelBufferRef) -> usize;
     pub fn CVPixelBufferGetHeight(pb: CVPixelBufferRef) -> usize;
     pub fn CVPixelBufferGetPixelFormatType(pb: CVPixelBufferRef) -> u32;
+}
+
+#[link(name = "VideoToolbox", kind = "framework")]
+extern "C" {
+    pub fn VTPixelTransferSessionCreate(alloc: CFTypeRef, out: *mut CFTypeRef) -> OSStatus;
+    pub fn VTPixelTransferSessionTransferImage(s: CFTypeRef, src: CVPixelBufferRef, dst: CVPixelBufferRef) -> OSStatus;
+    pub fn VTPixelTransferSessionInvalidate(s: CFTypeRef);
 }
 
 pub type VTOutputCallback =

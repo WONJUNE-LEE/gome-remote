@@ -59,6 +59,24 @@ pub fn bitrate_cap(size: Size) -> u32 {
     (20_000_000.0 + t * 15_000_000.0).round() as u32
 }
 
+/// The size ScreenCaptureKit is asked to deliver. Its own scaler blurs text at every size but
+/// the display's pixels (measured on a 3840x2160 display: its output at 2132x1200 and
+/// even at exactly half had less than half the edge detail of a good resampler), so a stream smaller than the
+/// display is captured at the display's real pixels and scaled by `mac::scale`. A display
+/// whose size is unknown, or a stream as large as the display, is captured as requested.
+pub fn capture_size(stream: Size, display_px: Option<Size>) -> Size {
+    match display_px {
+        Some(display) if display.w >= stream.w && display.h >= stream.h => display,
+        _ => stream,
+    }
+}
+
+/// Whether a captured frame of size `frame` has to be scaled down to the stream size. A smaller
+/// frame is never scaled up here (the encoder follows the frame's size).
+pub fn needs_scale(frame: Size, stream: Size) -> bool {
+    frame.w > stream.w || frame.h > stream.h
+}
+
 // ---- tests ----
 
 #[cfg(test)]
@@ -66,6 +84,26 @@ mod tests {
     use super::*;
 
     const D4K: Size = Size { w: 3840, h: 2160 };
+
+    #[test]
+    fn a_stream_smaller_than_the_display_is_captured_at_the_displays_pixels() {
+        let stream = Size { w: 2132, h: 1200 };
+        assert_eq!(capture_size(stream, Some(D4K)), D4K);
+        assert_eq!(capture_size(D4K, Some(D4K)), D4K);
+        assert_eq!(capture_size(stream, None), stream);
+        // A display smaller than the stream in one side (cannot happen after fit_to_display): as requested.
+        assert_eq!(capture_size(Size { w: 2000, h: 1200 }, Some(Size { w: 1920, h: 1080 })), Size { w: 2000, h: 1200 });
+        assert_eq!(capture_size(Size { w: 1920, h: 1080 }, Some(Size { w: 1920, h: 1080 })), Size { w: 1920, h: 1080 });
+    }
+
+    #[test]
+    fn frames_are_scaled_down_only() {
+        let stream = Size { w: 2132, h: 1200 };
+        assert!(needs_scale(D4K, stream));
+        assert!(needs_scale(Size { w: 2132, h: 1202 }, stream));
+        assert!(!needs_scale(stream, stream));
+        assert!(!needs_scale(Size { w: 1920, h: 1080 }, stream));
+    }
 
     #[test]
     fn requests_outside_the_limits_are_dropped_and_odd_sides_round_down() {
