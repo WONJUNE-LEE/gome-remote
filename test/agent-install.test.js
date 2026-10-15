@@ -50,6 +50,7 @@ exit 0`,
 echo "security $1" >> "$STUB_LOG"
 case "$1" in
   create-keychain) for last; do :; done; : > "$last" ;;
+  import) cp "$2" "$STUB_P12" ;;
   find-identity) for last; do :; done; [ -f "$last" ] && echo '  1) AAAA "Gome Remote Agent Signing"' ;;
 esac
 exit 0`,
@@ -93,6 +94,7 @@ async function lab(t) {
       STUB_LOG: join(root, "log"),
       STUB_CODES: join(root, "codes"),
       STUB_CLOCK: join(root, "clock"),
+      STUB_P12: join(root, "imported.p12"),
       GOME_SKIP_BUILD: "1",
       GOME_SUDO: "",
       GOME_ROOT_OWNER: "",
@@ -137,7 +139,16 @@ async function lab(t) {
       "net.gome.remote-agent-dev.plist",
     ),
   };
-  return { root, home, run, build, log, codes, paths };
+  return {
+    root,
+    home,
+    run,
+    build,
+    log,
+    codes,
+    paths,
+    p12: join(root, "imported.p12"),
+  };
 }
 
 test(
@@ -673,14 +684,27 @@ test(
 
 // macOS `security import` rejects the AES/SHA256 PKCS#12 that OpenSSL 3 writes by default;
 // on a Mac whose Terminal finds Homebrew's OpenSSL 3 first the identity was never created.
-test("the signing identity is exported in a PKCS#12 form macOS can import with any OpenSSL", async () => {
-  const install = await readScript("install.sh");
-  const line = install.match(/openssl pkcs12 -export(?:[^\n\\]|\\\n)*/);
-  assert.ok(line, "install.sh exports a PKCS#12 file");
-  for (const flag of [
-    "-keypbe PBE-SHA1-3DES",
-    "-certpbe PBE-SHA1-3DES",
-    "-macalg sha1",
-  ])
-    assert.ok(line[0].includes(flag), `pkcs12 export carries ${flag}`);
-});
+// The `security` stand-in keeps the file it is asked to import, and the test reads what
+// `openssl pkcs12 -info` says about it: key and certificate encrypted with 3DES under SHA-1,
+// and a SHA-1 MAC (OpenSSL prints the MAC line; a build that does not is not held to it).
+test(
+  "the signing identity is exported in a PKCS#12 form macOS can import with any OpenSSL",
+  { skip: !posix },
+  async (t) => {
+    const l = await lab(t);
+    assert.equal(l.run("install.sh").status, 0);
+    const info = spawnSync(
+      "openssl",
+      ["pkcs12", "-info", "-noout", "-passin", "pass:gome", "-in", l.p12],
+      { encoding: "utf8" },
+    );
+    assert.equal(info.status, 0, info.stderr);
+    const text = info.stdout + info.stderr;
+    assert.match(text, /Encrypted data: pbeWithSHA1And3-KeyTripleDES-CBC/);
+    assert.match(text, /Shrouded Keybag: pbeWithSHA1And3-KeyTripleDES-CBC/);
+    assert.doesNotMatch(text, /AES|PBES2|sha256/i, "nothing AES or SHA-256");
+    const mac = text.match(/MAC:\s*(\w+)/);
+    if (mac) assert.equal(mac[1], "sha1");
+    assert.match(text, /Certificate bag/);
+  },
+);

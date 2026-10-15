@@ -117,16 +117,15 @@ fn configuration(cfg: &CaptureConfig) -> Retained<SCStreamConfiguration> {
 }
 
 /// The configuration fields that decide what the pixels look like, read back from the object
-/// ScreenCaptureKit was given (for the log).
+/// ScreenCaptureKit was given (for the log). Only properties that every supported macOS (14 and
+/// later) has are read: a selector missing on an older system would crash the log line.
 fn describe_configuration(conf: &SCStreamConfiguration) -> String {
     unsafe {
         format!(
-            "[size {}x{} resolution {} scalesToFit {} preservesAspectRatio {} pixelFormat {:#x}]",
+            "[size {}x{} scalesToFit {} pixelFormat {:#x}]",
             conf.width(),
             conf.height(),
-            conf.captureResolution().0,
             conf.scalesToFit(),
-            conf.preservesAspectRatio(),
             conf.pixelFormat()
         )
     }
