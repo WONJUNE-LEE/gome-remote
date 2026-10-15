@@ -3,9 +3,6 @@
 //! above the pixel-count ceiling.
 
 pub const FLOOR_BPS: u32 = 2_000_000;
-/// What a session starts at before the first estimate: below any ceiling, so a slow path
-/// is not flooded while the estimator is still learning.
-pub const START_BPS: u32 = 6_000_000;
 /// Headroom left under the estimate for retransmissions and keyframes.
 const USE_FRACTION: f64 = 0.85;
 /// A change smaller than this is not worth reconfiguring the encoder for.
@@ -17,8 +14,9 @@ pub struct BitrateController {
 }
 
 impl BitrateController {
+    /// A session starts at the ceiling for its size; the estimate only lowers it from there.
     pub fn new(cap: u32) -> Self {
-        BitrateController { cap: cap.max(FLOOR_BPS), current: START_BPS.clamp(FLOOR_BPS, cap.max(FLOOR_BPS)) }
+        BitrateController { cap: cap.max(FLOOR_BPS), current: cap.max(FLOOR_BPS) }
     }
     pub fn current(&self) -> u32 {
         self.current
@@ -56,9 +54,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn it_starts_below_the_ceiling_and_never_above_it() {
-        assert_eq!(BitrateController::new(12_000_000).current(), START_BPS);
-        assert_eq!(BitrateController::new(4_000_000).current(), 4_000_000);
+    fn it_starts_at_the_ceiling_and_never_above_it() {
+        assert_eq!(BitrateController::new(20_000_000).current(), 20_000_000);
+        assert_eq!(BitrateController::new(35_000_000).current(), 35_000_000);
+        assert_eq!(BitrateController::new(1_000_000).current(), FLOOR_BPS, "a ceiling under the floor is raised to it");
     }
 
     #[test]
@@ -75,12 +74,13 @@ mod tests {
         assert_eq!(c.on_estimate(10_000_000), Some(8_500_000));
         assert_eq!(c.on_estimate(80_000_000), Some(12_000_000));
         assert_eq!(c.on_estimate(90_000_000), None);
+        assert_eq!(c.current(), 12_000_000);
     }
 
     #[test]
     fn small_changes_do_not_reconfigure_the_encoder() {
         let mut c = BitrateController::new(12_000_000);
-        c.on_estimate(10_000_000);
+        assert_eq!(c.on_estimate(10_000_000), Some(8_500_000));
         assert_eq!(c.on_estimate(10_400_000), None);
         assert_eq!(c.on_estimate(9_700_000), None);
         assert_eq!(c.current(), 8_500_000);
@@ -108,6 +108,7 @@ mod tests {
         assert_eq!(c.on_estimate(500_000), Some(FLOOR_BPS));
         // 11.2 Mbps to the 12 Mbps ceiling is about 7 %: same.
         let mut c = BitrateController::new(12_000_000);
+        assert_eq!(c.on_estimate(10_000_000), Some(8_500_000), "a session starts at the ceiling: come down first");
         assert_eq!(c.on_estimate(13_176_471), Some(11_200_000));
         assert_eq!(c.on_estimate(100_000_000), Some(12_000_000));
         // And a small step that stops short of either is not.
@@ -116,11 +117,10 @@ mod tests {
 
     #[test]
     fn a_smaller_stream_lowers_the_ceiling_and_the_current_rate() {
-        let mut c = BitrateController::new(20_000_000);
-        c.on_estimate(60_000_000);
+        let mut c = BitrateController::new(35_000_000);
+        assert_eq!(c.current(), 35_000_000);
+        assert_eq!(c.set_cap(20_000_000), Some(20_000_000));
+        assert_eq!(c.set_cap(35_000_000), None, "raising the ceiling waits for an estimate");
         assert_eq!(c.current(), 20_000_000);
-        assert_eq!(c.set_cap(12_000_000), Some(12_000_000));
-        assert_eq!(c.set_cap(20_000_000), None, "raising the ceiling waits for an estimate");
-        assert_eq!(c.current(), 12_000_000);
     }
 }

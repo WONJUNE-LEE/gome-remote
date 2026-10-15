@@ -45,18 +45,18 @@ pub fn fps_for(size: Size) -> u32 {
     }
 }
 
-/// The ceiling the congestion controller works under: 12 Mbps up to 1440p, 20 Mbps at
-/// 4K, linear in the pixel count between.
+/// The ceiling the congestion controller works under, and where a session starts: 20 Mbps
+/// up to 1440p, 35 Mbps at 4K, linear in the pixel count between.
 pub fn bitrate_cap(size: Size) -> u32 {
     let p = size.pixels();
     if p <= QHD_PIXELS {
-        return 12_000_000;
-    }
-    if p >= UHD_PIXELS {
         return 20_000_000;
     }
+    if p >= UHD_PIXELS {
+        return 35_000_000;
+    }
     let t = (p - QHD_PIXELS) as f64 / (UHD_PIXELS - QHD_PIXELS) as f64;
-    (12_000_000.0 + t * 8_000_000.0).round() as u32
+    (20_000_000.0 + t * 15_000_000.0).round() as u32
 }
 
 // ---- tests ----
@@ -111,12 +111,12 @@ mod tests {
 
     #[test]
     fn the_bitrate_ceiling_follows_the_pixel_count() {
-        assert_eq!(bitrate_cap(Size { w: 1920, h: 1080 }), 12_000_000);
-        assert_eq!(bitrate_cap(Size { w: 2560, h: 1440 }), 12_000_000);
-        assert_eq!(bitrate_cap(D4K), 20_000_000);
+        assert_eq!(bitrate_cap(Size { w: 1920, h: 1080 }), 20_000_000);
+        assert_eq!(bitrate_cap(Size { w: 2560, h: 1440 }), 20_000_000);
+        assert_eq!(bitrate_cap(D4K), 35_000_000);
         // 3200x1800 is 5 760 000 pixels, 45 % of the way from 1440p (3 686 400) to 4K (8 294 400).
-        assert_eq!(bitrate_cap(Size { w: 3200, h: 1800 }), 15_600_000);
-        assert_eq!(bitrate_cap(Size { w: 2560, h: 1442 }), 12_008_889, "one row above 1440p starts the climb");
-        assert_eq!(bitrate_cap(Size { w: 3840, h: 2158 }), 19_986_667, "and one row under 4K nearly reaches it");
+        assert_eq!(bitrate_cap(Size { w: 3200, h: 1800 }), 26_750_000);
+        assert_eq!(bitrate_cap(Size { w: 2560, h: 1442 }), 20_016_667, "one row above 1440p starts the climb");
+        assert_eq!(bitrate_cap(Size { w: 3840, h: 2158 }), 34_975_000, "and one row under 4K nearly reaches it");
     }
 }

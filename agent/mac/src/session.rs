@@ -648,8 +648,8 @@ mod tests {
         let rig = rig();
         rig.open();
         rig.settle(|log| log.count("start") == 1);
-        // 1280x720 on a 2560x1440 screen: the same aspect, so exactly the request; 6 Mbps to begin with.
-        assert!(rig.log.all().contains(&"start 1280x720 6000000".to_string()), "{:?}", rig.log.all());
+        // 1280x720 on a 2560x1440 screen: the same aspect, so exactly the request; it begins at the 20 Mbps ceiling.
+        assert!(rig.log.all().contains(&"start 1280x720 20000000".to_string()), "{:?}", rig.log.all());
     }
 
     #[test]
@@ -785,7 +785,7 @@ mod tests {
         rig.settle(|log| log.count("start") == 1);
         // 1500x900 on a 2560x1440 screen: the screen's aspect ratio (16:9), even sides.
         hooks.input(br#"{"type":"size","w":1500,"h":900}"#);
-        assert!(rig.log.all().contains(&"resize 1500x842 12000000".to_string()), "{:?}", rig.log.all());
+        assert!(rig.log.all().contains(&"resize 1500x842 20000000".to_string()), "{:?}", rig.log.all());
         // Out of range sizes never reach the capture.
         hooks.input(br#"{"type":"size","w":100,"h":100}"#);
         assert_eq!(rig.log.count("resize"), 1);
@@ -800,7 +800,7 @@ mod tests {
         hooks.input(br#"{"type":"size","w":1920,"h":1080}"#);
         rig.settle(|log| log.count("start") == 1);
         // The start used the size known when it began; the page's size is applied right after.
-        rig.settle(|log| log.all().last().is_some_and(|l| l == "resize 1920x1080 12000000"));
+        rig.settle(|log| log.all().last().is_some_and(|l| l == "resize 1920x1080 20000000"));
         let log = rig.log.all();
         let started = log.iter().position(|l| l.starts_with("start")).unwrap();
         assert!(log.iter().rposition(|l| l.starts_with("resize")).unwrap() > started, "{log:?}");
@@ -956,10 +956,10 @@ mod tests {
         assert_eq!(params.len(), 2);
         for p in &params {
             assert_eq!(p.bind_ip, rig.agent.core.parts.bind, "the media socket is bound to the agent's own address");
-            assert_eq!(p.initial_bitrate, crate::bitrate::START_BPS);
+            assert_eq!(p.initial_bitrate, p.desired_bitrate, "a session starts at its ceiling");
         }
-        assert_eq!(params[0].desired_bitrate, bitrate_cap(Size { w: 1280, h: 720 }));
-        assert_eq!(params[1].desired_bitrate, bitrate_cap(Size { w: 2560, h: 1440 }), "fitted to the screen first");
+        assert_eq!(params[0].desired_bitrate, 20_000_000, "1280x720");
+        assert_eq!(params[1].desired_bitrate, 20_000_000, "fitted to the screen first: 2560x1440");
     }
 
     #[test]
