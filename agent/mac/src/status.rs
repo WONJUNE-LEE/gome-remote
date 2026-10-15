@@ -1,9 +1,11 @@
 //! The agent's status (spec D5): enumerations and a timestamp, nothing about screen content.
 use std::fmt::Write as _;
 
-/// P1 decides this. `true` until the lock-screen pre-test shows that capture and key
-/// input both work on the login window; then the owner flips it (plan, Task 13).
-pub const REFUSE_WHEN_LOCKED: bool = true;
+/// P1's switch. The lock-screen pre-test passed on the owner's Mac on 2026-10-16 (the agent
+/// captured the lock screen and typed into the password field), so a locked screen does not
+/// refuse a session: the Mac is unlocked through the agent. `LOCKED_TILE_ENABLED` in
+/// `src/tiles.ts` is the page's half of the same switch.
+pub const REFUSE_WHEN_LOCKED: bool = false;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Screen {
@@ -176,6 +178,14 @@ mod tests {
         let mut s = healthy();
         s.screen = Screen::Suspect;
         assert_eq!(s.gate(true), Ok(()));
+    }
+
+    #[test]
+    fn p1_chose_to_unlock_through_the_agent() {
+        let mut s = healthy();
+        s.locked = true;
+        assert!(!REFUSE_WHEN_LOCKED);
+        assert_eq!(s.gate(REFUSE_WHEN_LOCKED), Ok(()));
     }
 
     #[test]

@@ -97,8 +97,8 @@ test("a Mac that needs permission is not openable; a locked one follows the P1 s
   );
   assert.equal(
     LOCKED_TILE_ENABLED,
-    false,
-    "until P1 shows the lock screen can be controlled",
+    true,
+    "P1 (2026-10-16): the lock screen can be controlled through the agent",
   );
   // Both values of the switch, whatever it is set to today.
   const locked = { ...mac, agent: { ...mac.agent, issue: "locked" } };
@@ -139,7 +139,7 @@ test("the list renders the agent words and disables the tiles that cannot open",
   ]);
   assert.deepEqual(
     v.tiles().map((t) => t.disabled),
-    [false, true, true, true, false],
+    [false, true, false, true, false],
   );
 });
 

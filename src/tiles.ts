@@ -2,11 +2,11 @@
 export type TileState =
   "online" | "offline" | "setup" | "permission" | "locked" | "suspect";
 
-// P1 (lock screen pre-test, spec section 3). While false, a locked Mac cannot be opened
-// from its agent tile: the lock screen is unlocked from the VNC tile. Set it to true, and
-// REFUSE_WHEN_LOCKED in agent/mac/src/status.rs to false, when P1 shows that capture and
-// key input both work on the lock screen.
-export const LOCKED_TILE_ENABLED = false;
+// P1 (lock screen pre-test, spec section 3). On 2026-10-16 capture and key input both worked
+// on the lock screen, so a locked Mac (tile word 잠김) can be opened from its agent tile and
+// unlocked through the agent; the VNC tile stays as the fallback. Its counterpart is
+// REFUSE_WHEN_LOCKED in agent/mac/src/status.rs. Set to false (and that to true) to go back.
+export const LOCKED_TILE_ENABLED = true;
 
 // Missing credentials win over power state: the owner can fix that whether or not the
 // machine is on, while "꺼짐" needs no action. A Mac agent that answers but cannot work

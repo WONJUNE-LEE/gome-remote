@@ -100,9 +100,14 @@ npm run build     # vite build
   main.ts connects an agent tile without touching Guacamole, keeps the ended card and the
   single reconnect rule, shows each refusal in its own words, and sends the window size; a
   permission-less tile is not openable, a "suspect" one is, and a locked one follows the
-  P1 switch; bridge 3 accepts the protocol "agent" and an older app is told "rdp"; the
+  P1 switch (set to openable, see Agent P1); bridge 3 accepts the protocol "agent" and an older app is told "rdp"; the
   `#measure` panel exists only when asked for and measures a video and a Guacamole canvas
-  with the same loop; the measuring driver's options and thresholds.
+  with the same loop; the measuring driver's options and thresholds, and its guards: one
+  driver per machine (a lock file holding the driver's pid, created atomically; a stale one
+  is taken over), two pilot clicks that must each show a flip before the run counts (a flip
+  page covered by a window or dialog stops the run), and any sample under 20 ms fails the run
+  (another session is flipping the same page). The flip page logs presses, focus loss and
+  frame gaps, and its flip count must equal n + 2 (the pilot clicks count).
 - **Mac agent, program (agent spec D2-D6, D10)**, `cargo test --locked` in `agent/mac`
   (macOS CI; most tests also run on Linux): Host, Origin, source address and bearer-token
   checks (including an IPv4-mapped peer), body limits, backoff that never delays the
@@ -197,18 +202,30 @@ for the procedure.
   (empty `allowedLogins`, credentials file mode, open socket directory) leaves a clear
   line in the log.
 
+## Mac agent pre-test P1 (lock screen), recorded 2026-10-16
+
+Run on the owner's Mac with the owner's knowledge (spec section 3, P1): the Mac was locked
+and the agent was opened from its tile.
+
+- (a) Capture: the agent captured the lock screen.
+- (b) Keys: the agent typed into the password field (three meaningless characters, dots
+  appeared and were deleted; no password was used).
+- (c) The VNC path showed the lock screen, but the characters typed through it did not appear.
+  The cause was not determined.
+
+Outcome: the first branch of P1 ("(a)(b) pass: unlock through the agent"). The switch is set:
+`REFUSE_WHEN_LOCKED = false` in `agent/mac/src/status.rs` and `LOCKED_TILE_ENABLED = true` in
+`src/tiles.ts` (the tile still says 잠김 but opens). The Mac (VNC) tile stays as the fallback.
+
 ## Pending: the Mac agent's device checks (not yet run)
 
 The agent's automated checks above ran on Linux and, for the Rust program, on a macOS
-runner. Nothing about a real Mac, a real network path or a real client has been run for the
-agent, and no result is recorded. The pre-tests and verification runs are in section 3 and
+runner. Apart from P1 (recorded above), nothing about a real Mac, a real network path or a
+real client has a result recorded here. The pre-tests and verification runs are in section 3 and
 section 8 of `docs/mac-agent-spec.md`; each entry below is filled in by the operator or the
 owner with its date and evidence (numbers and words, no tailnet login, device name or
 address) when it is run. Do not edit an entry to say "pass" without that evidence.
 
-- Agent P1. Lock screen: capture and key input on the lock screen. Decides the P1 switch
-  (`REFUSE_WHEN_LOCKED` in `agent/mac/src/status.rs`, `LOCKED_TILE_ENABLED` in
-  `src/tiles.ts`); until it is run a locked Mac is refused and the tile says 잠김.
 - Agent P2. Real clients: the selected ICE pair and whether the path is direct, click-to-picture
   at 2560x1440, still-screen hold with 1000 ms and 100 ms repeat, the decoder in use.
 - Agent P3. Permissions survive updates of the same signing certificate.
@@ -216,7 +233,7 @@ address) when it is run. Do not edit an entry to say "pass" without that evidenc
   continues and whether the Mac (VNC) tile can click the confirmation window.
 - Agent V1. The agent tile measured from the gateway server's Chrome against S2, S3 and S4.
 - Agent V2 (Windows app) and Agent V3 (Mac app). (Both against S1 and S5.)
-- Agent V4. Agent states: lock screen, display sleep, takeover, agent restart, nothing left
+- Agent V4. Agent states: lock screen (unlocking through the agent, P1), display sleep, takeover, agent restart, nothing left
   pressed after a session, missing permission.
 - Agent V5. Negative tests: wrong token, a caller other than the gateway, an `Origin` header, a
   login outside `allowedLogins`, an extra argument or environment variable.

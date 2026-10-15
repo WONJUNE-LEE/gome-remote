@@ -9,7 +9,8 @@ state: 켜짐 (on), 꺼짐 (off) or 설정 필요 (needs setup). The Mac, which 
 also says 오프라인 (the agent does not answer), 권한 필요 (macOS permissions are missing),
 권한 필요(의심) (the screen only returns black pictures, probably a missing permission) or
 잠김 (the screen is locked). Off, unconfigured and unusable machines are dimmed and cannot
-be opened; 권한 필요(의심) stays openable, so that a screen that has recovered can be used.
+be opened; 권한 필요(의심) and 잠김 stay openable, so that a screen that has recovered can be
+used and a locked Mac can be unlocked through the agent.
 
 ## How you sign in: one password
 
@@ -173,8 +174,8 @@ in the owner's login session, so it exists only while the owner is logged in: af
 reboot, before login, the tile says 오프라인. The design and its decisions are in
 [`docs/mac-agent-spec.md`](docs/mac-agent-spec.md).
 
-Requirements: Rust, the Xcode command line tools and Tailscale on the Mac (developed and
-tested on macOS 27). Install and update are the same command, in Terminal on the Mac, as
+Requirements: macOS 14 or later (the ScreenCaptureKit APIs the agent uses), Rust, the Xcode
+command line tools and Tailscale on the Mac (developed and tested on macOS 27). Install and update are the same command, in Terminal on the Mac, as
 the logged-in user (not with `sudo`):
 
 ```sh
@@ -292,8 +293,9 @@ code signing, auto-update, unattended Mac login after a FileVault reboot.
 - **A Mac (agent) tile says 오프라인** when the agent does not answer: the Mac is off or
   asleep, nobody is logged in, or the program stopped (`launchctl print
 gui/$(id -u)/net.gome.remote-agent` on the Mac). **권한 필요**: allow the two permissions
-  (or the 30-day reconfirmation) through Mac (VNC). **잠김**: unlock through Mac (VNC); the
-  agent tile cannot be opened while the screen is locked. **권한 필요(의심)**: the screen
+  (or the 30-day reconfirmation) through Mac (VNC). **잠김** (the screen is locked): the
+  tile still opens, and the agent shows the lock screen and takes keys, so the Mac is
+  unlocked through the agent (spec P1, 2026-10-16); Mac (VNC) stays as the fallback. **권한 필요(의심)**: the screen
   returned only black pictures for a few seconds, or the system stopped the capture while the
   permission still reads as granted; the tile still opens (the mark clears at the next
   session), and if the picture stays black the permission is the first thing to check. After a token change on the Mac
