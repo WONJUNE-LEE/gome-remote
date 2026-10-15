@@ -13,7 +13,7 @@ use crate::keepalive::Ages;
 use crate::refine::{apply_step, Encoding, Refine};
 use crate::retry::RetryGate;
 use crate::size::{bitrate_cap, fps_for, needs_scale, Size};
-use crate::stats::StatsReport;
+use crate::stats::{Counters, StatsReport};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering::Relaxed};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -46,8 +46,7 @@ struct Inner {
     /// pipeline is running again by the time it looks.
     epoch: AtomicU64,
     last_content_secs: AtomicU64,
-    sent_frames: AtomicU64,
-    sent_bytes: AtomicU64,
+    sent: Counters,
 }
 
 #[derive(Clone)]
@@ -77,8 +76,7 @@ impl Default for Pipeline {
                 black: Mutex::new(BlackWatch::default()),
                 epoch: AtomicU64::new(0),
                 last_content_secs: AtomicU64::new(0),
-                sent_frames: AtomicU64::new(0),
-                sent_bytes: AtomicU64::new(0),
+                sent: Counters::default(),
             }),
         }
     }
@@ -228,8 +226,7 @@ impl Pipeline {
             let bytes = frame.data.len() as u64;
             if let Some(peer) = inner.sink.lock().unwrap().as_ref() {
                 if peer.send_frame(frame) {
-                    inner.sent_frames.fetch_add(1, Relaxed);
-                    inner.sent_bytes.fetch_add(bytes, Relaxed);
+                    inner.sent.sent(bytes);
                 }
             }
         })
@@ -353,8 +350,7 @@ impl Pipeline {
         let inner = &self.inner;
         let mut refine = Refine::default();
         // The counters run across sessions: start from their current values, not from zero.
-        let mut report =
-            StatsReport::new(Instant::now(), inner.sent_frames.load(Relaxed), inner.sent_bytes.load(Relaxed));
+        let mut report = StatsReport::begin(Instant::now(), &inner.sent);
         while inner.running.load(Relaxed) && inner.epoch.load(Relaxed) == epoch {
             std::thread::sleep(Duration::from_millis(2));
             let snapshot = inner.last_frame.lock().unwrap().as_ref().map(|(pb, at)| (PixBuf::retain(pb.0), *at));
@@ -372,8 +368,7 @@ impl Pipeline {
             };
             apply_step(step, target, cap, &ages, &mut Repeat { pipeline: self, pixel_buffer: pixel_buffer.0, epoch });
             // One line every ten seconds while someone watches, never per frame.
-            let (frames, bytes) = (inner.sent_frames.load(Relaxed), inner.sent_bytes.load(Relaxed));
-            if let Some(line) = report.poll(Instant::now(), frames, bytes) {
+            if let Some(line) = report.poll(Instant::now(), &inner.sent) {
                 println!("{line}");
             }
         }
