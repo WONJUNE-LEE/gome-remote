@@ -109,7 +109,7 @@ npm run build     # vite build
   gateway; tailnet address ranges at both edges and the offer candidate filter; the
   settings and token file ownership rules; the input message limits (512 bytes, 8 KiB for
   text), the key table, double-click counting, the typed-text chunking; bitrate following the
-  estimate down to the 2 Mbps floor; the static-screen repeat timing; the black-frame
+  estimate down to the 2 Mbps floor; the static-screen repeat and sharper-refresh timing; the black-frame
   detector; status enumerations; one session with takeover; the 10 s idle rule; the log
   cap; and that no source file reads arguments or the environment. `test/agent-install.test.js`
   runs `install.sh` and `uninstall.sh` against stand-ins for the macOS tools: layout, token

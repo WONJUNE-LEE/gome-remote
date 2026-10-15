@@ -13,6 +13,7 @@ pub mod paths;
 pub mod peer;
 pub mod pressed;
 pub mod protocol;
+pub mod refine;
 pub mod retry;
 pub mod session;
 pub mod size;

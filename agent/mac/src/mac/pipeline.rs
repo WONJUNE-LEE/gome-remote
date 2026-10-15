@@ -9,8 +9,9 @@ use super::system;
 use crate::black::{luma_is_black, BlackWatch};
 use crate::frame::FrameTarget;
 use crate::keepalive::{should_resubmit, Ages};
+use crate::refine::{boost_bps, Refine, Step};
 use crate::retry::RetryGate;
-use crate::size::{fps_for, Size};
+use crate::size::{bitrate_cap, fps_for, Size};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering::Relaxed};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -61,7 +62,11 @@ impl Default for Pipeline {
                 sink: Arc::new(Mutex::new(None)),
                 capture: Mutex::new(None),
                 running: AtomicBool::new(false),
-                plan: Mutex::new(Plan { size: Size { w: 1920, h: 1080 }, fps: 60, bitrate: 6_000_000 }),
+                plan: Mutex::new(Plan {
+                    size: Size { w: 1920, h: 1080 },
+                    fps: 60,
+                    bitrate: bitrate_cap(Size { w: 1920, h: 1080 }),
+                }),
                 black: Mutex::new(BlackWatch::default()),
                 epoch: AtomicU64::new(0),
                 last_content_secs: AtomicU64::new(0),
@@ -187,6 +192,11 @@ impl Pipeline {
 
     pub fn set_bitrate(&self, bps: u32) {
         self.inner.plan.lock().unwrap().bitrate = bps;
+        self.set_encoder_bitrate(bps);
+    }
+
+    /// Changes the encoder's rate only; the plan keeps the target the refresh returns to.
+    fn set_encoder_bitrate(&self, bps: u32) {
         if let Some(encoder) = self.inner.encoder.lock().unwrap().as_mut() {
             encoder.set_bitrate(bps as i32);
         }
@@ -296,9 +306,11 @@ impl Pipeline {
     }
 
     /// ScreenCaptureKit only delivers a frame when the screen changes: repeat the last one
-    /// when a keyframe is pending and as a low-rate keepalive on a still screen.
+    /// when a keyframe is pending and as a low-rate keepalive on a still screen. Once per
+    /// still period the repeat is a sharper keyframe (`refine`).
     fn keepalive_loop(&self, epoch: u64) {
         let inner = &self.inner;
+        let mut refine = Refine::default();
         let mut report = (Instant::now(), 0u64, 0u64);
         while inner.running.load(Relaxed) && inner.epoch.load(Relaxed) == epoch {
             std::thread::sleep(Duration::from_millis(2));
@@ -310,8 +322,25 @@ impl Pipeline {
                 since_submit: inner.last_submit.lock().unwrap().elapsed(),
                 keyframe_pending: pending,
             };
-            if should_resubmit(&ages) {
-                self.submit(pixel_buffer.0, Some(epoch));
+            match refine.poll(ages.since_capture) {
+                Step::Boost => {
+                    let (target, cap) = {
+                        let plan = inner.plan.lock().unwrap();
+                        (plan.bitrate, bitrate_cap(plan.size))
+                    };
+                    self.set_encoder_bitrate(boost_bps(target, cap));
+                    self.request_keyframe();
+                    self.submit(pixel_buffer.0, Some(epoch));
+                }
+                Step::Restore => {
+                    let target = inner.plan.lock().unwrap().bitrate;
+                    self.set_encoder_bitrate(target);
+                }
+                Step::Nothing => {
+                    if should_resubmit(&ages) {
+                        self.submit(pixel_buffer.0, Some(epoch));
+                    }
+                }
             }
             // One line every ten seconds while someone watches, never per frame.
             if report.0.elapsed() >= Duration::from_secs(10) {
