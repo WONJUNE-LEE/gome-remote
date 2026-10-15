@@ -184,7 +184,6 @@ mod tests {
     fn p1_chose_to_unlock_through_the_agent() {
         let mut s = healthy();
         s.locked = true;
-        assert!(!REFUSE_WHEN_LOCKED);
         assert_eq!(s.gate(REFUSE_WHEN_LOCKED), Ok(()));
     }
 

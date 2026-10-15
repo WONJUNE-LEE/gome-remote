@@ -606,7 +606,7 @@ mod tests {
         rig.platform.locked.store(true, SeqCst);
         let result = rig.agent.start_session(rig.offer());
         assert_eq!(result.is_err(), REFUSE_WHEN_LOCKED, "Sessions::new must pass the constant on");
-        assert!(!REFUSE_WHEN_LOCKED, "P1 (2026-10-16): the lock screen is unlocked through the agent");
+        assert!(result.is_ok(), "P1 (2026-10-16): the lock screen is unlocked through the agent");
     }
 
     #[test]
