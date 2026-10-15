@@ -13,6 +13,8 @@ import {
   pilotVerdict,
   suspectSamples,
   readOptions,
+  SOAK_GRACE_MS,
+  withDeadline,
   verdictClick,
   verdictSoak,
 } from "../scripts/measure-drive.mjs";
@@ -104,6 +106,25 @@ test("the soak verdict allows no frame gap over 500 ms and no browser-counted fr
     }).length,
     1,
   );
+});
+
+test("a soak whose stream stopped ends with a failure instead of waiting for a frame that never comes", async () => {
+  // The page's frame report is only finished by a frame that arrives after the duration.
+  const never = new Promise(() => {});
+  await assert.rejects(
+    withDeadline(never, 30, "no frame report"),
+    /no frame report/,
+  );
+  assert.equal(
+    await withDeadline(Promise.resolve("report"), 1000, "late"),
+    "report",
+  );
+  await assert.rejects(
+    withDeadline(Promise.reject(new Error("page closed")), 1000, "late"),
+    /page closed/,
+  );
+  // The report is due when the driver's dragging ends; the grace leaves room for a late last frame.
+  assert.equal(SOAK_GRACE_MS, 15_000);
 });
 
 test("options are checked, and the address always ends in #measure", () => {

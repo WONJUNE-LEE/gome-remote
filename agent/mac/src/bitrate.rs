@@ -8,6 +8,18 @@ const USE_FRACTION: f64 = 0.85;
 /// A change smaller than this is not worth reconfiguring the encoder for.
 const MIN_STEP: f64 = 0.10;
 
+/// The sender-side estimator reads far too low when the screen is nearly still: it sets the
+/// estimate to 0.85 x the acknowledged bitrate on a delay overuse, and a still screen sends a
+/// few hundred kbit/s, so one keyframe burst takes it to tens of kbit/s. str0m paces at 1.1 x the
+/// estimate, so the next keyframe or click frame then waits for seconds (measured with the
+/// receive path limited to 5 Mbit/s: estimates down to 10 kbit/s, clicks of 1 s, freezes). An
+/// estimate under what the encoder sends at its floor cannot describe the path (below about
+/// 3 Mbit/s is outside support): the estimator is restarted at the floor, which is also the
+/// slowest pacing rate that still carries the stream. `Some(rate)` when it should restart.
+pub fn estimator_restart(estimate_bps: u64) -> Option<u32> {
+    (estimate_bps < FLOOR_BPS as u64).then_some(FLOOR_BPS)
+}
+
 pub struct BitrateController {
     cap: u32,
     current: u32,
@@ -58,6 +70,16 @@ mod tests {
         assert_eq!(BitrateController::new(20_000_000).current(), 20_000_000);
         assert_eq!(BitrateController::new(35_000_000).current(), 35_000_000);
         assert_eq!(BitrateController::new(1_000_000).current(), FLOOR_BPS, "a ceiling under the floor is raised to it");
+    }
+
+    #[test]
+    fn an_estimate_below_what_the_encoder_can_send_restarts_the_estimator_at_the_floor() {
+        assert_eq!(estimator_restart(66_000), Some(FLOOR_BPS), "an idle screen's 0.85 x acked bitrate");
+        assert_eq!(estimator_restart(10_000), Some(FLOOR_BPS));
+        assert_eq!(estimator_restart(0), Some(FLOOR_BPS));
+        assert_eq!(estimator_restart(FLOOR_BPS as u64 - 1), Some(FLOOR_BPS));
+        assert_eq!(estimator_restart(FLOOR_BPS as u64), None, "the floor itself is a usable estimate");
+        assert_eq!(estimator_restart(4_500_000), None);
     }
 
     #[test]

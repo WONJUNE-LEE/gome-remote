@@ -2,6 +2,7 @@
 //! `input` data channel. Ported from the spike's `peer.rs`; the pacer, the click trace
 //! and the shared statistics are gone, and these are new: tailnet-only candidates and
 //! source addresses, bandwidth estimation, a 10 s idle close, and the release hook.
+use crate::bitrate::estimator_restart;
 use crate::frame::{EncodedFrame, FrameTarget};
 use crate::http::LogLimiter;
 use crate::tailnet::{filter_offer_candidates, is_tailnet_ip};
@@ -302,6 +303,19 @@ struct Signals<'a> {
     idle_limit: Duration,
 }
 
+/// A new sender-side estimate: it steers the encoder, and one under the encoder's floor is
+/// not believed (see `estimator_restart`): str0m's estimator starts over at the floor.
+fn handle_estimate(rtc: &mut Rtc, hooks: &dyn PeerHooks, restart_log: &mut LogLimiter, bps: u64) {
+    hooks.estimate(bps);
+    if let Some(restart) = estimator_restart(bps) {
+        rtc.bwe().reset(Bitrate::bps(restart as u64));
+        let note = format!("[peer] bandwidth estimate {bps} bps restarted at {restart}");
+        if let Some(line) = limited(restart_log, Instant::now(), &note) {
+            println!("{line}");
+        }
+    }
+}
+
 fn run(
     mut rtc: Rtc,
     socket: UdpSocket,
@@ -319,7 +333,8 @@ fn run(
     let mut rtx_configured = false;
     let mut last_rx = Instant::now();
     // A socket that fails does so for every packet: a line a second, not a line per packet.
-    let (mut send_log, mut write_log) = (LogLimiter::default(), LogLimiter::default());
+    let (mut send_log, mut write_log, mut restart_log) =
+        (LogLimiter::default(), LogLimiter::default(), LogLimiter::default());
     loop {
         if repair_due(repair) {
             hooks.request_keyframe();
@@ -355,7 +370,7 @@ fn run(
                     }
                     Event::KeyframeRequest(_) => hooks.request_keyframe(),
                     Event::EgressBitrateEstimate(BweKind::Twcc { estimate, .. }) => {
-                        hooks.estimate(estimate.as_u64());
+                        handle_estimate(&mut rtc, hooks, &mut restart_log, estimate.as_u64());
                     }
                     Event::ChannelData(data) => hooks.input(&data.data),
                     Event::ChannelClose(_) => hooks.input_closed(),
@@ -856,6 +871,23 @@ mod tests {
         let estimates = call.hooks.estimates.lock().unwrap().clone();
         assert!(!estimates.is_empty(), "no bandwidth estimate reached the session");
         assert!(estimates.iter().all(|&bps| bps > 0), "{estimates:?}");
+    }
+
+    #[test]
+    fn every_estimate_reaches_the_session_and_one_under_the_floor_also_restarts_the_estimator() {
+        let params = PeerParams {
+            bind_ip: "127.0.0.1".parse().unwrap(),
+            initial_bitrate: 6_000_000,
+            desired_bitrate: 12_000_000,
+        };
+        let mut rtc = new_rtc(&params);
+        let hooks = Recorder::default();
+        let mut log = LogLimiter::default();
+        for bps in [4_500_000, 66_000, 10_000, 3_000_000] {
+            handle_estimate(&mut rtc, &hooks, &mut log, bps);
+        }
+        assert_eq!(*hooks.estimates.lock().unwrap(), vec![4_500_000, 66_000, 10_000, 3_000_000]);
+        assert!(rtc.is_alive(), "restarting the estimator must leave the connection as it was");
     }
 
     #[test]

@@ -197,6 +197,20 @@ export function suspectSamples(samples) {
     : [];
 }
 
+// The page ends its frame report with the first frame after the soak's duration, so a stream
+// that stopped never produces it. The driver waits this long once its own dragging (which lasts
+// the duration) is over, then fails.
+export const SOAK_GRACE_MS = 15_000;
+
+// `promise`, or a rejection with `message` once `ms` have passed; the timer never outlives it.
+export function withDeadline(promise, ms, message) {
+  let timer;
+  const deadline = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(new Error(message)), ms);
+  });
+  return Promise.race([promise, deadline]).finally(() => clearTimeout(timer));
+}
+
 // S3: no freeze longer than 500 ms during the dragging and scrolling.
 export function verdictSoak(report) {
   const failed = [];
@@ -301,7 +315,11 @@ async function main() {
         await page.mouse.up();
         await page.mouse.wheel(0, i % 2 ? 300 : -300);
       }
-      result = await soak;
+      result = await withDeadline(
+        soak,
+        SOAK_GRACE_MS,
+        `no frame report ${SOAK_GRACE_MS / 1000} s after the soak ended: the stream stopped (the page saw no frame)`,
+      );
       failed = result
         ? verdictSoak(result)
         : ["this tile has no frame report (soak is for the Mac agent)"];
