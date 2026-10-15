@@ -110,6 +110,12 @@ fn a_requested_keyframe_is_the_next_frame_and_the_interval_forces_one() {
 }
 
 #[test]
+fn the_quantizer_cap_is_accepted_by_the_session() {
+    let (enc, _rx) = encoder(1280, 720, Duration::from_secs(3600));
+    assert_eq!(enc.max_qp_status, 0, "MaxAllowedFrameQP was rejected");
+}
+
+#[test]
 fn the_bitrate_can_be_changed_while_encoding() {
     let (mut enc, rx) = encoder(1280, 720, Duration::from_secs(3600));
     let frames: Vec<_> = (0..4).map(|i| nv12_buffer(1280, 720, i * 8)).collect();

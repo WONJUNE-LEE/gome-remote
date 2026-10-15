@@ -311,7 +311,8 @@ impl Pipeline {
     fn keepalive_loop(&self, epoch: u64) {
         let inner = &self.inner;
         let mut refine = Refine::default();
-        let mut report = (Instant::now(), 0u64, 0u64);
+        // The counters run across sessions: start from their current values, not from zero.
+        let mut report = (Instant::now(), inner.sent_frames.load(Relaxed), inner.sent_bytes.load(Relaxed));
         while inner.running.load(Relaxed) && inner.epoch.load(Relaxed) == epoch {
             std::thread::sleep(Duration::from_millis(2));
             let snapshot = inner.last_frame.lock().unwrap().as_ref().map(|(pb, at)| (PixBuf::retain(pb.0), *at));

@@ -27,6 +27,8 @@ pub struct Encoder {
     last_key: Instant,
     refcon: *mut FrameSink,
     force_key: AtomicBool,
+    /// OSStatus of setting `MAX_ALLOWED_FRAME_QP` (0: accepted).
+    pub max_qp_status: i32,
 }
 // The session is only used from the capture callback thread and the keepalive thread, which
 // the pipeline serialises behind one mutex.
@@ -36,6 +38,10 @@ struct Submitted {
     at: Instant,
 }
 
+/// Highest quantizer the encoder may use (H.264, 0 to 51; lower is sharper). Chosen by
+/// measurement on the dev Mac (quality-report.md): without a cap the low-latency rate control
+/// sent a quarter of the target bitrate and text looked soft.
+const MAX_ALLOWED_FRAME_QP: i32 = 30;
 const FOURCC_AVC1: u32 = 0x61766331;
 /// `VTEncodeInfoFlags::kVTEncodeInfo_FrameDropped`: the real-time encoder skipped the frame.
 const ENCODE_INFO_FRAME_DROPPED: u32 = 1 << 1;
@@ -159,7 +165,7 @@ impl Encoder {
             eprintln!("[enc] {e}; retrying without low-latency rate control");
             Self::create(&cfg, refcon, false)
         }) {
-            Ok((session, low_latency)) => {
+            Ok((session, low_latency, max_qp_status)) => {
                 let mut hardware: CFTypeRef = std::ptr::null();
                 let status = unsafe {
                     VTSessionCopyProperty(
@@ -191,6 +197,7 @@ impl Encoder {
                     last_key: Instant::now() - Duration::from_secs(3600),
                     refcon,
                     force_key: AtomicBool::new(true),
+                    max_qp_status,
                 })
             }
             Err(e) => {
@@ -200,7 +207,7 @@ impl Encoder {
         }
     }
 
-    fn create(cfg: &Config, refcon: *mut FrameSink, low_latency: bool) -> anyhow::Result<(VTSession, bool)> {
+    fn create(cfg: &Config, refcon: *mut FrameSink, low_latency: bool) -> anyhow::Result<(VTSession, bool, i32)> {
         let mut spec_pairs: Vec<(CFTypeRef, CFTypeRef)> =
             unsafe { vec![(kVTVideoEncoderSpecification_EnableHardwareAcceleratedVideoEncoder, kCFBooleanTrue)] };
         if low_latency {
@@ -230,8 +237,9 @@ impl Encoder {
             if status != 0 {
                 eprintln!("[enc] set {name} failed: OSStatus {status}");
             }
+            status
         };
-        unsafe {
+        let qp_status = unsafe {
             set(kVTCompressionPropertyKey_RealTime, kCFBooleanTrue, "RealTime");
             set(kVTCompressionPropertyKey_AllowFrameReordering, kCFBooleanFalse, "AllowFrameReordering");
             set(
@@ -255,12 +263,20 @@ impl Encoder {
                     "PrioritizeEncodingSpeedOverQuality",
                 );
             }
+            // The low-latency rate control leaves most of the budget unused and text looks soft.
+            // Capping the quantizer makes it spend the budget. The key is passed as its string
+            // value: the constant exists only from macOS 14, a linked symbol would stop the
+            // agent from starting on older systems.
+            let key = cf_string("MaxAllowedFrameQP");
+            let qp_status = set(key.0, cf_i32(MAX_ALLOWED_FRAME_QP).0, "MaxAllowedFrameQP");
+            println!("[enc] MaxAllowedFrameQP={MAX_ALLOWED_FRAME_QP} OSStatus {qp_status}");
             let status = VTCompressionSessionPrepareToEncodeFrames(session);
             if status != 0 {
                 eprintln!("[enc] PrepareToEncodeFrames: OSStatus {status}");
             }
-        }
-        Ok((session, low_latency))
+            qp_status
+        };
+        Ok((session, low_latency, qp_status))
     }
 
     pub fn width(&self) -> i32 {
