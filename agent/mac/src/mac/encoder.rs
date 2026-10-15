@@ -38,9 +38,9 @@ struct Submitted {
     at: Instant,
 }
 
-/// Highest quantizer the encoder may use (H.264, 0 to 51; lower is sharper). Chosen by
-/// measurement on the dev Mac (quality-report.md): without a cap the low-latency rate control
-/// sent a quarter of the target bitrate and text looked soft.
+/// Highest quantizer the encoder may use (H.264, 0 to 51; lower is sharper). The cap had no
+/// measured effect at normal content (the encoder already stays below QP 30 there); it is kept
+/// as a guard against the low-latency rate control going soft on content it quantizes harder.
 const MAX_ALLOWED_FRAME_QP: i32 = 30;
 const FOURCC_AVC1: u32 = 0x61766331;
 /// `VTEncodeInfoFlags::kVTEncodeInfo_FrameDropped`: the real-time encoder skipped the frame.
@@ -284,6 +284,20 @@ impl Encoder {
     }
     pub fn height(&self) -> i32 {
         self.cfg.height
+    }
+
+    /// The quantizer cap the session reports, if it reports one (`None`: the property cannot be read).
+    pub fn max_allowed_qp(&self) -> Option<i32> {
+        let key = cf_string("MaxAllowedFrameQP");
+        let mut value: CFTypeRef = std::ptr::null();
+        let status = unsafe { VTSessionCopyProperty(self.session, key.0, std::ptr::null(), &mut value) };
+        if status != 0 || value.is_null() {
+            return None;
+        }
+        let mut qp = 0i32;
+        let ok = unsafe { CFNumberGetValue(value, kCFNumberSInt32Type, &mut qp as *mut i32 as *mut c_void) };
+        unsafe { CFRelease(value) };
+        ok.then_some(qp)
     }
 
     /// The next frame submitted is a keyframe (new viewer, PLI/FIR).

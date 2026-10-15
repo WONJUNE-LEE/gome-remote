@@ -59,6 +59,7 @@ extern "C" {
     pub fn CFRelease(cf: CFTypeRef);
     pub fn CFRetain(cf: CFTypeRef) -> CFTypeRef;
     pub fn CFNumberCreate(alloc: CFTypeRef, ty: isize, value: *const c_void) -> CFTypeRef;
+    pub fn CFNumberGetValue(number: CFTypeRef, ty: isize, value: *mut c_void) -> bool;
     pub fn CFDictionaryCreate(
         alloc: CFTypeRef,
         keys: *const CFTypeRef,

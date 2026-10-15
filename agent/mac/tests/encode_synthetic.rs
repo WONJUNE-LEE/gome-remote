@@ -113,6 +113,11 @@ fn a_requested_keyframe_is_the_next_frame_and_the_interval_forces_one() {
 fn the_quantizer_cap_is_accepted_by_the_session() {
     let (enc, _rx) = encoder(1280, 720, Duration::from_secs(3600));
     assert_eq!(enc.max_qp_status, 0, "MaxAllowedFrameQP was rejected");
+    // Read back what the session holds; a session that cannot report the property is not a failure.
+    match enc.max_allowed_qp() {
+        Some(qp) => assert_eq!(qp, 30, "the session holds another quantizer cap"),
+        None => eprintln!("MaxAllowedFrameQP cannot be read back from this session; only the set status was checked"),
+    }
 }
 
 #[test]
@@ -127,6 +132,53 @@ fn the_bitrate_can_be_changed_while_encoding() {
     enc.set_bitrate(12_000_000);
     enc.encode(frames[2].0);
     next(&rx);
+}
+
+/// Noise plus stripes: more detail than any bitrate here can carry, so the size of a keyframe
+/// shows how much of the budget the rate control spends.
+fn detailed_buffer(w: usize, h: usize) -> PixBuf {
+    let buffer = nv12_buffer(w, h, 0);
+    unsafe {
+        let pb = buffer.0;
+        assert_eq!(CVPixelBufferLockBaseAddress(pb, 0), 0);
+        let (luma, stride) = (CVPixelBufferGetBaseAddressOfPlane(pb, 0), CVPixelBufferGetBytesPerRowOfPlane(pb, 0));
+        let mut state = 0x2545_f491u32;
+        for y in 0..h {
+            for x in 0..w {
+                state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                let noise = (state >> 24) as u8 / 4;
+                let stripe = if (x / 3 + y / 5) % 2 == 0 { 40 } else { 170 };
+                *luma.add(y * stride + x) = stripe + noise;
+            }
+        }
+        CVPixelBufferUnlockBaseAddress(pb, 0);
+    }
+    buffer
+}
+
+#[test]
+fn a_keyframe_encoded_with_a_raised_bitrate_is_larger_and_the_restored_rate_gives_the_old_size() {
+    // The still-screen refresh (spec D3) relies on this: it raises the rate, forces a keyframe
+    // and encodes the last frame again. Measured once on a Mac: 601 658 bytes at 6 Mbps and
+    // 752 627 bytes at 12 Mbps for the same frame.
+    let (mut enc, rx) = encoder(1280, 720, Duration::from_secs(3600));
+    let frame = detailed_buffer(1280, 720);
+    enc.encode(frame.0); // the session's first keyframe; the rate control settles on it
+    assert!(next(&rx).key);
+    let keyframe_size = |enc: &mut Encoder, bps: i32| {
+        enc.set_bitrate(bps);
+        enc.request_keyframe();
+        enc.encode(frame.0);
+        let encoded = next(&rx);
+        assert!(encoded.key);
+        encoded.data.len() as f64
+    };
+    let low = keyframe_size(&mut enc, 6_000_000);
+    let high = keyframe_size(&mut enc, 12_000_000);
+    let restored = keyframe_size(&mut enc, 6_000_000);
+    eprintln!("keyframe sizes: {low} bytes at 6 Mbps, {high} at 12 Mbps, {restored} at 6 Mbps again");
+    assert!(high >= 1.1 * low, "6 Mbps: {low} bytes, 12 Mbps: {high} bytes");
+    assert!((restored - low).abs() <= 0.1 * low, "6 Mbps again: {restored} bytes against {low} first");
 }
 
 #[test]
