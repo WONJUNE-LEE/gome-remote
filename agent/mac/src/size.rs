@@ -97,12 +97,26 @@ mod tests {
     }
 
     #[test]
+    fn a_display_smaller_than_the_stream_in_one_side_only_is_not_used_as_the_capture_size() {
+        // Wide but short: the stream is taller than the display.
+        let stream = Size { w: 1920, h: 1200 };
+        assert_eq!(capture_size(stream, Some(Size { w: 2560, h: 1080 })), stream);
+        // Tall but narrow: the stream is wider than the display.
+        let stream = Size { w: 1920, h: 1000 };
+        assert_eq!(capture_size(stream, Some(Size { w: 1280, h: 1600 })), stream);
+    }
+
+    #[test]
     fn frames_are_scaled_down_only() {
         let stream = Size { w: 2132, h: 1200 };
         assert!(needs_scale(D4K, stream));
         assert!(needs_scale(Size { w: 2132, h: 1202 }, stream));
         assert!(!needs_scale(stream, stream));
         assert!(!needs_scale(Size { w: 1920, h: 1080 }, stream));
+        // One side larger is enough, whichever it is.
+        assert!(needs_scale(Size { w: 2134, h: 1200 }, stream), "wider only");
+        assert!(!needs_scale(Size { w: 2132, h: 1000 }, stream), "same width, shorter");
+        assert!(!needs_scale(Size { w: 1000, h: 1200 }, stream), "narrower, same height");
     }
 
     #[test]
