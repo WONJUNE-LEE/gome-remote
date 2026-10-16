@@ -252,8 +252,11 @@ The first install is manual, and neither build is signed by Microsoft or Apple, 
 the first-launch prompt (do not disable Gatekeeper or SmartScreen globally):
 
 - Windows: SmartScreen shows "Windows protected your PC". Choose **More info → Run anyway**.
-- Mac: the app is signed with a self-signed certificate. The first time, right-click the app
-  and choose **Open**, then confirm.
+- Mac (Apple Silicon only; the disk image is an arm64 build): the app is signed with a
+  self-signed certificate, which macOS does not trust. On macOS 15 and later, try to open the
+  app once, then go to **System Settings → Privacy & Security** and choose **Open Anyway**
+  (right-click → Open no longer skips the check there). On older macOS, right-click the app
+  and choose **Open**.
 
 After that, updates arrive by themselves. The packaged app looks for a new release shortly
 after it starts and then every 6 hours, and downloads it in the background. It never
