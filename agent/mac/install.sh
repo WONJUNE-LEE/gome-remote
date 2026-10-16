@@ -42,6 +42,14 @@ else
     if [ -n "${!name+x}" ]; then die "$name is only for the test suite and is not accepted here (unset it)"; fi
   done
 fi
+# The agent needs macOS 14 or later (spec, minimum macOS); stop before anything is built or replaced.
+# The tests put a stand-in `sw_vers` on the path.
+os_version="$(sw_vers -productVersion 2>/dev/null)" || die "cannot read the macOS version (sw_vers failed); this installer is for macOS"
+os_major="${os_version%%.*}"
+case "$os_major" in
+  ''|*[!0-9]*) die "cannot read the macOS version from '$os_version'" ;;
+esac
+[ "$os_major" -ge 14 ] || die "macOS $os_version is too old: the agent needs macOS 14 or later; nothing was changed"
 SUDO="${GOME_SUDO-sudo}"
 ROOT_OWNER="${GOME_ROOT_OWNER-root:wheel}"
 HERE="$(cd "$(dirname "$0")" && pwd)"

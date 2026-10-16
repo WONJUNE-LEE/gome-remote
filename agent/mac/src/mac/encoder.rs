@@ -263,10 +263,10 @@ impl Encoder {
                     "PrioritizeEncodingSpeedOverQuality",
                 );
             }
-            // The low-latency rate control leaves most of the budget unused and text looks soft.
-            // Capping the quantizer makes it spend the budget. The key is passed as its string
-            // value: the constant exists only from macOS 14, a linked symbol would stop the
-            // agent from starting on older systems.
+            // A guard against the low-latency rate control going soft on content it quantizes
+            // harder; it had no measured effect at normal content (see `MAX_ALLOWED_FRAME_QP`).
+            // The key is passed as its string value: the constant exists only from macOS 14, a
+            // linked symbol would stop the agent from starting on older systems.
             let key = cf_string("MaxAllowedFrameQP");
             let qp_status = set(key.0, cf_i32(MAX_ALLOWED_FRAME_QP).0, "MaxAllowedFrameQP");
             println!("[enc] MaxAllowedFrameQP={MAX_ALLOWED_FRAME_QP} OSStatus {qp_status}");

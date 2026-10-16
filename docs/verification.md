@@ -208,8 +208,8 @@ Run on the owner's Mac with the owner's knowledge (spec section 3, P1): the Mac 
 and the agent was opened from its tile.
 
 - (a) Capture: the agent captured the lock screen.
-- (b) Keys: the agent typed into the password field (three meaningless characters, dots
-  appeared and were deleted; no password was used).
+- (b) Keys: the agent typed into the password field (the letter x four times, four dots
+  appeared, then four Backspaces deleted them; no password was used).
 - (c) The VNC path showed the lock screen, but the characters typed through it did not appear.
   The cause was not determined.
 

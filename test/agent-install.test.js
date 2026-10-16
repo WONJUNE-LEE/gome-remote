@@ -43,6 +43,8 @@ exit 0`,
   // STUB_UID stands in for the user id; STUB_OPENSSL_RAND_FAIL makes \`openssl rand\` fail.
   id: `[ "$1" = -u ] && [ -n "\${STUB_UID-}" ] && { echo "$STUB_UID"; exit 0; }; PATH="\${PATH#*:}"; exec id "$@"`,
   openssl: `[ "$1" = rand ] && [ -n "\${STUB_OPENSSL_RAND_FAIL-}" ] && exit 1; PATH="\${PATH#*:}"; exec openssl "$@"`,
+  // STUB_SW_VERS stands in for the macOS version (default: a supported one).
+  sw_vers: `[ "$1" = -productVersion ] && { echo "\${STUB_SW_VERS:-14.0}"; exit 0; }; exit 1`,
   sudo: `echo "sudo $*" >> "$STUB_LOG"; exit 1`,
   // The Mac's own address, when the test wants one to be suggested.
   tailscale: `[ -n "\${STUB_TAILSCALE_IP-}" ] && echo "$STUB_TAILSCALE_IP" || exit 1`,
@@ -150,6 +152,26 @@ async function lab(t) {
     p12: join(root, "imported.p12"),
   };
 }
+
+test(
+  "install.sh refuses macOS 13.6 before it builds or replaces anything, and goes on from 14.0 and 27.0.1",
+  { skip: !posix },
+  async (t) => {
+    const old = await lab(t);
+    const refused = old.run("install.sh", [], { STUB_SW_VERS: "13.6" });
+    assert.notEqual(refused.status, 0, refused.stdout);
+    assert.match(refused.stderr, /macOS 13\.6 is too old.*macOS 14 or later/);
+    assert.equal(await old.log(), "", "no tool ran before the refusal");
+    await assert.rejects(stat(old.paths.bin), "nothing was put in place");
+    await assert.rejects(stat(old.paths.support), "no directory was made");
+    for (const version of ["14.0", "27.0.1"]) {
+      const l = await lab(t);
+      const r = l.run("install.sh", [], { STUB_SW_VERS: version });
+      assert.equal(r.status, 0, `${version}: ${r.stderr}${r.stdout}`);
+      assert.equal(await readFile(l.paths.bin, "utf8"), "binary v1");
+    }
+  },
+);
 
 test(
   "the first operational install lays out the root-owned paths, a token, a LaunchAgent, and tells what is left",

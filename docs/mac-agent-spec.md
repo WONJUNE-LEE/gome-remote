@@ -141,8 +141,8 @@
   D3)를 새 경로도 그대로 쓴다.
 - 게이트웨이↔에이전트: 대상별 무작위 토큰(32바이트, base64url). 에이전트는
   `Authorization: Bearer`를 상수 시간 비교한다. 게이트웨이는 자격 증명 파일의 그 대상 항목에
-  `agentToken`으로 보관한다. 입력 방법은 redesign D2와 같다(`set-credential.mjs <대상 ID>
---agent-token`, 에코 없음, argv 미사용, 원자적 쓰기). 항목 모양은 대상 방식이 정한다:
+  `agentToken`으로 보관한다. 입력 방법은 redesign D2와 같다(`set-credential.mjs <대상 ID> --agent-token`,
+  에코 없음, argv 미사용, 원자적 쓰기). 항목 모양은 대상 방식이 정한다:
   `agent` 대상은 `{agentToken}`, `rdp`·`vnc` 대상은 지금과 같다. 한 항목에 둘을 섞지 않는다.
 - 에이전트 HTTP는 Mac의 tailnet 주소에만 바인딩하고, 설정된 게이트웨이 tailnet 주소에서 온
   연결만 받는다. `Host`는 바인딩 주소:포트와 같아야 하고 `Origin`이 있으면 거부한다. 인증

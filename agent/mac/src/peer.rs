@@ -303,12 +303,26 @@ struct Signals<'a> {
     idle_limit: Duration,
 }
 
+/// The one thing `handle_estimate` asks of the session's bandwidth estimator, so a test can see
+/// that it was asked. str0m's `reset` keeps the desired bitrate set at the start (`Bwe` holds it
+/// outside the estimator state that is replaced), so a restart needs nothing else.
+trait Estimator {
+    /// Discard the estimator state and start estimating again from `bps`.
+    fn restart(&mut self, bps: u32);
+}
+
+impl Estimator for Rtc {
+    fn restart(&mut self, bps: u32) {
+        self.bwe().reset(Bitrate::bps(bps as u64));
+    }
+}
+
 /// A new sender-side estimate: it steers the encoder, and one under the encoder's floor is
 /// not believed (see `estimator_restart`): str0m's estimator starts over at the floor.
-fn handle_estimate(rtc: &mut Rtc, hooks: &dyn PeerHooks, restart_log: &mut LogLimiter, bps: u64) {
+fn handle_estimate(estimator: &mut impl Estimator, hooks: &dyn PeerHooks, restart_log: &mut LogLimiter, bps: u64) {
     hooks.estimate(bps);
     if let Some(restart) = estimator_restart(bps) {
-        rtc.bwe().reset(Bitrate::bps(restart as u64));
+        estimator.restart(restart);
         let note = format!("[peer] bandwidth estimate {bps} bps restarted at {restart}");
         if let Some(line) = limited(restart_log, Instant::now(), &note) {
             println!("{line}");
@@ -888,6 +902,39 @@ mod tests {
         }
         assert_eq!(*hooks.estimates.lock().unwrap(), vec![4_500_000, 66_000, 10_000, 3_000_000]);
         assert!(rtc.is_alive(), "restarting the estimator must leave the connection as it was");
+    }
+
+    #[derive(Default)]
+    struct Restarts(Vec<u32>);
+    impl Estimator for Restarts {
+        fn restart(&mut self, bps: u32) {
+            self.0.push(bps);
+        }
+    }
+
+    fn restarts_for(estimates: &[u64]) -> (Vec<u32>, Vec<u64>) {
+        let mut estimator = Restarts::default();
+        let hooks = Recorder::default();
+        let mut log = LogLimiter::default();
+        for &bps in estimates {
+            handle_estimate(&mut estimator, &hooks, &mut log, bps);
+        }
+        let seen = hooks.estimates.lock().unwrap().clone();
+        (estimator.0, seen)
+    }
+
+    #[test]
+    fn an_estimate_under_the_floor_restarts_the_estimator_at_the_floor_each_time() {
+        let (restarts, seen) = restarts_for(&[66_000, 10_000]);
+        assert_eq!(restarts, vec![crate::bitrate::FLOOR_BPS; 2], "one restart at the floor per low estimate");
+        assert_eq!(seen, vec![66_000, 10_000], "the encoder still hears every estimate");
+    }
+
+    #[test]
+    fn estimates_at_or_over_the_floor_leave_the_estimator_alone() {
+        let (restarts, seen) = restarts_for(&[4_500_000, 3_000_000]);
+        assert!(restarts.is_empty(), "restarted on a usable estimate: {restarts:?}");
+        assert_eq!(seen, vec![4_500_000, 3_000_000]);
     }
 
     #[test]
