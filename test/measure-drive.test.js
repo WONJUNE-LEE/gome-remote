@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { readFile, readdir } from "node:fs/promises";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { mkdtemp, writeFile } from "node:fs/promises";
 import { existsSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -267,7 +267,7 @@ test("of several drivers starting together exactly one gets the lock", async () 
   const dir = await mkdtemp(join(tmpdir(), "gome-lock-"));
   const path = join(dir, "lock");
   const code = `
-    import { acquireLock } from ${JSON.stringify(script)};
+    import { acquireLock } from ${JSON.stringify(pathToFileURL(script).href)};
     try {
       acquireLock(${JSON.stringify(path)});
       console.log("won");
