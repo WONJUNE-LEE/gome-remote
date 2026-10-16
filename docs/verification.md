@@ -290,15 +290,27 @@ address) when it is run. Do not edit an entry to say "pass" without that evidenc
     then cleared and stayed clear. A new session afterwards showed nothing stuck. The agent log
     has no line for the release itself, only `[session] ended; capture stopped` and
     `[peer] closed`.
-  - Change after these measurements (not yet re-measured; the 17.7 s, 17.8 s and 10.3 s above
-    are the numbers before it): the agent now sends `{"type":"replaced"}` to a session it
-    replaces and closes that peer at once, and the page ends on it with "다른 기기에서
-    연결했습니다"; the page also ends a connection that has been `disconnected` for 3 s
-    (instead of waiting for `failed`); and the agent releases held keys and buttons after 3 s
-    without any packet from the peer. Expected: the old page ends within about a second of
-    the takeover and about 3 s (plus the browser's time to report `disconnected`) after an
-    agent restart, and a held Shift clears about 3 s after a SIGKILLed client. To re-measure
-    on the operational install once the owner has updated it.
+  - Re-measured 2026-10-16 after 53c18f2/1a2706e (installed as the operational agent; same
+    setup, same Mac state, same single held Shift). The agent now sends `{"type":"replaced"}`
+    to a session it replaces and closes that peer at once; the page ends a connection that has
+    been `disconnected` for 3 s instead of waiting for `failed`; the agent releases held keys
+    and buttons after 3 s without any packet from the peer. Old numbers above, new here:
+    - Takeover: client A's ended card came 253 ms and 252 ms after B's click (was 17.7 s and
+      17.6 s), with the text "다른 기기에서 연결했습니다" / "이 기기에서 다시 연결할 수 있습니다"
+      (was "연결이 끊겼습니다"). B's first frame 297 ms and 249 ms, video time advancing.
+    - Agent restart (`launchctl kickstart -k` during a session): the page's ended card
+      ("연결이 끊겼습니다") came 10.8 s after the command (was 17.8 s), not the expected ~3 s.
+      Page-side instrumentation of the peer connection: Chrome reports `disconnected` 7.8 s
+      after the kickstart (the agent process is killed, so no packet tells the browser; it
+      waits for its own connectivity check to fail), and the 3 s rule then ends the page at
+      10.8 s. The 3 s is therefore counted from the browser's `disconnected`, not from the
+      restart. A new session's first frame came 1.08 s and 0.92 s after the kickstart (one
+      more run, started right after another run, timed out its first click at 30 s and
+      worked on the retry; not explained), and `/api/targets` never showed the agent
+      offline. The log has `[perm] screen=true accessibility=true` after each restart.
+    - Held key after SIGKILL of the client browser with Shift down (twice): the Mac's
+      modifier flags (session state) cleared 3.3 s and 3.3 s after the kill (was 10.3 s);
+      still held at 0.2 s and 0.3 s. Poll interval about 0.5 s plus ssh time.
   - Missing permission: pending (owner), needs a permission switched off on the Mac.
 - Agent V5. Negative tests: wrong token, a caller other than the gateway, an `Origin` header, a
   login outside `allowedLogins`, an extra argument or environment variable. 2026-10-16 against
