@@ -454,10 +454,29 @@ test("the release is published last, only when every update file and installer i
       "\\.AppImage$",
     ],
   );
+  const init = run.indexOf("missing=0");
+  assert.ok(
+    init >= 0 && init < list.index,
+    "missing starts at 0 before the loops",
+  );
+  const guard = run.indexOf('if [ "$missing" != 0 ]; then');
+  assert.ok(guard > loop.index, "the check comes after both loops");
+  assert.equal(run.match(/missing=1/g)?.length, 2, "one flag per loop");
+  const flagInNames = run.indexOf("missing=1", list.index);
+  const flagInPatterns = run.indexOf("missing=1", loop.index);
+  assert.ok(
+    flagInNames > list.index && flagInNames < loop.index,
+    "the update-file loop sets the flag",
+  );
+  assert.ok(
+    flagInPatterns > loop.index && flagInPatterns < guard,
+    "the installer loop sets the flag",
+  );
   const fail = run.indexOf("exit 1", loop.index);
   const undraft = run.indexOf("gh release edit");
-  assert.ok(fail > loop.index, "fails when something is missing");
+  assert.ok(fail > guard, "fails inside the missing check");
   assert.ok(undraft > fail, "un-drafts only after that");
+  assert.ok(undraft > guard, "un-drafts only after the missing check");
   assert.match(run.slice(undraft), /--draft=false --latest/);
   assert.equal(releaseText.match(/--draft=false/g).length, 1);
 });
