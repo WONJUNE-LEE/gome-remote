@@ -265,6 +265,17 @@ H"<sha1 of the certificate>"`, so a later build signed with the same certificate
 This covers the keychain import and `codesign` calls only; it was not a release build and
 not an update.
 
+2026-10-16, the first v0.3.0 release run failed on the GitHub macOS runner in the `afterSign`
+hook with "Gome Remote Desktop Signing: no identity found" (the temporary keychain was passed
+only through `--keychain`). A probe on the runner (macOS 26.6.2) showed that signing, by name
+and by SHA-1 hash, works once the keychain is in the user keychain search list, without any
+trust settings, and `codesign --verify --deep --strict` passes. `release.yml` now adds the
+keychain to the search list after importing it.
+
+`agent/mac/install.sh` signs with `--keychain` alone in the same way. That worked on the owner's
+Mac (macOS 27) but is unverified on macOS 26.x, where the CI runner needed the keychain in the
+search list.
+
 ## Pending: the desktop auto-update's real-device checks (not yet run)
 
 Each entry is filled in with its date and evidence when it is run. Do not edit an entry to
