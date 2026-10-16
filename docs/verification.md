@@ -252,7 +252,35 @@ address) when it is run. Do not edit an entry to say "pass" without that evidenc
   - Still open: S3 without the limit on the final build, and the owner's own clients (V2, V3).
 - Agent V2 (Windows app) and Agent V3 (Mac app). (Both against S1 and S5.)
 - Agent V4. Agent states: lock screen (unlocking through the agent, P1), display sleep, takeover, agent restart, nothing left
-  pressed after a session, missing permission.
+  pressed after a session, missing permission. Run 2026-10-16 against the operational install
+  (port 18471, root-owned program) through the parallel gateway's "Mac (새 방식)" tile, from
+  headless Chrome on this Linux host, with the Mac locked and unattended; locked tile re-enabled
+  in the page by a route rewrite, as the deployed page still disables it. No keyboard or mouse
+  input was sent except the one held Shift key in check 4. Screenshots in `/tmp/v4-*.png`.
+  - Display sleep: passed. `pmset displaysleepnow`, 15 s wait, `/api/targets` agent display
+    `asleep` (issue `locked`); opening the tile showed the lock screen picture 508 ms and 755 ms
+    after the click (two runs); the Mac's power log shows the display turned on at the session
+    start. The reported display state turns `ok` a few seconds into the session, not at once.
+  - Takeover: passed with a slow end on the old page. Client A (one browser) connected in
+    445 ms; client B (a second browser) clicked the tile and had its first frame in 304 ms and
+    300 ms (two runs) and kept receiving video (video time advancing). Client A showed the
+    ended card "연결이 끊겼습니다" 17.7 s and 17.6 s after B's click; the agent drops the old
+    peer without telling it, so the page learns only when the connection check fails.
+  - Agent restart: passed. `launchctl kickstart -k` during a session: the page showed the
+    ended card "연결이 끊겼습니다" 17.8 s later (same cause as above); the agent was back at once
+    (a new session had its first frame 1.1 s after the kickstart command, 19.6 s in the run
+    that waited for the old page first), and the log has `[perm] screen=true accessibility=true`
+    after every restart, `/api/targets` never showed the agent offline.
+  - Nothing left pressed: passed, with a window on a hard kill. Read the Mac's modifier state
+    over ssh without injecting anything (`CGEventSourceFlagsState`, session and HID state):
+    nothing held at baseline, Shift held (0x20000) while the page held it. Closing the browser
+    normally with Shift down: cleared within 0.6 s and stayed clear for 32 s. Killing the
+    browser process (SIGKILL) with Shift down, twice (once by accident when the script died):
+    Shift stayed held on the Mac until the agent noticed the dead peer, 10.3 s in the timed run,
+    then cleared and stayed clear. A new session afterwards showed nothing stuck. The agent log
+    has no line for the release itself, only `[session] ended; capture stopped` and
+    `[peer] closed`.
+  - Missing permission: pending (owner), needs a permission switched off on the Mac.
 - Agent V5. Negative tests: wrong token, a caller other than the gateway, an `Origin` header, a
   login outside `allowedLogins`, an extra argument or environment variable. 2026-10-16 against
   the operational install and the parallel gateway: a wrong token and no token from the gateway
