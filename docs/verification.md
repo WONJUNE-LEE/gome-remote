@@ -276,7 +276,7 @@ address) when it is run. Do not edit an entry to say "pass" without that evidenc
     300 ms (two runs) and kept receiving video (video time advancing). Client A showed the
     ended card "연결이 끊겼습니다" 17.7 s and 17.6 s after B's click; the agent drops the old
     peer without telling it, so the page learns only when the connection check fails.
-  - Agent restart: passed. `launchctl kickstart -k` during a session: the page showed the
+  - Agent restart: passed (one unexplained first-click timeout in the re-measurement below). `launchctl kickstart -k` during a session: the page showed the
     ended card "연결이 끊겼습니다" 17.8 s later (same cause as above); the agent was back at once
     (a new session had its first frame 1.1 s after the kickstart command, 19.6 s in the run
     that waited for the old page first), and the log has `[perm] screen=true accessibility=true`
@@ -312,7 +312,8 @@ address) when it is run. Do not edit an entry to say "pass" without that evidenc
       modifier flags (session state) cleared 3.3 s and 3.3 s after the kill (was 10.3 s);
       still held at 0.2 s and 0.3 s. Poll interval about 0.5 s plus ssh time.
   - Missing permission: not run. The owner waived it on 2026-10-16 (the path is covered by unit and
-    gateway tests: a status of `permission` disables the tile and refuses sessions with 403).
+    gateway tests: a status of `permission` disables the tile; the agent refuses sessions with 403
+    and code `permission`, which the gateway passes to the page as 409 with the same code).
 - Agent V5. Negative tests: wrong token, a caller other than the gateway, an `Origin` header, a
   login outside `allowedLogins`, an extra argument or environment variable. 2026-10-16 against
   the operational install and the parallel gateway: a wrong token and no token from the gateway
