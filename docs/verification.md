@@ -232,6 +232,18 @@ address) when it is run. Do not edit an entry to say "pass" without that evidenc
 - Agent P4. The 30-day screen-recording reconfirmation (scheduled for 2026-11-12): whether capture
   continues and whether the Mac (VNC) tile can click the confirmation window.
 - Agent V1. The agent tile measured from the gateway server's Chrome against S2, S3 and S4.
+  Partial results, 2026-10-16, development install of the agent behind the parallel gateway,
+  headless Chrome on the gateway server, 30 clicks per run, each run a fresh session:
+  - S2 with native capture and VideoToolbox scaling: 3 runs pooled, median 93.2 ms,
+    p95 112.8 ms, max 193 ms, nothing over 1 s.
+  - S4 with this server's receive from the Mac shaped to 5 Mbit/s (ifb with tbf 5mbit, burst
+    32kbit, latency 150ms). Before 95c5a27 it failed: click medians 164, 195 and 428 ms, one
+    sample at 1011 ms, and a 60 s drag soak stalled after about 40 s. The cause was the
+    bandwidth estimate collapsing on a still screen; str0m paces at 1.1 times that estimate.
+    After 95c5a27: medians 179, 178 and 196 ms, nothing over 1 s; the 60 s soak had a
+    longest gap of 167 ms and no freezes. The same build without the limit had a 63 ms
+    median. The margin to the 200 ms S4 median is small.
+  - Still open: S3 without the limit on the final build, and the owner's own clients (V2, V3).
 - Agent V2 (Windows app) and Agent V3 (Mac app). (Both against S1 and S5.)
 - Agent V4. Agent states: lock screen (unlocking through the agent, P1), display sleep, takeover, agent restart, nothing left
   pressed after a session, missing permission.
