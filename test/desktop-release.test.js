@@ -307,7 +307,11 @@ test("a missing Mac signing secret fails the Mac job before anything is built", 
 
 // The search-list block is cut out of the real workflow text by its markers and run with
 // bash against a fake `security`, so the test breaks if the block itself breaks.
-const bashAvailable = spawnSync("bash", ["-c", "true"]).status === 0;
+// Like the other bash tests here, skipped on Windows: the block only runs on the macOS
+// runner, and a Windows `bash` (Git Bash or the WSL launcher) ignores the fake's mode bits.
+const posix = process.platform !== "win32";
+const bashAvailable =
+  posix && spawnSync("bash", ["-c", "true"]).status === 0;
 
 const searchListBlock = () => {
   const lines = stepNamed("build", IMPORT).run.split("\n");
@@ -374,7 +378,7 @@ const SPACED = "/Users/user/Library/Keychains/my keys.keychain-db";
 
 test(
   "the search-list block keeps the existing keychains, spaces included, behind the signing keychain",
-  { skip: !bashAvailable && "bash is not on PATH" },
+  { skip: !bashAvailable && "needs bash on a POSIX system" },
   () => {
     const r = runSearchList(`    "${LOGIN}"\n    "${SPACED}"\n`);
     assert.equal(r.status, 0);
@@ -392,7 +396,7 @@ test(
 
 test(
   "the search-list block with no existing keychains sets only the signing keychain",
-  { skip: !bashAvailable && "bash is not on PATH" },
+  { skip: !bashAvailable && "needs bash on a POSIX system" },
   () => {
     const r = runSearchList("");
     assert.equal(r.status, 0);
@@ -408,7 +412,7 @@ test(
 
 test(
   "a failing keychain listing fails the step before the search list is set",
-  { skip: !bashAvailable && "bash is not on PATH" },
+  { skip: !bashAvailable && "needs bash on a POSIX system" },
   () => {
     const r = runSearchList(null);
     assert.notEqual(r.status, 0);
