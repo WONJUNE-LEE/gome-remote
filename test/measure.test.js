@@ -241,19 +241,69 @@ test("a polling step coarser than the delay still reports the first poll that sa
   );
 });
 
-test("a pixel that never changes is a timeout, and so is a screen with no picture", async () => {
+test("a pixel that never changes is a timeout, and so is a screen with no picture; either stops the run at once", async () => {
   const never = lab({ delay: null });
   const a = await runMeasure(never.source, never.clock, { ...options, n: 2 });
-  assert.deepEqual(plain(a.samples), [null, null]);
-  assert.equal(a.summary.timeouts, 2);
+  assert.deepEqual(plain(a.samples), [null]);
+  assert.equal(a.summary.timeouts, 1);
+  assert.match(a.aborted, /click 1 showed no flip/);
+  assert.equal(never.clicks.length, 1, "only the unverified click was sent");
   const blank = lab({ delay: 10, readable: false });
   const b = await runMeasure(blank.source, blank.clock, { ...options, n: 2 });
-  assert.deepEqual(plain(b.samples), [null, null]);
+  assert.deepEqual(plain(b.samples), [null]);
+  assert.ok(b.aborted);
   assert.equal(
     blank.clicks.length,
     0,
     "no click is sent when there is nothing to read",
   );
+});
+
+test("the first click that shows no flip stops the run: no further click is sent after it", async () => {
+  // The page shows the first 2 clicks, then something covers it: the 3rd click is the last.
+  const covered = lab({ delay: 30 });
+  let sent = 0;
+  const sendCovered = covered.source.sendClick;
+  covered.source.sendClick = (fx, fy) => {
+    sent++;
+    if (sent <= 2) sendCovered(fx, fy);
+    else covered.clicks.push([fx, fy, "unseen"]);
+  };
+  const r = await runMeasure(covered.source, covered.clock, {
+    ...options,
+    n: 10,
+  });
+  assert.deepEqual(plain(r.samples), [30, 30, null]);
+  assert.equal(sent, 3, "the 3rd click was the last one sent");
+  assert.match(r.aborted, /click 3 showed no flip/);
+  assert.equal(r.summary.timeouts, 1);
+});
+
+test("a place off the screen is never clicked", async () => {
+  for (const [fx, fy] of [
+    [-0.01, 0.5],
+    [0.5, 1.01],
+    [NaN, 0.5],
+    [0.5, Infinity],
+  ]) {
+    const l = lab({ delay: 10 });
+    const r = await runMeasure(l.source, l.clock, { ...options, fx, fy });
+    assert.equal(l.clicks.length, 0);
+    assert.deepEqual(plain(r.samples), []);
+    assert.match(r.aborted, /not on the screen/);
+  }
+  for (const [fx, fy] of [
+    [0, 0],
+    [1, 1],
+  ]) {
+    const l = lab({ delay: 10 });
+    const r = await runMeasure(l.source, l.clock, { ...options, fx, fy, n: 1 });
+    assert.equal(
+      r.aborted,
+      undefined,
+      "the edges themselves are on the screen",
+    );
+  }
 });
 
 // A video and a Guacamole canvas, both showing a pixel that flips `delay` ms after a click

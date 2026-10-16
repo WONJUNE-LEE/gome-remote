@@ -94,15 +94,49 @@ async function sample(
   });
 }
 
+export interface MeasureRun {
+  summary: MeasureSummary;
+  samples: (number | null)[];
+  // Set when the run stopped before its N clicks: the first click that showed no flip
+  // ends it, because the page is then not verifiably in front and nothing further may be
+  // injected into the remote machine.
+  aborted?: string;
+}
+
+// A place on the remote screen that a click may be sent to; anything else sends nothing.
+export const validPoint = (fx: number, fy: number) =>
+  Number.isFinite(fx) &&
+  Number.isFinite(fy) &&
+  fx >= 0 &&
+  fx <= 1 &&
+  fy >= 0 &&
+  fy <= 1;
+
+// First verify, then input: every click is its own verification (its flip must show), and
+// the first sample that does not show (a timeout, or no picture to read) stops the run
+// before the next click is sent.
 export async function runMeasure(
   source: MeasureSource,
   clock: MeasureClock,
   o: MeasureOptions,
-): Promise<{ summary: MeasureSummary; samples: (number | null)[] }> {
+): Promise<MeasureRun> {
   const samples: (number | null)[] = [];
+  if (!validPoint(o.fx, o.fy))
+    return {
+      summary: summarise(samples),
+      samples,
+      aborted: `the place (${o.fx}, ${o.fy}) is not on the screen: no click was sent`,
+    };
   for (let i = 0; i < o.n; i++) {
     await clock.sleep(o.pauseMs);
-    samples.push(await sample(source, clock, o));
+    const result = await sample(source, clock, o);
+    samples.push(result);
+    if (result === null)
+      return {
+        summary: summarise(samples),
+        samples,
+        aborted: `click ${i + 1} showed no flip: the page is not verifiably in front, so no further click was sent`,
+      };
   }
   return { summary: summarise(samples), samples };
 }
@@ -266,7 +300,13 @@ export function initMeasure(deps: PanelDeps): boolean {
       try {
         const result = await runMeasure(source, clock, options);
         api.results = result;
-        out.textContent = JSON.stringify(result.summary, null, 1);
+        out.textContent = JSON.stringify(
+          result.aborted
+            ? { ...result.summary, aborted: result.aborted }
+            : result.summary,
+          null,
+          1,
+        );
         return result;
       } finally {
         button.disabled = false;
