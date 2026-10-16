@@ -234,7 +234,10 @@ svg {
 .is-online .dot {
   background: var(--on);
 }
-.is-setup .dot {
+.is-setup .dot,
+.is-permission .dot,
+.is-locked .dot,
+.is-suspect .dot {
   background: var(--setup);
 }
 .tile-state {
@@ -345,6 +348,26 @@ svg {
 .remote-surface.remote-connected,
 .remote-surface.remote-connected * {
   cursor: none !important;
+}
+/* A Mac agent session: the video fills the viewport, letterboxed by object-fit; the
+   viewer's own pointer is the cursor (the Mac's pointer shape is not shown). */
+.display.agent-display {
+  width: 100%;
+  height: 100%;
+}
+.agent-surface {
+  width: 100%;
+  height: 100%;
+  outline: none;
+  cursor: default;
+}
+.agent-video {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  background: #000;
+  cursor: default;
 }
 .remote-cursor {
   visibility: hidden;

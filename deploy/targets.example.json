@@ -15,6 +15,14 @@
     "id": "mac",
     "name": "Mac",
     "platform": "mac",
+    "protocol": "agent",
+    "hostname": "100.64.0.20",
+    "port": 18471
+  },
+  {
+    "id": "mac-vnc",
+    "name": "Mac (VNC)",
+    "platform": "mac",
     "protocol": "vnc",
     "hostname": "100.64.0.20",
     "port": 5900,

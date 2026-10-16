@@ -12,9 +12,9 @@ const usage = `Usage: node scripts/init-gateway.mjs [<private-config-path>] \\
   --targets deploy/targets.example.json \\
   [--socket <path>] [--credentials <path>]
 
-Creates the gateway configuration. It contains no secrets: desktop passwords go into the
-credentials file with scripts/set-credential.mjs, and access is decided by the Tailscale
-login names given with --login. Without a config path, GOME_REMOTE_CONFIG or
+Creates the gateway configuration. It contains no secrets: desktop passwords and Mac agent
+tokens go into the credentials file with scripts/set-credential.mjs, and access is decided
+by the Tailscale login names given with --login. Without a config path, GOME_REMOTE_CONFIG or
 ~/.config/gome-remote/gateway.json is used, the same file set-credential.mjs reads.`;
 
 export function defaultPaths(home = homedir()) {
@@ -114,9 +114,12 @@ export async function main(argv = process.argv.slice(2)) {
     console.error(`${file} already exists; refusing to overwrite it.`);
     return 1;
   }
-  console.log(
-    `Created ${file}. Next: node scripts/set-credential.mjs ${positionals[0] === undefined ? "" : `${file} `}<target-id> for each target.`,
-  );
+  console.log(`Created ${file}. Next, store the credentials of each target:`);
+  const prefix = positionals[0] === undefined ? "" : `${file} `;
+  for (const target of config.targets)
+    console.log(
+      `  node scripts/set-credential.mjs ${prefix}${target.id}${target.protocol === "agent" ? " --agent-token" : ""}`,
+    );
   return 0;
 }
 

@@ -1,11 +1,14 @@
 import Guacamole from "../vendor/guacamole.js";
 import { ApiError, api, appMode, autoResolution } from "./api";
+import { createAgentSession, type AgentSession } from "./agent";
+import { endText, startFailureReason } from "./agent-messages";
 import { connectFailure, createSessionFlow, errorScreen } from "./flow";
+import { guacamoleSource, initMeasure, videoSource } from "./measure";
 import { createResolution, sizeFor } from "./resolution";
 import {
   connectingText,
   platformClass,
-  stateLabel,
+  stateText,
   tileEnabled,
   tileState,
 } from "./tiles";
@@ -71,17 +74,22 @@ let listGeneration = 0;
 let selected: Target | undefined;
 let generation = 0;
 let client: any;
+// The Mac (agent) session, when the open target is one; it replaces `client` for that target.
+let agent: AgentSession | undefined;
 let keyboard: any;
 let resizeObserver: ResizeObserver | undefined;
 let releaseMouse: (() => void) | undefined;
 // When a connection may start, and what the session knows about its last attempt.
 const flow = createSessionFlow({
   begin: (input) => void connect(input),
-  ended: () => sessionEnded(),
+  ended: (reason) => sessionEnded(reason),
 });
 // What size the remote gets: the picker's choice, or the window's size for "auto".
 const resolution = createResolution({
-  send: (size) => client?.sendSize(size.width, size.height),
+  send: (size) => {
+    client?.sendSize(size.width, size.height);
+    agent?.sendSize(size.width, size.height);
+  },
   viewport: () => ({
     width: el("viewport").clientWidth,
     height: el("viewport").clientHeight,
@@ -199,7 +207,7 @@ function renderTargets() {
     tile.disabled = !tileEnabled(target);
     tile.innerHTML = `<span class="tile-art platform-${platformClass(target.platform)}">${monitor}</span><span class="tile-meta"><span class="dot"></span><span class="tile-name"></span></span><span class="tile-state"></span>`;
     tile.querySelector(".tile-name")!.textContent = target.name;
-    tile.querySelector(".tile-state")!.textContent = stateLabel[state];
+    tile.querySelector(".tile-state")!.textContent = stateText(target, state);
     tile.onclick = () => openTarget(target);
     grid.append(tile);
   }
@@ -216,6 +224,7 @@ function openTarget(target: Target) {
   flow.open({ targetId: target.id, width, height });
 }
 function releaseInput() {
+  agent?.release();
   keyboard?.reset();
   releaseMouse?.();
   el("display")
@@ -235,27 +244,35 @@ function stop() {
     client.disconnect();
   }
   client = undefined;
+  agent?.close();
+  agent = undefined;
   keyboard = undefined;
   releaseMouse = undefined;
+  el("display").classList.remove("agent-display");
   el("display").replaceChildren();
   el<HTMLButtonElement>("text-input").disabled = true;
 }
-function showOverlay(kind: "connecting" | "ended") {
+function showOverlay(
+  kind: "connecting" | "ended",
+  text?: { title: string; detail: string },
+) {
   const ended = kind === "ended";
   el("overlay").hidden = false;
   el("overlay-spinner").hidden = ended;
   el("overlay-title").textContent = ended
-    ? "연결이 끊겼습니다"
+    ? (text?.title ?? "연결이 끊겼습니다")
     : connectingText(selected?.name || "원격 데스크톱");
+  el("overlay-detail").textContent =
+    text?.detail ?? "작업은 그대로 남아 있습니다";
   el("overlay-detail").hidden = !ended;
   el("overlay-actions").hidden = !ended;
 }
-function sessionEnded() {
+function sessionEnded(reason?: string) {
   releaseInput();
   flow.stopped();
   resolution.stopped();
   el("session-state").textContent = "연결 종료";
-  showOverlay("ended");
+  showOverlay("ended", endText(reason));
   el("display")
     .querySelector(".remote-surface")
     ?.classList.remove("remote-connected");
@@ -272,11 +289,18 @@ async function connect(input: ConnectInput) {
   syncViewerMenu();
   el("session-state").textContent = "연결 중";
   showOverlay("connecting");
-  el<HTMLSelectElement>("resolution").disabled = selected?.protocol !== "rdp";
+  // Both RDP and the Mac agent can follow the window size; macOS VNC cannot.
+  const resizable =
+    selected?.protocol === "rdp" || selected?.protocol === "agent";
+  el<HTMLSelectElement>("resolution").disabled = !resizable;
   // The screen is visible now, so "auto" can be measured: the window, in device pixels.
   const size = resolution.choose(el<HTMLSelectElement>("resolution").value);
   flow.resize(size.width, size.height);
-  resolution.begin(size, selected?.protocol === "rdp");
+  resolution.begin(size, resizable);
+  if (selected?.protocol === "agent") {
+    await connectAgent(input, size, current);
+    return;
+  }
   try {
     const result = await api.connect({ ...input, ...size });
     if (current !== generation) return;
@@ -378,6 +402,53 @@ async function connect(input: ConnectInput) {
     } else flow.ended();
   }
 }
+// A Mac (agent) session: WebRTC video and input straight to the Mac, set up through the
+// gateway (src/agent.ts). The flow, the overlay, the menu and the fullscreen handling are
+// the ones the Guacamole path uses.
+async function connectAgent(
+  input: ConnectInput,
+  size: { width: number; height: number },
+  current: number,
+) {
+  const session = createAgentSession({
+    signal: (sdp) =>
+      api.agentSession({
+        targetId: input.targetId,
+        width: size.width,
+        height: size.height,
+        sdp,
+      }),
+    onFirstFrame: () => {
+      if (current !== generation) return;
+      flow.connected();
+      resolution.connected();
+      session.element.classList.add("agent-connected");
+      syncViewerMenu();
+      el("session-state").textContent = "연결됨";
+      el("overlay").hidden = true;
+      el<HTMLButtonElement>("text-input").disabled = false;
+      session.focus();
+    },
+    onEnded: (reason) => {
+      if (current === generation) flow.ended(reason);
+    },
+  });
+  agent = session;
+  el("display").classList.add("agent-display");
+  el("display").append(session.element);
+  resizeObserver = new ResizeObserver(() => resolution.viewportChanged());
+  resizeObserver.observe(el("viewport"));
+  try {
+    await session.start();
+  } catch (error) {
+    if (current !== generation) return;
+    const kind = error instanceof ApiError ? error.kind : undefined;
+    if (connectFailure(kind) === "forbidden") {
+      back(false);
+      showFailure(kind);
+    } else flow.ended(startFailureReason(error));
+  }
+}
 function back(reload = true) {
   stop();
   document.body.classList.remove("viewing");
@@ -442,7 +513,10 @@ el<HTMLFormElement>("text-form").onsubmit = (event) => {
   event.preventDefault();
   if (flow.active) {
     const text = el<HTMLTextAreaElement>("remote-text").value;
-    if (text) {
+    if (text && agent) {
+      // The agent types the characters itself; the Mac clipboard is never touched.
+      agent.sendText(text);
+    } else if (text) {
       const writer = new Guacamole.StringWriter(
         client.createClipboardStream("text/plain"),
       );
@@ -463,7 +537,11 @@ api.onViewerAction((action) => {
   if (el("session").hidden) return;
   releaseInput();
   if (action.startsWith("resolution:")) {
-    if (!flow.active || selected?.protocol !== "rdp") return;
+    if (
+      !flow.active ||
+      (selected?.protocol !== "rdp" && selected?.protocol !== "agent")
+    )
+      return;
     const select = el<HTMLSelectElement>("resolution");
     const size = action.slice("resolution:".length);
     if (!Array.from(select.options).some((option) => option.value === size))
@@ -477,4 +555,15 @@ api.onViewerAction((action) => {
 });
 window.addEventListener("blur", releaseInput);
 window.addEventListener("beforeunload", stop);
+// Measurement mode: does nothing unless the address has #measure (src/measure.ts).
+initMeasure({
+  hash: location.hash,
+  source: () =>
+    agent
+      ? videoSource(agent.video, (fx, fy) => agent?.clickAt(fx, fy))
+      : client
+        ? guacamoleSource(client, el("display"))
+        : undefined,
+  soak: (ms) => agent?.watchFrames(ms),
+});
 void refresh();

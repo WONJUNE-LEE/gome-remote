@@ -13,14 +13,35 @@ export class CredentialFileError extends Error {
   }
 }
 
-function parseEntry(id, entry, file) {
+// The Mac agent's bearer token: 32 random bytes, base64url, no padding (agent/mac).
+export const AGENT_TOKEN = /^[A-Za-z0-9_-]{43}$/;
+
+// An entry has one of two shapes, decided by the method of its target: RDP and VNC
+// targets store {username?, password}; an agent target stores {agentToken} and nothing
+// else. `protocol` is the configured method of the target, or undefined for an ID that
+// is not configured (then either shape is accepted, but they never mix).
+function parseEntry(id, entry, file, protocol) {
   const bad = (why) =>
     new CredentialFileError(`Credentials for "${id}" in ${file} ${why}.`);
   if (!entry || typeof entry !== "object" || Array.isArray(entry))
     throw bad("must be an object");
   for (const key of Object.keys(entry))
-    if (!["username", "password"].includes(key))
+    if (!["username", "password", "agentToken"].includes(key))
       throw bad(`has an unknown field "${key}"`);
+  if (Object.hasOwn(entry, "agentToken")) {
+    if (Object.keys(entry).length > 1)
+      throw bad("mixes an agent token with a user name or password");
+    if (protocol !== undefined && protocol !== "agent")
+      throw bad(`is an agent token, but the target uses ${protocol}`);
+    if (
+      typeof entry.agentToken !== "string" ||
+      !AGENT_TOKEN.test(entry.agentToken)
+    )
+      throw bad("need an agent token of 43 base64url characters");
+    return Object.freeze({ agentToken: entry.agentToken });
+  }
+  if (protocol === "agent")
+    throw bad("need an agent token, because the target is a Mac agent");
   if (
     typeof entry.password !== "string" ||
     !entry.password ||
@@ -43,7 +64,13 @@ function parseEntry(id, entry, file) {
 // Returns Map<targetId, {username?, password}>. A missing file means "no credentials yet".
 // The permission checks run on the opened descriptor, so the file cannot change between
 // the check and the read, and a symbolic link is never followed.
-export async function readCredentialFile(file, uid = process.getuid?.()) {
+// `protocols` (optional) maps a configured target ID to its method ("rdp", "vnc",
+// "agent"); with it, an entry whose shape does not fit its target invalidates the file.
+export async function readCredentialFile(
+  file,
+  uid = process.getuid?.(),
+  protocols = new Map(),
+) {
   let handle;
   try {
     // O_NONBLOCK: opening a FIFO must not wait for a writer, so it reaches the
@@ -98,7 +125,7 @@ export async function readCredentialFile(file, uid = process.getuid?.()) {
     for (const [id, entry] of Object.entries(parsed.targets)) {
       if (!ID.test(id))
         throw new CredentialFileError(`${file} has an invalid target ID.`);
-      entries.set(id, parseEntry(id, entry, file));
+      entries.set(id, parseEntry(id, entry, file, protocols.get(id)));
     }
     return entries;
   } finally {
@@ -111,6 +138,8 @@ export async function readCredentialFile(file, uid = process.getuid?.()) {
 // (account name + password) while a plain VNC host uses the password alone.
 export function credentialsFor(entries, target) {
   const entry = entries.get(target.id);
+  if (target.protocol === "agent")
+    return entry?.agentToken ? { agentToken: entry.agentToken } : undefined;
   if (!entry?.password) return undefined;
   if (target.protocol === "rdp")
     return entry.username === undefined
@@ -125,13 +154,18 @@ export function credentialsFor(entries, target) {
 // crashing the service. The first failure after startup is logged, not repeated.
 export class CredentialStore {
   #lastProblem = "";
-  constructor(file, { uid = process.getuid?.(), log = console.error } = {}) {
+  constructor(
+    file,
+    { uid = process.getuid?.(), log = console.error, targets = [] } = {},
+  ) {
     this.file = file;
     this.uid = uid;
     this.log = log;
+    // The configured targets decide which entry shape each ID may have.
+    this.protocols = new Map(targets.map((t) => [t.id, t.protocol]));
   }
   load() {
-    return readCredentialFile(this.file, this.uid);
+    return readCredentialFile(this.file, this.uid, this.protocols);
   }
   async lookup(target) {
     try {

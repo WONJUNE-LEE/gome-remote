@@ -4,6 +4,8 @@ import { isAbsolute } from "node:path/posix";
 
 // sockaddr_un.sun_path is 108 bytes on Linux (104 on macOS); stay well below both.
 export const MAX_SOCKET_PATH_BYTES = 100;
+// Where the Mac agent listens unless the target says otherwise (agent/mac, spec D6).
+export const DEFAULT_AGENT_PORT = 18471;
 
 export function isTailnetAddress(host) {
   if (isIP(host) === 4) {
@@ -123,7 +125,14 @@ export function validateConfig(value) {
   )
     throw new Error("Configure 1–100 targets.");
   const ids = new Set();
-  for (const target of config.targets) {
+  const targets = [];
+  for (const entry of config.targets) {
+    // An agent target may leave its port out; the default goes into a copy, so the
+    // caller's object is never modified.
+    const target =
+      entry?.protocol === "agent" && entry.port === undefined
+        ? { ...entry, port: DEFAULT_AGENT_PORT }
+        : entry;
     if (!target || typeof target !== "object")
       throw new Error("Invalid target.");
     if (Array.isArray(target)) throw new Error("Invalid target.");
@@ -144,8 +153,8 @@ export function validateConfig(value) {
     )
       throw new Error("Target IDs must be unique slugs.");
     ids.add(target.id);
-    if (!["rdp", "vnc"].includes(target.protocol))
-      throw new Error("Only RDP and VNC are supported.");
+    if (!["rdp", "vnc", "agent"].includes(target.protocol))
+      throw new Error("Only RDP, VNC and the Mac agent are supported.");
     if (
       typeof target.name !== "string" ||
       !target.name.trim() ||
@@ -154,6 +163,17 @@ export function validateConfig(value) {
       throw new Error("Invalid target name.");
     if (!["linux", "mac", "windows"].includes(target.platform))
       throw new Error("Invalid target platform.");
+    if (target.protocol === "agent") {
+      if (target.platform !== "mac")
+        throw new Error("An agent target must have platform mac.");
+      for (const key of ["profile", "security", "ignoreCertificate"])
+        if (target[key] !== undefined)
+          throw new Error(`${key} does not apply to an agent target.`);
+      if (target.persistent === true)
+        throw new Error("persistent does not apply to an agent target.");
+      if (!isTailnetAddress(target.hostname))
+        throw new Error("An agent target must use the Mac's Tailscale IP.");
+    }
     if (target.profile !== undefined && target.profile !== "gnome-remote-login")
       throw new Error("Invalid desktop profile.");
     if (
@@ -190,7 +210,9 @@ export function validateConfig(value) {
       typeof target.persistent !== "boolean"
     )
       throw new Error("persistent must be true or false.");
+    targets.push(target);
   }
+  config.targets = targets;
   return config;
 }
 

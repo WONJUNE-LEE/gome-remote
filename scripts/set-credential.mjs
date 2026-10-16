@@ -6,7 +6,7 @@ import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { StringDecoder } from "node:string_decoder";
 import { loadConfig } from "../server/config.js";
-import { readCredentialFile } from "../server/credentials.js";
+import { AGENT_TOKEN, readCredentialFile } from "../server/credentials.js";
 
 // Secrets are read from the terminal only: never from argv, the environment, or a file
 // named on the command line, so they cannot appear in `ps`, shell history, or logs.
@@ -156,20 +156,37 @@ export async function writeCredentialFile(file, entries) {
 }
 
 const usage =
-  "Usage: node scripts/set-credential.mjs [<gateway-config.json>] <target-id>\n" +
-  "Without a config path, GOME_REMOTE_CONFIG or ~/.config/gome-remote/gateway.json is used.";
+  "Usage: node scripts/set-credential.mjs [<gateway-config.json>] <target-id> [--agent-token]\n" +
+  "Without a config path, GOME_REMOTE_CONFIG or ~/.config/gome-remote/gateway.json is used.\n" +
+  "--agent-token is for (and required by) Mac agent targets; the token itself is typed at the prompt.";
 
 // One argument is the target ID and the config path is implied; two arguments name both.
+// The only flag is the exact, bare --agent-token; anything else (even `--agent-token=...`, or
+// an ID that starts with a dash, which the ID pattern allows) is positional. A token or any
+// further argument given with it is therefore one positional too many: a usage error, so a
+// secret can never travel in the argument list.
 function resolveArguments(argv, env, home) {
-  if (argv.length === 2) return argv;
-  if (argv.length === 1)
+  const flags = argv.filter((a) => a === "--agent-token");
+  const positional = argv.filter((a) => a !== "--agent-token");
+  // Any other `--...` is an unknown option (`--agent-token=<TOKEN>` included), never an ID
+  // or a path; the usage text does not echo it.
+  if (flags.length > 1 || positional.some((a) => a.startsWith("--")))
+    return undefined;
+  const agentToken = flags.length === 1;
+  if (positional.length === 2) return [...positional, agentToken];
+  if (positional.length === 1)
     return [
       env.GOME_REMOTE_CONFIG ||
         join(home, ".config", "gome-remote", "gateway.json"),
-      argv[0],
+      positional[0],
+      agentToken,
     ];
   return undefined;
 }
+
+// A pasted token must not come back out of an error message, wherever it sits in the
+// argument: any run of 43 token characters counts (the pattern itself is anchored).
+const hasToken = (value) => /[A-Za-z0-9_-]{43}/.test(value);
 
 export async function main({
   argv = process.argv.slice(2),
@@ -187,23 +204,49 @@ export async function main({
   };
   const resolved = resolveArguments(argv, env, home);
   if (!resolved) return fail(usage, 2);
-  const [configPath, targetId] = resolved;
+  const [configPath, targetId, agentToken] = resolved;
   if (requireTty && !stdin.isTTY)
     return fail("Run this in an interactive terminal; do not pipe secrets.", 2);
   let config;
   try {
     config = await loadConfig(configPath);
   } catch (error) {
+    // A token pasted where the config path goes must not come back out in the message.
+    if (hasToken(configPath))
+      return fail("Cannot use the given configuration path.");
     return fail(`Cannot use ${configPath}: ${error.message}`);
   }
   const target = config.targets.find((t) => t.id === targetId);
-  if (!target)
+  if (!target) {
+    const configured = `Configured targets: ${config.targets.map((t) => t.id).join(", ")}`;
+    // A token pasted where the target ID goes is not echoed.
     return fail(
-      `Unknown target "${targetId}". Configured targets: ${config.targets.map((t) => t.id).join(", ")}`,
+      hasToken(targetId)
+        ? `Unknown target. ${configured}`
+        : `Unknown target "${targetId}". ${configured}`,
+    );
+  }
+  // The input must fit the method of the target: nothing is prompted otherwise.
+  if (target.protocol === "agent" && !agentToken)
+    return fail(
+      `${target.name}은(는) Mac 에이전트 대상입니다. --agent-token 을 붙여 실행하세요.`,
+      2,
+    );
+  if (target.protocol !== "agent" && agentToken)
+    return fail(
+      `--agent-token 은 Mac 에이전트 대상에만 쓸 수 있습니다. ${target.name}은(는) ${target.protocol.toUpperCase()} 대상입니다.`,
+      2,
     );
   let entries;
   try {
-    entries = await readCredentialFile(config.credentialsFile, uid);
+    // This target's own old entry may have the other shape (its method was changed in the
+    // configuration); it is about to be replaced, so it is read without a shape check.
+    const protocols = new Map(
+      config.targets
+        .filter((t) => t.id !== target.id)
+        .map((t) => [t.id, t.protocol]),
+    );
+    entries = await readCredentialFile(config.credentialsFile, uid, protocols);
   } catch (error) {
     return fail(`Refusing to modify the credentials file: ${error.message}`);
   }
@@ -212,6 +255,22 @@ export async function main({
     stdout.write(
       `${target.name} (${target.id}): 비밀번호는 화면에 표시되지 않고 ${config.credentialsFile} 에만 저장됩니다.\n`,
     );
+    if (target.protocol === "agent") {
+      const token = (
+        await prompter.ask(
+          "에이전트 토큰 (Mac의 install.sh가 보여 준 값을 붙여 넣으세요): ",
+          { secret: true },
+        )
+      ).trim();
+      if (!AGENT_TOKEN.test(token))
+        return fail(
+          "토큰은 43자의 영문·숫자·-·_ 여야 합니다. 저장하지 않았습니다.",
+        );
+      entries.set(target.id, { agentToken: token });
+      await writeCredentialFile(config.credentialsFile, entries);
+      stdout.write(`저장했습니다: ${target.id}\n`);
+      return 0;
+    }
     // RDP needs an account name. VNC takes one when the server uses Apple Remote
     // Desktop authentication (macOS Screen Sharing); empty means password only.
     const answer = await prompter.ask(
@@ -224,7 +283,9 @@ export async function main({
     if (username === undefined && target.protocol === "rdp")
       return fail("사용자 이름이 비어 있어 저장하지 않았습니다.");
     const password = await prompter.ask(
-      target.protocol === "rdp" ? "비밀번호: " : "VNC 비밀번호: ",
+      target.protocol === "rdp"
+        ? "비밀번호: "
+        : "비밀번호 (macOS 계정 비밀번호, 사용자 이름을 비웠다면 VNC 비밀번호): ",
       { secret: true },
     );
     const again = await prompter.ask("비밀번호 확인: ", { secret: true });

@@ -7,7 +7,9 @@ async function start() {
   const config = await loadConfig(
     process.env.GOME_REMOTE_CONFIG || "config.local.json",
   );
-  const credentials = new CredentialStore(config.credentialsFile);
+  const credentials = new CredentialStore(config.credentialsFile, {
+    targets: config.targets,
+  });
   // Refuse to start on a credentials file with the wrong mode, owner or shape.
   const known = await credentials.load();
   const unknown = [...known.keys()].filter(

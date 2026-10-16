@@ -10,3 +10,4 @@ config.local.json
 .DS_Store
 output/
 .playwright-cli/
+agent/mac/target/

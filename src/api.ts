@@ -7,15 +7,20 @@ export const UNREACHABLE_TEXT = "서버에 연결할 수 없습니다";
 export class ApiError extends Error {
   kind: "unreachable" | "forbidden" | "failed";
   status: number;
+  // The gateway's machine-readable reason, when it gave one (agent refusals: "permission",
+  // "locked", "setup", "unavailable").
+  code?: string;
   constructor(
     kind: "unreachable" | "forbidden" | "failed",
     message: string,
     status = 0,
+    code?: string,
   ) {
     super(message);
     this.name = "ApiError";
     this.kind = kind;
     this.status = status;
+    this.code = code;
   }
 }
 
@@ -26,6 +31,14 @@ export const appMode =
 // An app with bridge version 1 rejects the "auto" resolution in viewerState, so only
 // browsers and newer apps may offer it.
 export const autoResolution = !appMode || window.desktop!.bridgeVersion! >= 2;
+// Bridge version 3 knows the protocol "agent" in viewerState. An older app rejects it, and
+// the menu behaves as for RDP (the resolution can be changed), so it is told "rdp".
+const bridgeKnowsAgent = (window.desktop?.bridgeVersion ?? 0) >= 3;
+export function forBridge(state: ViewerState): ViewerState {
+  return state.protocol === "agent" && !bridgeKnowsAgent
+    ? { ...state, protocol: "rdp" }
+    : state;
+}
 
 async function request<T>(path: string, input?: unknown): Promise<T> {
   let response: Response;
@@ -60,6 +73,7 @@ async function request<T>(path: string, input?: unknown): Promise<T> {
       "failed",
       result.error || "연결 요청이 실패했습니다.",
       response.status,
+      typeof result.code === "string" ? result.code : undefined,
     );
   return result as T;
 }
@@ -107,11 +121,14 @@ export const api = {
       websocket: `${location.origin.replace(/^http/, "ws")}/tunnel`,
     };
   },
+  // Relays the page's WebRTC offer to the Mac agent through the gateway.
+  agentSession: (input: ConnectInput & { sdp: string }) =>
+    request<{ sdp: string }>("/api/agent-sessions", input),
   fullscreen: (enabled: boolean) => native.fullscreen(enabled),
   fullscreenState: () => native.fullscreenState(),
   onFullscreenChange: (callback: (enabled: boolean) => void) =>
     native.onFullscreenChange(callback),
-  viewerState: (state: ViewerState) => native.viewerState(state),
+  viewerState: (state: ViewerState) => native.viewerState(forBridge(state)),
   onViewerAction: (callback: (action: string) => void) =>
     native.onViewerAction(callback),
   // Only the app has an address to change; in a browser the address bar is the setting.

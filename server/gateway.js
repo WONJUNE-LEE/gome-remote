@@ -5,9 +5,18 @@ import { readFile } from "node:fs/promises";
 import { resolve, extname } from "node:path";
 import { WebSocketServer } from "ws";
 import { bridge } from "./tunnel.js";
+import { AgentError, createAgentClient } from "./agent-client.js";
 
 export const FORBIDDEN_LOGIN_MESSAGE =
   "이 기기의 Tailscale 계정으로는 쓸 수 없습니다.";
+// What the page is told when the Mac agent refuses or cannot be reached (spec D7).
+export const AGENT_MESSAGES = {
+  permission:
+    "Mac에서 화면 기록·손쉬운 사용 권한이 필요합니다. Mac (VNC)로 들어가 허용할 수 있습니다.",
+  locked: "Mac이 잠겨 있습니다. Mac (VNC)로 잠금을 해제하세요.",
+  unavailable: "연결할 수 없습니다.",
+};
+const AGENT_BODY_LIMIT = 64 * 1024;
 
 export class Tickets {
   #entries = new Map();
@@ -37,12 +46,8 @@ export class Tickets {
   }
 }
 
-// `credentials` comes from the gateway's credential store, never from the caller.
-// VNC targets pass the stored username too (empty when there is none): guacd's VNC
-// arguments include `username`, which Apple Remote Desktop authentication needs.
-export function connectionSettings(target, credentials, size = {}) {
-  const { username = "", password = "" } = credentials;
-  const { width = 1440, height = 900 } = size;
+// The size limits of a session, shared by the Guacamole and the agent routes.
+export function validateSize(width, height) {
   if (
     !Number.isInteger(width) ||
     width < 640 ||
@@ -52,6 +57,15 @@ export function connectionSettings(target, credentials, size = {}) {
     height > 2160
   )
     throw new Error("Invalid resolution.");
+}
+
+// `credentials` comes from the gateway's credential store, never from the caller.
+// VNC targets pass the stored username too (empty when there is none): guacd's VNC
+// arguments include `username`, which Apple Remote Desktop authentication needs.
+export function connectionSettings(target, credentials, size = {}) {
+  const { username = "", password = "" } = credentials;
+  const { width = 1440, height = 900 } = size;
+  validateSize(width, height);
   return {
     connection: {
       type: target.protocol,
@@ -87,12 +101,14 @@ export function connectionSettings(target, credentials, size = {}) {
   };
 }
 
-async function body(req) {
+class BodyTooLarge extends Error {}
+
+async function body(req, limit = 8192) {
   let size = 0;
   const chunks = [];
   for await (const chunk of req) {
     size += chunk.length;
-    if (size > 8192) throw new Error("Request too large.");
+    if (size > limit) throw new BodyTooLarge("Request too large.");
     chunks.push(chunk);
   }
   return JSON.parse(Buffer.concat(chunks).toString("utf8"));
@@ -124,7 +140,8 @@ function loopbackOrigin(value) {
   }
 }
 
-// `credentials.lookup(target)` resolves to {username, password} or undefined.
+// `credentials.lookup(target)` resolves to {username, password} (rdp, vnc), {agentToken}
+// (agent) or undefined. `agent` is the Mac agent client (server/agent-client.js).
 export function createGateway(
   config,
   {
@@ -132,8 +149,11 @@ export function createGateway(
     probe = reachable,
     dist = resolve("dist"),
     now = Date.now,
+    agent = createAgentClient({ now }),
+    log = console.error,
   } = {},
 ) {
+  const firstLine = (value) => String(value ?? "").split(/\r?\n/, 1)[0];
   const tickets = new Tickets(now);
   const sockets = new WebSocketServer({
     noServer: true,
@@ -166,6 +186,24 @@ export function createGateway(
     const login = typeof header === "string" && header ? header : standIn;
     return config.allowedLogins.includes(login) ? login : undefined;
   };
+  // An agent target is "ready" once it has a token; "online" and its state come from the
+  // agent's own status (cached, one request at a time), not from a TCP probe.
+  const agentTile = async (t) => {
+    const credential = await credentials.lookup(t);
+    const status = credential
+      ? await agent.status(t, credential.agentToken)
+      : undefined;
+    return {
+      id: t.id,
+      name: t.name,
+      platform: t.platform,
+      protocol: t.protocol,
+      persistent: false,
+      online: status !== undefined,
+      ready: credential !== undefined,
+      ...(status ? { agent: status } : {}),
+    };
+  };
   const server = http.createServer(async (req, res) => {
     res.setHeader("Content-Security-Policy", csp);
     res.setHeader("X-Content-Type-Options", "nosniff");
@@ -186,6 +224,7 @@ export function createGateway(
         if (req.method === "GET" && url.pathname === "/api/targets") {
           const targets = await Promise.all(
             config.targets.map(async (t) => {
+              if (t.protocol === "agent") return agentTile(t);
               const [online, credential] = await Promise.all([
                 probe(t),
                 credentials.lookup(t),
@@ -222,6 +261,11 @@ export function createGateway(
           const target = config.targets.find((t) => t.id === input.targetId);
           if (!target)
             return json(res, 404, { error: "등록된 서버를 찾을 수 없습니다." });
+          // An agent credential is truthy too; it must never reach connectionSettings.
+          if (target.protocol === "agent")
+            return json(res, 400, {
+              error: "이 서버는 /api/agent-sessions 로 연결해야 합니다.",
+            });
           const credential = await credentials.lookup(target);
           if (!credential)
             return json(res, 409, {
@@ -233,6 +277,70 @@ export function createGateway(
           });
           const ticket = tickets.issue({ login, settings });
           return json(res, 201, { ticket, expiresIn: 20 });
+        }
+        if (req.method === "POST" && url.pathname === "/api/agent-sessions") {
+          if (!req.headers["content-type"]?.startsWith("application/json"))
+            return json(res, 415, { error: "JSON required." });
+          let input;
+          try {
+            input = await body(req, AGENT_BODY_LIMIT);
+          } catch (error) {
+            if (error instanceof BodyTooLarge)
+              return json(res, 413, { error: "Request too large." });
+            throw error;
+          }
+          if (!input || typeof input !== "object" || Array.isArray(input))
+            throw new Error("Invalid body.");
+          // The token lives only on the server; a client that sends one is outdated or hostile.
+          if (
+            ["agentToken", "username", "password"].some((key) =>
+              Object.hasOwn(input, key),
+            )
+          )
+            return json(res, 400, {
+              error: "자격 증명은 서버에 저장되어 있어 보낼 수 없습니다.",
+            });
+          if (typeof input.sdp !== "string" || !input.sdp.startsWith("v=0"))
+            throw new Error("Invalid offer.");
+          validateSize(input.width, input.height);
+          const target = config.targets.find((t) => t.id === input.targetId);
+          if (!target)
+            return json(res, 404, { error: "등록된 서버를 찾을 수 없습니다." });
+          if (target.protocol !== "agent")
+            return json(res, 400, {
+              error: "이 서버는 에이전트 방식이 아닙니다.",
+            });
+          const credential = await credentials.lookup(target);
+          if (!credential)
+            return json(res, 409, {
+              error: "이 서버는 아직 설정되지 않았습니다.",
+              code: "setup",
+            });
+          try {
+            const sdp = await agent.createSession(
+              target,
+              credential.agentToken,
+              { width: input.width, height: input.height, sdp: input.sdp },
+            );
+            return json(res, 200, { sdp });
+          } catch (error) {
+            if (error instanceof AgentError && error.kind === "rejected")
+              return json(res, 409, {
+                error: AGENT_MESSAGES[error.code],
+                code: error.code,
+              });
+            // Anything that is not the client's own error is a bug here: say so once, in one
+            // line with no secret (the token is cut out of the message, the stack is dropped).
+            if (!(error instanceof AgentError))
+              log(
+                `Mac agent session for "${target.id}" failed unexpectedly: ${String(error?.name ?? "Error")}: ${firstLine(error?.message).split(credential.agentToken).join("[token]")}`,
+              );
+            // Bad token, timeout, unreachable, nonsense: the page only learns "unavailable".
+            return json(res, 424, {
+              error: AGENT_MESSAGES.unavailable,
+              code: "unavailable",
+            });
+          }
         }
         return json(res, 404, { error: "Not found." });
       }

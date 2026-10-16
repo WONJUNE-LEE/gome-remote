@@ -5,10 +5,12 @@ const { contextBridge, ipcRenderer } = require("electron");
 // Version 2 adds "auto" as a viewerState resolution and the resolution:auto menu action;
 // a version 1 app rejects any resolution but the three fixed sizes, so the page offers
 // "auto" only to version 2 or later.
+// Version 3 adds the protocol "agent" (the Mac agent) to viewerState; its menu behaves like
+// RDP's (the resolution can be changed). A page talking to an older app sends "rdp" instead.
 // The main process answers these calls only while the window shows the configured
 // gateway origin, so exposing them here grants nothing to any other page.
 const bridge = {
-  bridgeVersion: 2,
+  bridgeVersion: 3,
   fullscreen: (enabled) => ipcRenderer.invoke("remote:fullscreen", enabled),
   fullscreenState: () => ipcRenderer.invoke("remote:fullscreen-state"),
   viewerState: (state) => ipcRenderer.invoke("remote:viewer-state", state),

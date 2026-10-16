@@ -1,0 +1,40 @@
+# cargo-deny: known vulnerabilities, licences, sources (spec D10). Run in CI as
+# `cargo deny check` from agent/mac. Only the macOS targets matter: the agent runs nowhere else.
+[graph]
+targets = ["aarch64-apple-darwin", "x86_64-apple-darwin"]
+
+[advisories]
+version = 2
+yanked = "deny"
+
+[licenses]
+version = 2
+# Permissive licences only. A new dependency under anything else (GPL, AGPL, SSPL, ...)
+# fails CI and needs a decision, not an extra line here.
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Unicode-3.0",
+    "Zlib",
+    "OpenSSL",
+    "CC0-1.0",
+]
+confidence-threshold = 0.8
+
+[licenses.private]
+# The agent itself is `publish = false` and the repository declares no licence, so the crate
+# is not checked against the list above; every dependency still is.
+ignore = true
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

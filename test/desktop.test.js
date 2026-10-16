@@ -980,7 +980,7 @@ test("showing the address page while windowed does not touch fullscreen", async 
 const goodPage = {
   page: SETUP,
   title: "Gome Remote",
-  bridgeVersion: 2,
+  bridgeVersion: 3,
   setup: "function",
 };
 test("--smoke-test shows only the address page, never the saved gateway, and quits with success", async (t) => {
@@ -999,7 +999,8 @@ test("--smoke-test shows only the address page, never the saved gateway, and qui
 test("--smoke-test exits 1 when the page or the bridge is not what the app promises, or the check itself fails", async (t) => {
   for (const page of [
     { ...goodPage, bridgeVersion: 1 },
-    { ...goodPage, bridgeVersion: 3 },
+    { ...goodPage, bridgeVersion: 2 },
+    { ...goodPage, bridgeVersion: 4 },
     { ...goodPage, bridgeVersion: undefined },
     { ...goodPage, setup: "undefined" },
     { ...goodPage, title: "" },
@@ -1050,7 +1051,7 @@ test("each clause of the viewer-state check refuses on its own", async (t) => {
     resolution: "1440x900",
   };
   await f.invoke("viewer-state", good);
-  for (const protocol of [null, "rdp", "vnc"])
+  for (const protocol of [null, "rdp", "vnc", "agent"])
     await f.invoke("viewer-state", { ...good, protocol });
   for (const resolution of ["auto", "1440x900", "1920x1080", "2560x1440"])
     await f.invoke("viewer-state", { ...good, resolution });
@@ -1104,4 +1105,43 @@ test("the address page channels accept exactly the page the app loads, in the to
     }),
     /Untrusted sender/,
   );
+});
+
+// ---- bridge version 3: the Mac agent ----
+
+test("a Mac agent session enables the resolution menu like RDP, and VNC still does not", async (t) => {
+  const f = await desktop({}, t);
+  const item = (id) => f.menu.getMenuItemById(id);
+  const state = (protocol, connected = true) => ({
+    open: true,
+    connected,
+    protocol,
+    resolution: "auto",
+  });
+  await f.invoke("viewer-state", state("agent"));
+  assert.equal(item("resolution").enabled, true);
+  assert.equal(item("text-input").enabled, true);
+  assert.equal(item("reconnect").enabled, false);
+  await f.invoke("viewer-state", state("agent", false));
+  assert.equal(item("resolution").enabled, false, "not while connecting");
+  assert.equal(item("reconnect").enabled, true);
+  await f.invoke("viewer-state", state("vnc"));
+  assert.equal(item("resolution").enabled, false);
+  await f.invoke("viewer-state", state("rdp"));
+  assert.equal(item("resolution").enabled, true);
+});
+
+test("protocols other than the four it knows are still refused", async (t) => {
+  const f = await desktop({}, t);
+  for (const protocol of ["Agent", "ssh", "", 0, undefined])
+    await assert.rejects(
+      f.invoke("viewer-state", {
+        open: true,
+        connected: true,
+        protocol,
+        resolution: "auto",
+      }),
+      /Invalid viewer state/,
+      String(protocol),
+    );
 });

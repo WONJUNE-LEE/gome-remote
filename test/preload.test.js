@@ -31,10 +31,10 @@ function load(protocol = "https:") {
   return { ipc, calls, exposed };
 }
 
-test("the bridge announces version 2 and exposes only the viewer, fullscreen and address-page functions", () => {
+test("the bridge announces version 3 and exposes only the viewer, fullscreen and address-page functions", () => {
   const { exposed } = load();
   assert.deepEqual([...Object.keys(exposed)], ["desktop"]);
-  assert.equal(exposed.desktop.bridgeVersion, 2);
+  assert.equal(exposed.desktop.bridgeVersion, 3);
   assert.deepEqual([...Object.keys(exposed.desktop)].sort(), [
     "bridgeVersion",
     "fullscreen",

@@ -132,6 +132,45 @@ test(
 );
 
 test(
+  "startup is refused when a credential entry has the shape of another protocol than its target's",
+  { skip: !posix },
+  async (t) => {
+    const token = "A".repeat(43);
+    const agent = {
+      id: "mac",
+      name: "Mac",
+      platform: "mac",
+      protocol: "agent",
+      hostname: "100.64.0.20",
+    };
+    for (const [target, entry, expected] of [
+      [agent, { password: "pw-secret" }, /need an agent token/],
+      [
+        { ...agent, protocol: "vnc", hostname: "127.0.0.1", port: 5900 },
+        { agentToken: token },
+        /is an agent token, but the target uses vnc/,
+      ],
+    ]) {
+      const { configPath, socketPath } = await setup(t, {
+        config: { targets: [target] },
+        credentials: { version: 1, targets: { mac: entry } },
+      });
+      const run = launch(configPath);
+      // A gateway that wrongly starts keeps running: stop waiting and fail on the assertion.
+      const timer = setTimeout(() => run.child.kill("SIGKILL"), 5000);
+      const { code } = await run.exited;
+      clearTimeout(timer);
+      const { err, out } = run.output();
+      assert.equal(code, 1, `the gateway started: ${out}${err}`);
+      assert.match(err, /refused to start/);
+      assert.match(err, expected);
+      assert.ok(!err.includes("pw-secret") && !out.includes("pw-secret"));
+      await assert.rejects(lstat(socketPath), { code: "ENOENT" });
+    }
+  },
+);
+
+test(
   "startup is refused without allowedLogins or with a legacy token",
   { skip: !posix },
   async (t) => {
