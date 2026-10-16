@@ -311,8 +311,10 @@ const bashAvailable = spawnSync("bash", ["-c", "true"]).status === 0;
 
 const searchListBlock = () => {
   const lines = stepNamed("build", IMPORT).run.split("\n");
-  const from = lines.findIndex((l) =>
-    l.includes('listing="$(security list-keychains'),
+  // From the first of the listing capture or the array start, so a change of how the
+  // listing is read stays inside the block that is run.
+  const from = lines.findIndex(
+    (l) => l.includes("listing=") || l.includes("existing=()"),
   );
   const to = lines.findIndex((l) =>
     l.includes("security list-keychains -d user -s"),
@@ -367,8 +369,8 @@ const runSearchList = (listing) => {
   }
 };
 
-const LOGIN = "/Users/runner/Library/Keychains/login.keychain-db";
-const SPACED = "/Users/runner/Library/Keychains/my keys.keychain-db";
+const LOGIN = "/Users/user/Library/Keychains/login.keychain-db";
+const SPACED = "/Users/user/Library/Keychains/my keys.keychain-db";
 
 test(
   "the search-list block keeps the existing keychains, spaces included, behind the signing keychain",
