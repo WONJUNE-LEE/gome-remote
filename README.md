@@ -242,10 +242,26 @@ self-signed certificate on loopback. It is a per-target choice, never global.
 
 ## Install the desktop app
 
-Download the Windows installer or the Mac disk image from the CI artifacts, or build
-them (`npm run dist -- --win`, `--mac`, `--linux` on the matching OS; artifacts land in
-`release/`). Packages are unsigned: confirm the first-launch prompt, do not disable
-Gatekeeper or SmartScreen globally.
+Download the installer for your system from the
+[latest GitHub Release](https://github.com/WONJUNE-LEE/gome-remote/releases/latest): the
+Windows `.exe`, the Mac `.dmg` or the Linux `.AppImage`. You can also build them
+yourself (`npm run dist -- --win`, `--mac`, `--linux` on the matching OS; artifacts land in
+`release/`).
+
+The first install is manual, and neither build is signed by Microsoft or Apple, so confirm
+the first-launch prompt (do not disable Gatekeeper or SmartScreen globally):
+
+- Windows: SmartScreen shows "Windows protected your PC". Choose **More info → Run anyway**.
+- Mac: the app is signed with a self-signed certificate. The first time, right-click the app
+  and choose **Open**, then confirm.
+
+After that, updates arrive by themselves. The packaged app looks for a new release shortly
+after it starts and then every 6 hours, and downloads it in the background. It never
+restarts on its own, because you may be in a remote session. The update is installed when
+you quit the app, or right away with **원격 → 다시 시작해서 업데이트**, which appears once
+a download has finished. **원격 → 업데이트 확인** checks now and tells you the result.
+Errors in the background check are only logged. A development run (`npm start`) never
+updates itself.
 
 On first launch the app asks for the server address, for example
 `your-server.your-tailnet.ts.net:8450`, and then shows the gateway's own page. Change
@@ -284,7 +300,8 @@ Open the same address in a browser for the identical screen.
   **이 기기의 Tailscale 계정으로는 쓸 수 없습니다**.
 
 Not included: audio, file transfer, discovery, several users, per-device allow lists,
-code signing, auto-update, unattended Mac login after a FileVault reboot.
+Apple/Microsoft code signing (the Mac build uses a self-signed certificate), unattended Mac
+login after a FileVault reboot.
 
 ## Operations
 
@@ -333,6 +350,25 @@ npm run check     # TypeScript
 npm run build     # UI into dist/
 npm start         # the desktop app (Electron)
 ```
+
+CI also starts the real Electron on the local address page (`electron . --smoke-test`,
+Linux runner) and fails unless the page and the bridge, version 3, are as expected. The
+updater is off in that run.
+
+### Releasing the desktop app
+
+1. Raise `version` in `package.json` (and `package-lock.json`; `npm version X.Y.Z --no-git-tag-version`
+   does both) and merge it to `main`.
+2. Tag the merge commit `vX.Y.Z` and push the tag. `.github/workflows/release.yml` fails unless the
+   tag is `v` plus the `package.json` version, builds Windows, Mac and Linux, uploads them into one
+   draft release, and publishes it only when `latest.yml`, `latest-mac.yml`, `latest-linux.yml` and
+   the installers are all attached. Installed apps never see a half-filled release.
+3. The Mac job needs the repository secrets `MAC_SIGN_P12_BASE64` and `MAC_SIGN_P12_PASSWORD`
+   (it fails without them rather than ship an unsigned Mac build). Make them once with
+   `scripts/make-mac-signing-cert.sh --keep <private directory>`, which prints both values,
+   and keep the `.p12` safe. Every release must be signed by this same certificate (20 years):
+   macOS installs an update only if it is signed like the app it replaces. If the certificate
+   is lost or replaced, Mac users have to install the next version by hand once.
 
 The Mac agent (`agent/mac`) uses macOS frameworks and builds only on a Mac:
 
