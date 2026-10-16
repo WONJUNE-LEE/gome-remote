@@ -45,7 +45,9 @@ function signMac(
   return true;
 }
 
-module.exports = async function afterSign(context) {
-  signMac(context);
+// electron-builder passes only the context; `options` lets a test inject the environment
+// and the command runner into the very function electron-builder calls.
+module.exports = async function afterSign(context, options) {
+  signMac(context, options);
 };
 module.exports.signMac = signMac;

@@ -1,14 +1,23 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import path from "node:path";
 import { readFile } from "node:fs/promises";
 import { createRequire } from "node:module";
+import yaml from "js-yaml";
 
 const require = createRequire(import.meta.url);
-const read = (path) => readFile(new URL(`../${path}`, import.meta.url), "utf8");
+// Windows checks files out with CRLF; every pattern below is written for LF.
+const read = async (name) =>
+  (await readFile(new URL(`../${name}`, import.meta.url), "utf8")).replace(
+    /\r\n/g,
+    "\n",
+  );
 const pkg = JSON.parse(await read("package.json"));
 const lock = JSON.parse(await read("package-lock.json"));
-const release = await read(".github/workflows/release.yml");
-const { signMac } = require("../scripts/mac-sign.cjs");
+const releaseText = await read(".github/workflows/release.yml");
+const release = yaml.load(releaseText);
+const mac = require("../scripts/mac-sign.cjs");
+const { signMac } = mac;
 
 // ---- package.json ----
 
@@ -26,6 +35,12 @@ test("the version, the pinned updater and the lock file agree", () => {
     pkg.dependencies["electron-updater"],
   );
   assert.equal(pkg.devDependencies["electron-updater"], undefined);
+  // js-yaml parses the workflow below; it is already in the lock file as electron-updater's.
+  assert.match(pkg.devDependencies["js-yaml"], /^\d+\.\d+\.\d+$/, "exact");
+  assert.equal(
+    lock.packages["node_modules/js-yaml"].version,
+    pkg.devDependencies["js-yaml"],
+  );
 });
 
 test("releases are published as drafts to this repository's GitHub Releases", () => {
@@ -46,9 +61,11 @@ test("the Mac build is signed by the hook, not by electron-builder, and makes th
 
 // ---- scripts/mac-sign.cjs ----
 
+const outDir = path.join("/out", "mac");
+const appPath = path.join(outDir, "Gome Remote.app");
 const context = {
   electronPlatformName: "darwin",
-  appOutDir: "/out/mac",
+  appOutDir: outDir,
   packager: { appInfo: { productFilename: "Gome Remote" } },
 };
 const recorder = () => {
@@ -91,7 +108,7 @@ test("with the variables it signs the app with the keychain and then verifies st
     GOME_MAC_SIGN_IDENTITY: "Gome Remote Desktop Signing",
   };
   assert.equal(signMac(context, { env, ...r }), true);
-  const app = "/out/mac/Gome Remote.app";
+  const app = appPath;
   assert.deepEqual(r.calls[0], [
     "codesign",
     "--force",
@@ -110,6 +127,30 @@ test("with the variables it signs the app with the keychain and then verifies st
     "--verbose=2",
     app,
   ]);
+  assert.deepEqual(r.calls[2], ["codesign", "-d", "-r-", app]);
+  assert.equal(r.calls.length, 3);
+});
+
+test("the function electron-builder calls signs, verifies and prints the requirement", async () => {
+  const r = recorder();
+  const env = {
+    GOME_MAC_SIGN_KEYCHAIN: "/tmp/k.keychain-db",
+    GOME_MAC_SIGN_IDENTITY: "Gome Remote Desktop Signing",
+  };
+  await mac(context, { env, ...r });
+  assert.deepEqual(
+    r.calls.map((call) => call.slice(0, 3)),
+    [
+      ["codesign", "--force", "--deep"],
+      ["codesign", "--verify", "--deep"],
+      ["codesign", "-d", "-r-"],
+    ],
+  );
+  assert.deepEqual(r.calls[2], ["codesign", "-d", "-r-", appPath]);
+  // And with no variables it is a no-op that still resolves.
+  const none = recorder();
+  await mac(context, { env: {}, ...none });
+  assert.deepEqual(none.calls, []);
 });
 
 test("a failing codesign fails the build", () => {
@@ -125,60 +166,199 @@ test("a failing codesign fails the build", () => {
   );
 });
 
-// ---- .github/workflows/release.yml ----
+// ---- .github/workflows/release.yml (parsed, not pattern-matched) ----
 
-test("the release runs on v* tags and refuses a tag that is not v plus the package version", () => {
-  assert.match(release, /tags:\s*\["v\*"\]/);
-  assert.match(release, /verify-version:/);
+const jobs = release.jobs;
+const steps = (job) => jobs[job].steps;
+const stepNamed = (job, name) => {
+  const found = steps(job).filter((step) => step.name === name);
+  assert.equal(found.length, 1, `exactly one step "${name}" in ${job}`);
+  return found[0];
+};
+const indexOfStep = (job, name) =>
+  steps(job).findIndex((step) => step.name === name);
+const MAC = "runner.os == 'macOS'";
+const IMPORT = "Import the Mac signing certificate";
+const UPLOAD = "Build, sign and upload into the draft release";
+const ZIP_CHECK = "Check the Mac app inside the zip";
+const KEYCHAIN = "Delete the signing keychain";
+const PUBLISH_STEP = "Check that every update file is attached, then publish";
+// `needs` is a string or a list in a workflow
+const needs = (job) => [jobs[job].needs ?? []].flat();
+
+test("the release runs on v* tags and its jobs form one chain", () => {
+  assert.deepEqual(release.on, { push: { tags: ["v*"] } });
+  assert.deepEqual(Object.keys(jobs), [
+    "verify-version",
+    "draft",
+    "build",
+    "publish",
+  ]);
+  assert.deepEqual(needs("verify-version"), []);
+  assert.deepEqual(needs("draft"), ["verify-version"]);
+  assert.deepEqual(needs("build"), ["draft"]);
+  assert.deepEqual(needs("publish"), ["build"]);
+});
+
+test("only the jobs that write to the release have write rights", () => {
+  assert.deepEqual(release.permissions, { contents: "read" });
+  assert.equal(jobs["verify-version"].permissions, undefined);
+  for (const job of ["draft", "build", "publish"])
+    assert.deepEqual(jobs[job].permissions, { contents: "write" }, job);
+});
+
+test("the version job refuses a tag that is not v plus the package version, in that step", () => {
+  const checks = steps("verify-version").filter((step) =>
+    step.run?.includes("GITHUB_REF_NAME"),
+  );
+  assert.equal(checks.length, 1);
+  const run = checks[0].run;
   assert.match(
-    release,
+    run,
     /expected="v\$\(node -p "require\('\.\/package\.json'\)\.version"\)"/,
   );
-  assert.match(release, /"\$GITHUB_REF_NAME" != "\$expected"[\s\S]*?exit 1/);
-  // every later job waits for the check
-  assert.match(release, /draft:\s*\n\s*needs: verify-version/);
+  const compare = run.indexOf('"$GITHUB_REF_NAME" != "$expected"');
+  assert.ok(compare >= 0, "compares the tag with the expectation");
+  assert.ok(
+    run.indexOf("exit 1", compare) > compare,
+    "and fails in the same step",
+  );
 });
 
 test("one job creates the draft release and the platform jobs upload into it", () => {
-  assert.match(release, /gh release create[^\n]*\\?\n?[^\n]*--draft/);
-  assert.match(release, /build:\s*\n\s*needs: draft/);
-  assert.match(release, /os: \[windows-latest, macos-latest, ubuntu-latest\]/);
-  assert.match(release, /npx electron-builder --publish always/);
-  assert.equal((release.match(/gh release create/g) ?? []).length, 1);
-  for (const step of ["npm ci", "npm test", "npm run check", "npm run build"])
-    assert.ok(release.includes(`- run: ${step}`), step);
-});
-
-test("a missing Mac signing secret fails the Mac job, and the keychain is always deleted", () => {
-  assert.match(release, /secrets\.MAC_SIGN_P12_BASE64/);
-  assert.match(release, /secrets\.MAC_SIGN_P12_PASSWORD/);
-  assert.match(
-    release,
-    /\[ -z "\$MAC_SIGN_P12_BASE64" \][^\n]*\n[\s\S]*?::error::[^\n]*\n\s*exit 1/,
+  const creates = Object.entries(jobs).flatMap(([name, job]) =>
+    job.steps
+      .filter((s) => s.run?.includes("gh release create"))
+      .map(() => name),
   );
-  assert.match(release, /security import[^\n]*-T \/usr\/bin\/codesign/);
-  assert.match(release, /security set-key-partition-list/);
-  assert.match(release, /GOME_MAC_SIGN_KEYCHAIN=/);
-  assert.match(release, /GOME_MAC_SIGN_IDENTITY=/);
-  assert.match(
-    release,
-    /if: always\(\) && runner\.os == 'macOS'\s*\n\s*run: \|\n[^\n]*\n?[^\n]*security delete-keychain/,
+  assert.deepEqual(creates, ["draft"], "created in one place only");
+  const create = steps("draft")
+    .map((step) => step.run)
+    .join("\n");
+  assert.match(create, /gh release create[\s\S]*--draft/);
+  assert.match(create, /isDraft/, "a published release is refused");
+  assert.deepEqual([...jobs.build.strategy.matrix.os].sort(), [
+    "macos-latest",
+    "ubuntu-latest",
+    "windows-latest",
+  ]);
+  assert.equal(jobs.build.strategy["fail-fast"], false);
+  const runs = steps("build").map((step) => step.run);
+  for (const command of [
+    "npm ci",
+    "npm test",
+    "npm run check",
+    "npm run build",
+  ])
+    assert.ok(runs.includes(command), command);
+  assert.ok(runs.indexOf("npm test") < runs.indexOf("npm run build"));
+  const upload = stepNamed("build", UPLOAD);
+  assert.equal(upload.run, "npx electron-builder --publish always");
+  assert.equal(upload.env.GH_TOKEN, "${{ secrets.GITHUB_TOKEN }}");
+});
+
+test("a missing Mac signing secret fails the Mac job before anything is built", () => {
+  const step = stepNamed("build", IMPORT);
+  assert.equal(step.if, MAC);
+  assert.equal(
+    step.env.MAC_SIGN_P12_BASE64,
+    "${{ secrets.MAC_SIGN_P12_BASE64 }}",
   );
+  assert.equal(
+    step.env.MAC_SIGN_P12_PASSWORD,
+    "${{ secrets.MAC_SIGN_P12_PASSWORD }}",
+  );
+  const missing = step.run.indexOf('[ -z "$MAC_SIGN_P12_BASE64" ]');
+  assert.ok(missing >= 0);
+  assert.ok(step.run.indexOf("::error::", missing) > missing);
+  assert.ok(step.run.indexOf("exit 1", missing) > missing);
+  assert.ok(
+    step.run.indexOf("exit 1", missing) <
+      step.run.indexOf("security create-keychain"),
+    "fails before a keychain is made",
+  );
+  assert.match(step.run, /security import[^\n]*-T \/usr\/bin\/codesign/);
+  assert.match(step.run, /security set-key-partition-list/);
+  assert.match(step.run, /GOME_MAC_SIGN_KEYCHAIN=[^\n]*GITHUB_ENV/);
+  assert.match(step.run, /GOME_MAC_SIGN_IDENTITY=[^\n]*GITHUB_ENV/);
+  assert.ok(indexOfStep("build", IMPORT) < indexOfStep("build", UPLOAD));
 });
 
-test("the release is un-drafted only after all platform jobs, and only with every update file", () => {
-  assert.match(release, /publish:\s*\n\s*needs: build/);
-  for (const name of ["latest.yml", "latest-mac.yml", "latest-linux.yml"])
-    assert.ok(release.includes(name), name);
-  const check = release.indexOf("Missing");
-  const publish = release.indexOf("--draft=false --latest");
-  assert.ok(check > 0 && publish > check, "checked before it is published");
-  assert.equal((release.match(/--draft=false/g) ?? []).length, 1);
+test("the zipped Mac app is checked after the upload, and the keychain is always deleted", () => {
+  const check = stepNamed("build", ZIP_CHECK);
+  assert.equal(check.if, MAC);
+  assert.ok(indexOfStep("build", ZIP_CHECK) > indexOfStep("build", UPLOAD));
+  assert.match(check.run, /ditto -x -k release\/\*\.zip/);
+  assert.match(check.run, /codesign --verify --deep --strict/);
+  assert.match(check.run, /Authority=\$GOME_MAC_SIGN_NAME/);
+  assert.match(check.run, /exit 1/);
+  assert.equal(release.env.GOME_MAC_SIGN_NAME, "Gome Remote Desktop Signing");
+  const clean = stepNamed("build", KEYCHAIN);
+  assert.ok(clean.if.includes("always()"));
+  assert.ok(clean.if.includes(MAC));
+  assert.match(clean.run, /security delete-keychain/);
+  assert.equal(indexOfStep("build", KEYCHAIN), steps("build").length - 1);
 });
 
-test("no job gets more rights than it needs and no secret is printed", () => {
-  assert.match(release, /^permissions:\s*\n\s*contents: read/m);
-  assert.equal(/echo[^\n]*\$\{\{ *secrets\./.test(release), false);
+test("the release is published last, only when every update file and installer is attached", () => {
+  const run = stepNamed("publish", PUBLISH_STEP).run;
+  const names = ["latest.yml", "latest-mac.yml", "latest-linux.yml"];
+  const list = run.match(/for name in ([^;]*); do/);
+  assert.ok(list, "loops over the update files");
+  assert.deepEqual(list[1].split(" "), names);
+  const loop = run.match(/for pattern in ([^;]*); do/);
+  assert.ok(loop, "loops over the installer patterns");
+  assert.deepEqual(
+    [...loop[1].matchAll(/'([^']*)'/g)].map((m) => m[1]),
+    [
+      "\\.exe$",
+      "\\.exe\\.blockmap$",
+      "\\.dmg$",
+      "\\.zip$",
+      "\\.zip\\.blockmap$",
+      "\\.AppImage$",
+    ],
+  );
+  const fail = run.indexOf("exit 1", loop.index);
+  const undraft = run.indexOf("gh release edit");
+  assert.ok(fail > loop.index, "fails when something is missing");
+  assert.ok(undraft > fail, "un-drafts only after that");
+  assert.match(run.slice(undraft), /--draft=false --latest/);
+  assert.equal(releaseText.match(/--draft=false/g).length, 1);
+});
+
+test("no step prints a secret, directly or through its environment variable", () => {
+  const secretNames = new Set();
+  const envs = [release.env ?? {}];
+  for (const job of Object.values(jobs)) {
+    envs.push(job.env ?? {});
+    for (const step of job.steps) envs.push(step.env ?? {});
+  }
+  for (const env of envs)
+    for (const [name, value] of Object.entries(env))
+      if (String(value).includes("secrets.")) secretNames.add(name);
+  assert.ok(secretNames.has("MAC_SIGN_P12_PASSWORD"));
+  assert.ok(secretNames.has("GH_TOKEN"));
+  for (const job of Object.values(jobs))
+    for (const step of job.steps) {
+      const run = step.run ?? "";
+      assert.equal(/\bset -[a-z]*x/.test(run), false, "no shell tracing");
+      assert.equal(run.includes("secrets."), false, "secrets only via env");
+      for (const line of run.split("\n")) {
+        for (const name of secretNames) {
+          if (!new RegExp(`\\$\\{?${name}\\b`).test(line)) continue;
+          // The one allowed use of printing: the p12 piped into the decoder.
+          const decoded =
+            /^printf '%s' "\$MAC_SIGN_P12_BASE64" \| openssl base64 -d /.test(
+              line,
+            );
+          assert.ok(
+            decoded || !/\b(echo|printf|cat|env|printenv)\b/.test(line),
+            `${step.name ?? run}: ${line}`,
+          );
+        }
+      }
+    }
 });
 
 test("pull request and push builds stay publish-free", async () => {
@@ -202,5 +382,8 @@ test("the certificate script makes a 20-year code-signing certificate macOS can 
   );
   assert.equal(script.includes("BEGIN"), false, "no key material in the file");
   // The workflow looks for the very name the script gives the certificate.
-  assert.match(release, /GOME_MAC_SIGN_NAME: Gome Remote Desktop Signing\n/);
+  assert.match(
+    releaseText,
+    /GOME_MAC_SIGN_NAME: Gome Remote Desktop Signing\n/,
+  );
 });

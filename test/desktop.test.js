@@ -75,6 +75,7 @@ async function desktop(
     packaged = false,
     version = "0.3.0",
     updater, // the stand-in electron-updater autoUpdater; one is made when packaged
+    updaterModule, // replaces require("electron-updater") entirely (it may throw)
   } = {},
   t,
 ) {
@@ -139,7 +140,7 @@ async function desktop(
       return fullscreen;
     }
     isDestroyed() {
-      return false;
+      return this.destroyed === true;
     }
     setFullScreen(value) {
       fullscreenRequests.push(value);
@@ -166,7 +167,11 @@ async function desktop(
     shell: { openExternal: async (url) => external.push(url) },
     dialog: {
       showMessageBox: async (...args) => {
-        dialogs.push(args.length === 2 ? args[1] : args[0]);
+        // `parent` is the window the dialog was attached to, or null for a free dialog.
+        dialogs.push({
+          ...(args.length === 2 ? args[1] : args[0]),
+          parent: args.length === 2 ? args[0] : null,
+        });
         return { response: 0 };
       },
       showErrorBox: (_title, message) =>
@@ -198,7 +203,9 @@ async function desktop(
       name === "electron"
         ? electron
         : name === "electron-updater"
-          ? { autoUpdater }
+          ? updaterModule
+            ? updaterModule()
+            : { autoUpdater }
           : name.startsWith("./")
             ? require(join(desktopDir, name))
             : require(name),
@@ -1264,7 +1271,7 @@ test("errors in a background check are logged and never shown", async (t) => {
   assert.deepEqual(f.lifecycle, []);
 });
 
-test("an updater that cannot load never keeps the app from starting", async (t) => {
+test("an updater whose start() fails never keeps the app from starting", async (t) => {
   const logs = [];
   const f = await desktop(
     {
@@ -1285,6 +1292,38 @@ test("an updater that cannot load never keeps the app from starting", async (t) 
     logs.some((line) => line.includes("Updater not started")),
     true,
   );
+});
+
+test("a missing or broken electron-updater never keeps the app from starting", async (t) => {
+  const broken = {
+    "require throws": () => {
+      throw new Error("Cannot find module 'electron-updater'");
+    },
+    "autoUpdater getter throws": () => ({
+      get autoUpdater() {
+        throw new Error("app is undefined");
+      },
+    }),
+  };
+  for (const [name, updaterModule] of Object.entries(broken)) {
+    const logs = [];
+    const f = await desktop({ packaged: true, logs, updaterModule }, t);
+    await settle();
+    assert.deepEqual(f.loads, [GATEWAY], name);
+    assert.deepEqual(f.lifecycle, [], name);
+    assert.deepEqual(f.dialogs, [], name);
+    assert.equal(
+      logs.some((line) => line.includes("Updater unavailable")),
+      true,
+      name,
+    );
+    assert.equal(f.intervals.size, 0, name);
+    assert.equal(f.menu.getMenuItemById("check-update"), undefined, name);
+    assert.equal(
+      f.menu.getMenuItemById("change-server").label,
+      "서버 주소 바꾸기",
+    );
+  }
 });
 
 test("the Remote menu ends with a manual check and a hidden restart entry", async (t) => {
@@ -1319,6 +1358,20 @@ test("the manual check reports up to date, a download in progress, and an error"
   assert.equal(f.dialogs[2].detail, "offline");
   assert.equal(f.autoUpdater.checks, 3);
   assert.deepEqual(f.lifecycle, []);
+});
+
+test("a manual check that answers null says it cannot check, and dialogs are attached to the window", async (t) => {
+  const f = await desktop({ packaged: true }, t);
+  f.autoUpdater.result = null;
+  await f.menu.getMenuItemById("check-update").click();
+  assert.equal(f.dialogs.length, 1);
+  assert.equal(f.dialogs[0].type, "warning");
+  assert.equal(f.dialogs[0].message, "업데이트를 확인할 수 없습니다.");
+  assert.equal(f.dialogs[0].parent, f.window);
+  // Without a usable window the dialog is free-standing instead of failing.
+  f.window.destroyed = true;
+  await f.menu.getMenuItemById("check-update").click();
+  assert.equal(f.dialogs[1].parent, null);
 });
 
 test("a second click during a running manual check does not start another one", async (t) => {
