@@ -279,6 +279,17 @@ test("a missing Mac signing secret fails the Mac job before anything is built", 
   );
   assert.match(step.run, /security import[^\n]*-T \/usr\/bin\/codesign/);
   assert.match(step.run, /security set-key-partition-list/);
+  const partition = step.run.indexOf("security set-key-partition-list");
+  const searchList = step.run.indexOf("security list-keychains -d user -s");
+  const exportKeychain = step.run.indexOf("GOME_MAC_SIGN_KEYCHAIN=");
+  assert.ok(
+    searchList > partition && searchList < exportKeychain,
+    "the keychain joins the user search list after the key partition list and before the env export (--keychain alone left codesign with no identity on the runner)",
+  );
+  assert.ok(
+    searchList < step.run.indexOf("GOME_MAC_SIGN_IDENTITY="),
+    "the search list is set before the identity is exported",
+  );
   assert.match(step.run, /GOME_MAC_SIGN_KEYCHAIN=[^\n]*GITHUB_ENV/);
   assert.match(step.run, /GOME_MAC_SIGN_IDENTITY=[^\n]*GITHUB_ENV/);
   assert.ok(indexOfStep("build", IMPORT) < indexOfStep("build", UPLOAD));
