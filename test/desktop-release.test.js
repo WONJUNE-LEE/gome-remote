@@ -310,8 +310,7 @@ test("a missing Mac signing secret fails the Mac job before anything is built", 
 // Like the other bash tests here, skipped on Windows: the block only runs on the macOS
 // runner, and a Windows `bash` (Git Bash or the WSL launcher) ignores the fake's mode bits.
 const posix = process.platform !== "win32";
-const bashAvailable =
-  posix && spawnSync("bash", ["-c", "true"]).status === 0;
+const bashAvailable = posix && spawnSync("bash", ["-c", "true"]).status === 0;
 
 const searchListBlock = () => {
   const lines = stepNamed("build", IMPORT).run.split("\n");
