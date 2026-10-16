@@ -2,6 +2,16 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import path from "node:path";
 import { readFile } from "node:fs/promises";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { spawnSync } from "node:child_process";
 import { createRequire } from "node:module";
 import yaml from "js-yaml";
 
@@ -294,6 +304,115 @@ test("a missing Mac signing secret fails the Mac job before anything is built", 
   assert.match(step.run, /GOME_MAC_SIGN_IDENTITY=[^\n]*GITHUB_ENV/);
   assert.ok(indexOfStep("build", IMPORT) < indexOfStep("build", UPLOAD));
 });
+
+// The search-list block is cut out of the real workflow text by its markers and run with
+// bash against a fake `security`, so the test breaks if the block itself breaks.
+const bashAvailable = spawnSync("bash", ["-c", "true"]).status === 0;
+
+const searchListBlock = () => {
+  const lines = stepNamed("build", IMPORT).run.split("\n");
+  const from = lines.findIndex((l) =>
+    l.includes('listing="$(security list-keychains'),
+  );
+  const to = lines.findIndex((l) =>
+    l.includes("security list-keychains -d user -s"),
+  );
+  assert.ok(from >= 0 && to > from, "the search-list block has its markers");
+  return lines.slice(from, to + 1).join("\n");
+};
+
+// listing: text the fake prints for `list-keychains -d user`, or null to make it exit 1.
+const runSearchList = (listing) => {
+  const dir = mkdtempSync(path.join(tmpdir(), "gome-searchlist-"));
+  try {
+    const record = path.join(dir, "set-args");
+    const bin = path.join(dir, "bin");
+    mkdirSync(bin);
+    writeFileSync(
+      path.join(bin, "security"),
+      [
+        "#!/bin/bash",
+        'if [ "$1 $2 $3" = "list-keychains -d user" ] && [ "$#" -eq 3 ]; then',
+        listing === null
+          ? "  exit 1"
+          : "  printf '%s' \"$FAKE_LISTING\"; exit 0",
+        "fi",
+        'if [ "$4" = "-s" ]; then printf \'%s\\n\' "$@" > "$FAKE_RECORD"; exit 0; fi',
+        "exit 2",
+        "",
+      ].join("\n"),
+      { mode: 0o755 },
+    );
+    const keychain = path.join(dir, "gome-sign.keychain-db");
+    const res = spawnSync(
+      "bash",
+      ["-e", "-o", "pipefail", "-c", searchListBlock()],
+      {
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          PATH: `${bin}${path.delimiter}${process.env.PATH}`,
+          FAKE_LISTING: listing ?? "",
+          FAKE_RECORD: record,
+          keychain,
+        },
+      },
+    );
+    const recorded = existsSync(record)
+      ? readFileSync(record, "utf8").split("\n").slice(0, -1)
+      : null;
+    return { status: res.status, recorded, keychain };
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+};
+
+const LOGIN = "/Users/runner/Library/Keychains/login.keychain-db";
+const SPACED = "/Users/runner/Library/Keychains/my keys.keychain-db";
+
+test(
+  "the search-list block keeps the existing keychains, spaces included, behind the signing keychain",
+  { skip: !bashAvailable && "bash is not on PATH" },
+  () => {
+    const r = runSearchList(`    "${LOGIN}"\n    "${SPACED}"\n`);
+    assert.equal(r.status, 0);
+    assert.deepEqual(r.recorded, [
+      "list-keychains",
+      "-d",
+      "user",
+      "-s",
+      r.keychain,
+      LOGIN,
+      SPACED,
+    ]);
+  },
+);
+
+test(
+  "the search-list block with no existing keychains sets only the signing keychain",
+  { skip: !bashAvailable && "bash is not on PATH" },
+  () => {
+    const r = runSearchList("");
+    assert.equal(r.status, 0);
+    assert.deepEqual(r.recorded, [
+      "list-keychains",
+      "-d",
+      "user",
+      "-s",
+      r.keychain,
+    ]);
+  },
+);
+
+test(
+  "a failing keychain listing fails the step before the search list is set",
+  { skip: !bashAvailable && "bash is not on PATH" },
+  () => {
+    const r = runSearchList(null);
+    assert.notEqual(r.status, 0);
+    assert.equal(r.recorded, null);
+  },
+);
 
 test("the zipped Mac app is checked after the upload, and the keychain is always deleted", () => {
   const check = stepNamed("build", ZIP_CHECK);

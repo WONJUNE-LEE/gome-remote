@@ -101,12 +101,13 @@ jobs:
           # --keychain alone is not enough for it to find the identity ("no identity found"),
           # by name or by hash. Add the keychain to the user search list, keeping the entries
           # already there. security delete-keychain (the always() step below) removes it again.
+          listing="$(security list-keychains -d user)"
           existing=()
           while IFS= read -r entry; do
             entry="${entry//\"/}"
             entry="${entry#"${entry%%[![:space:]]*}"}"
             if [ -n "$entry" ]; then existing+=("$entry"); fi
-          done < <(security list-keychains -d user)
+          done <<< "$listing"
           security list-keychains -d user -s "$keychain" "${existing[@]}"
           rm -f "$RUNNER_TEMP/gome-sign.p12"
           identities="$(security find-identity -p codesigning "$keychain")"

@@ -272,6 +272,10 @@ and by SHA-1 hash, works once the keychain is in the user keychain search list, 
 trust settings, and `codesign --verify --deep --strict` passes. `release.yml` now adds the
 keychain to the search list after importing it.
 
+`agent/mac/install.sh` signs with `--keychain` alone in the same way. That worked on the owner's
+Mac (macOS 27) but is unverified on macOS 26.x, where the CI runner needed the keychain in the
+search list.
+
 ## Pending: the desktop auto-update's real-device checks (not yet run)
 
 Each entry is filled in with its date and evidence when it is run. Do not edit an entry to
