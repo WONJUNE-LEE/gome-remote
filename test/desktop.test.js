@@ -37,6 +37,28 @@ const exists = (file) =>
     () => false,
   );
 
+// What the app uses of electron-updater: settings, events, a check that answers with
+// `result` (or rejects with `failure`), and the restart.
+function fakeAutoUpdater() {
+  const updater = Object.assign(new EventEmitter(), {
+    autoDownload: false,
+    autoInstallOnAppQuit: false,
+    checks: 0,
+    restarts: 0,
+    result: { isUpdateAvailable: false, updateInfo: { version: "0.3.0" } },
+    failure: null,
+    async checkForUpdates() {
+      updater.checks += 1;
+      if (updater.failure) throw updater.failure;
+      return updater.result;
+    },
+    quitAndInstall() {
+      updater.restarts += 1;
+    },
+  });
+  return updater;
+}
+
 // Runs desktop/main.cjs against a stand-in for Electron. `loadURL` updates the main
 // frame's URL the way a real navigation would, so IPC origin checks see what they would
 // see in the app.
@@ -50,6 +72,10 @@ async function desktop(
     platform = "win32",
     argv = [],
     page, // what executeJavaScript answers in the smoke test; "hang" never answers
+    packaged = false,
+    version = "0.3.0",
+    updater, // the stand-in electron-updater autoUpdater; one is made when packaged
+    updaterModule, // replaces require("electron-updater") entirely (it may throw)
   } = {},
   t,
 ) {
@@ -75,6 +101,8 @@ async function desktop(
   const lifecycle = [];
   const scripts = [];
   const timers = new Map();
+  const intervals = new Map();
+  const dialogs = [];
   let fullscreen = false;
   let window;
   let menu;
@@ -111,6 +139,9 @@ async function desktop(
     isFullScreen() {
       return fullscreen;
     }
+    isDestroyed() {
+      return this.destroyed === true;
+    }
     setFullScreen(value) {
       fullscreenRequests.push(value);
     }
@@ -124,6 +155,8 @@ async function desktop(
     app: {
       whenReady: async () => {},
       getPath: () => userData,
+      isPackaged: packaged,
+      getVersion: () => version,
       on() {},
       quit: () => lifecycle.push(["quit"]),
       exit: (code) => lifecycle.push(["exit", code]),
@@ -133,6 +166,14 @@ async function desktop(
     nativeTheme: { shouldUseDarkColors: false },
     shell: { openExternal: async (url) => external.push(url) },
     dialog: {
+      showMessageBox: async (...args) => {
+        // `parent` is the window the dialog was attached to, or null for a free dialog.
+        dialogs.push({
+          ...(args.length === 2 ? args[1] : args[0]),
+          parent: args.length === 2 ? args[0] : null,
+        });
+        return { response: 0 };
+      },
       showErrorBox: (_title, message) =>
         ready.resolve(Promise.reject(new Error(message))),
     },
@@ -156,13 +197,18 @@ async function desktop(
       },
     },
   };
+  const autoUpdater = updater ?? fakeAutoUpdater();
   vm.runInNewContext(source, {
     require: (name) =>
       name === "electron"
         ? electron
-        : name.startsWith("./")
-          ? require(join(desktopDir, name))
-          : require(name),
+        : name === "electron-updater"
+          ? updaterModule
+            ? updaterModule()
+            : { autoUpdater }
+          : name.startsWith("./")
+            ? require(join(desktopDir, name))
+            : require(name),
     __dirname: desktopDir,
     URL,
     console: { ...console, error: (...args) => logs.push(args.join(" ")) },
@@ -176,6 +222,11 @@ async function desktop(
     },
     clearTimeout: (id) => {
       if (timers.has(id)) timers.get(id).cleared = true;
+    },
+    setInterval: (callback, ms) => {
+      const id = intervals.size + 1;
+      intervals.set(id, { callback, ms });
+      return id;
     },
   });
   await ready.promise;
@@ -192,6 +243,9 @@ async function desktop(
     lifecycle,
     scripts,
     timers,
+    intervals,
+    dialogs,
+    autoUpdater,
     external,
     handlers,
     permissions,
@@ -210,7 +264,9 @@ async function desktop(
     show(url) {
       frame().url = url;
     },
-    menu,
+    get menu() {
+      return menu;
+    },
     fullscreenRequests,
     notifications,
     finishFullscreen(value) {
@@ -1144,4 +1200,260 @@ test("protocols other than the four it knows are still refused", async (t) => {
       /Invalid viewer state/,
       String(protocol),
     );
+});
+
+// ---- auto-update (desktop/updater.cjs, electron-updater) ----
+
+const remoteMenu = (f) =>
+  f.menu.template.find((entry) => entry.label === "원격").submenu;
+const SIX_HOURS = 6 * 60 * 60 * 1000;
+const visible = (item) => item.visible !== false;
+
+test("the updater is not started in an unpackaged app or in the smoke test", async (t) => {
+  for (const options of [
+    { packaged: false },
+    { packaged: true, argv: ["--smoke-test"], page: goodPage },
+  ]) {
+    const f = await desktop(options, t);
+    await settle();
+    assert.equal(f.autoUpdater.checks, 0);
+    assert.equal(f.autoUpdater.autoDownload, false, "settings untouched");
+    assert.equal(f.autoUpdater.listenerCount("error"), 0);
+    assert.equal(f.intervals.size, 0);
+    assert.equal(
+      [...f.timers.values()].some((timer) => timer.ms === 30_000),
+      false,
+    );
+    assert.equal(f.menu.getMenuItemById("check-update"), undefined);
+    assert.equal(f.menu.getMenuItemById("restart-update"), undefined);
+  }
+});
+
+test("a packaged app downloads and installs on quit, checks shortly after start and every 6 hours", async (t) => {
+  const f = await desktop({ packaged: true }, t);
+  await settle();
+  assert.equal(f.autoUpdater.autoDownload, true);
+  assert.equal(f.autoUpdater.autoInstallOnAppQuit, true);
+  assert.equal(f.autoUpdater.checks, 0, "not before the delay");
+  const first = [...f.timers.values()].find((timer) => timer.ms === 30_000);
+  assert.ok(first, "one check shortly after ready");
+  assert.deepEqual(
+    [...f.intervals.values()].map((i) => i.ms),
+    [SIX_HOURS],
+  );
+  await first.callback();
+  assert.equal(f.autoUpdater.checks, 1);
+  await [...f.intervals.values()][0].callback();
+  assert.equal(f.autoUpdater.checks, 2);
+  assert.deepEqual(f.dialogs, []);
+});
+
+test("errors in a background check are logged and never shown", async (t) => {
+  const logs = [];
+  const f = await desktop({ packaged: true, logs }, t);
+  await settle();
+  f.autoUpdater.failure = new Error("net::ERR_INTERNET_DISCONNECTED\nstack");
+  const first = [...f.timers.values()].find((timer) => timer.ms === 30_000);
+  await first.callback();
+  await [...f.intervals.values()][0].callback();
+  // electron-updater also emits 'error'; without a listener that would throw.
+  assert.doesNotThrow(() => f.autoUpdater.emit("error", new Error("late")));
+  assert.deepEqual(f.dialogs, []);
+  assert.equal(
+    logs.filter((line) => line.includes("ERR_INTERNET_DISCONNECTED")).length,
+    2,
+  );
+  assert.equal(
+    logs.some((line) => line.includes("stack")),
+    false,
+    "one line per error",
+  );
+  assert.deepEqual(f.lifecycle, []);
+});
+
+test("an updater whose start() fails never keeps the app from starting", async (t) => {
+  const logs = [];
+  const f = await desktop(
+    {
+      packaged: true,
+      logs,
+      updater: new Proxy(new EventEmitter(), {
+        set() {
+          throw new Error("broken");
+        },
+      }),
+    },
+    t,
+  );
+  await settle();
+  assert.deepEqual(f.loads, [GATEWAY]);
+  assert.deepEqual(f.lifecycle, []);
+  assert.equal(
+    logs.some((line) => line.includes("Updater not started")),
+    true,
+  );
+});
+
+test("a missing or broken electron-updater never keeps the app from starting", async (t) => {
+  const broken = {
+    "require throws": () => {
+      throw new Error("Cannot find module 'electron-updater'");
+    },
+    "autoUpdater getter throws": () => ({
+      get autoUpdater() {
+        throw new Error("app is undefined");
+      },
+    }),
+  };
+  for (const [name, updaterModule] of Object.entries(broken)) {
+    const logs = [];
+    const f = await desktop({ packaged: true, logs, updaterModule }, t);
+    await settle();
+    assert.deepEqual(f.loads, [GATEWAY], name);
+    assert.deepEqual(f.lifecycle, [], name);
+    assert.deepEqual(f.dialogs, [], name);
+    assert.equal(
+      logs.some((line) => line.includes("Updater unavailable")),
+      true,
+      name,
+    );
+    assert.equal(f.intervals.size, 0, name);
+    assert.equal(f.menu.getMenuItemById("check-update"), undefined, name);
+    assert.equal(
+      f.menu.getMenuItemById("change-server").label,
+      "서버 주소 바꾸기",
+    );
+  }
+});
+
+test("the Remote menu ends with a manual check and a hidden restart entry", async (t) => {
+  const f = await desktop({ packaged: true }, t);
+  const items = remoteMenu(f);
+  assert.deepEqual(
+    [...items.slice(-3)].map((item) => item.type ?? item.id),
+    ["separator", "check-update", "restart-update"],
+  );
+  assert.equal(items.at(-3 - 1).id, "change-server");
+  const check = f.menu.getMenuItemById("check-update");
+  assert.equal(check.label, "업데이트 확인");
+  assert.equal(visible(f.menu.getMenuItemById("restart-update")), false);
+});
+
+test("the manual check reports up to date, a download in progress, and an error", async (t) => {
+  const f = await desktop({ packaged: true, version: "0.3.0" }, t);
+  const click = () => f.menu.getMenuItemById("check-update").click();
+  await click();
+  assert.equal(f.dialogs.length, 1);
+  assert.match(f.dialogs[0].message, /최신 버전입니다 \(v0\.3\.0\)/);
+  f.autoUpdater.result = {
+    isUpdateAvailable: true,
+    updateInfo: { version: "0.3.1" },
+  };
+  await click();
+  assert.match(f.dialogs[1].message, /v0\.3\.1/);
+  assert.match(f.dialogs[1].message, /내려받는 중/);
+  f.autoUpdater.failure = new Error("offline");
+  await click();
+  assert.equal(f.dialogs[2].type, "error");
+  assert.equal(f.dialogs[2].detail, "offline");
+  assert.equal(f.autoUpdater.checks, 3);
+  assert.deepEqual(f.lifecycle, []);
+});
+
+test("a manual check that answers null says it cannot check, and dialogs are attached to the window", async (t) => {
+  const f = await desktop({ packaged: true }, t);
+  f.autoUpdater.result = null;
+  await f.menu.getMenuItemById("check-update").click();
+  assert.equal(f.dialogs.length, 1);
+  assert.equal(f.dialogs[0].type, "warning");
+  assert.equal(f.dialogs[0].message, "업데이트를 확인할 수 없습니다.");
+  assert.equal(f.dialogs[0].parent, f.window);
+  // Without a usable window the dialog is free-standing instead of failing.
+  f.window.destroyed = true;
+  await f.menu.getMenuItemById("check-update").click();
+  assert.equal(f.dialogs[1].parent, null);
+});
+
+test("a second click during a running manual check does not start another one", async (t) => {
+  const f = await desktop({ packaged: true }, t);
+  const gate = deferred();
+  f.autoUpdater.checkForUpdates = async () => {
+    f.autoUpdater.checks += 1;
+    await gate.promise;
+    return f.autoUpdater.result;
+  };
+  const click = () => f.menu.getMenuItemById("check-update").click();
+  const one = click();
+  const two = click();
+  gate.resolve();
+  await Promise.all([one, two]);
+  assert.equal(f.autoUpdater.checks, 1);
+  assert.equal(f.dialogs.length, 1);
+});
+
+test("the restart entry appears only after the download and then calls quitAndInstall", async (t) => {
+  const f = await desktop({ packaged: true }, t);
+  const before = f.menu;
+  assert.equal(visible(before.getMenuItemById("restart-update")), false);
+  // A click on the hidden entry (a stale menu) does nothing.
+  before.getMenuItemById("restart-update").click();
+  assert.equal(f.autoUpdater.restarts, 0);
+  f.autoUpdater.emit("update-downloaded", { version: "0.3.1" });
+  assert.notEqual(f.menu, before, "the menu is rebuilt, not patched");
+  const entry = f.menu.getMenuItemById("restart-update");
+  assert.equal(visible(entry), true);
+  assert.equal(entry.label, "다시 시작해서 업데이트 (v0.3.1)");
+  assert.equal(f.autoUpdater.restarts, 0, "never restarts by itself");
+  assert.deepEqual(f.lifecycle, []);
+  entry.click();
+  assert.equal(f.autoUpdater.restarts, 1);
+});
+
+test("rebuilding the menu for an update keeps the viewer state and the other entries", async (t) => {
+  const f = await desktop({ packaged: true }, t);
+  f.show(GATEWAY);
+  await f.invoke("viewer-state", {
+    open: true,
+    connected: true,
+    protocol: "agent",
+    resolution: "1920x1080",
+  });
+  f.autoUpdater.emit("update-downloaded", { version: "0.3.1" });
+  const menu = f.menu;
+  for (const id of ["back", "disconnect", "text-input", "resolution"])
+    assert.equal(menu.getMenuItemById(id).enabled, true, id);
+  assert.equal(menu.getMenuItemById("reconnect").enabled, false);
+  assert.equal(menu.getMenuItemById("resolution:1920x1080").checked, true);
+  assert.equal(menu.getMenuItemById("resolution:auto").checked, false);
+  assert.equal(menu.getMenuItemById("change-server").label, "서버 주소 바꾸기");
+  // New viewer states reach the rebuilt menu.
+  await f.invoke("viewer-state", {
+    open: false,
+    connected: false,
+    protocol: null,
+    resolution: "auto",
+  });
+  assert.equal(f.menu.getMenuItemById("back").enabled, false);
+});
+
+test("a manual check after the download says it is ready instead of downloading again", async (t) => {
+  const f = await desktop({ packaged: true }, t);
+  f.autoUpdater.emit("update-downloaded", { version: "0.3.1" });
+  f.autoUpdater.result = {
+    isUpdateAvailable: true,
+    updateInfo: { version: "0.3.1" },
+  };
+  await f.menu.getMenuItemById("check-update").click();
+  assert.match(f.dialogs[0].message, /v0\.3\.1.*이미 받았습니다/);
+  // And the background check stops asking while a restart is pending.
+  const first = [...f.timers.values()].find((timer) => timer.ms === 30_000);
+  const checks = f.autoUpdater.checks;
+  await first.callback();
+  assert.equal(f.autoUpdater.checks, checks);
+});
+
+test("the updater adds no IPC channel", async (t) => {
+  const plain = await desktop({}, t);
+  const packaged = await desktop({ packaged: true }, t);
+  assert.deepEqual([...packaged.handlers.keys()], [...plain.handlers.keys()]);
 });

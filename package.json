@@ -1,6 +1,6 @@
 {
   "name": "gome-remote",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
   "description": "A Tailscale-only remote desktop for your machines",
   "type": "module",
@@ -15,12 +15,14 @@
     "dist": "npm run build && electron-builder --publish never"
   },
   "dependencies": {
+    "electron-updater": "6.8.10",
     "ws": "8.22.0"
   },
   "devDependencies": {
     "@types/node": "24.10.1",
     "electron": "44.5.1",
     "electron-builder": "26.15.3",
+    "js-yaml": "4.3.2",
     "prettier": "3.9.9",
     "typescript": "5.9.3",
     "vite": "8.3.2"
@@ -38,12 +40,20 @@
       "vendor/NOTICE",
       "package.json"
     ],
+    "afterSign": "scripts/mac-sign.cjs",
+    "publish": {
+      "provider": "github",
+      "owner": "WONJUNE-LEE",
+      "repo": "gome-remote",
+      "releaseType": "draft"
+    },
     "mac": {
       "target": [
         "dmg",
         "zip"
       ],
-      "category": "public.app-category.productivity"
+      "category": "public.app-category.productivity",
+      "identity": null
     },
     "win": {
       "target": [

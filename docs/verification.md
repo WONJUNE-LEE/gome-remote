@@ -63,6 +63,20 @@ npm run build     # vite build
   rejected save without Electron's error prefix); showing the address page closes the
   Remote menu and leaves fullscreen; `--smoke-test` checks the page and bridge and
   cannot hang; fullscreen and F11 serialization; native menu states.
+- **Desktop auto-update**, `test/desktop.test.js` (updater part) and
+  `test/desktop-release.test.js`: against a stand-in `electron-updater`, the updater is off
+  when unpackaged and in the smoke test; a packaged app checks once 30 s after start and
+  every 6 hours, downloads and installs on quit; background errors are logged, never shown;
+  the manual check reports up to date, a download, null and an error (with the window as
+  parent); the restart entry is hidden until `update-downloaded` and then calls
+  `quitAndInstall` (the menu is rebuilt and keeps the viewer state); a missing or broken
+  `electron-updater` never keeps the app from starting; no IPC channel is added. The release
+  test checks `package.json` (exact pins, draft publish to this repository, `identity: null`,
+  `afterSign`), `scripts/mac-sign.cjs` with a recording `codesign` (nothing without the
+  variables, one variable alone fails, sign then strict verify then the requirement, a
+  failing `codesign` fails) and parses `.github/workflows/release.yml`: the job chain, the
+  rights of each job, the tag check, the Mac secret check and keychain cleanup, the
+  completeness check before the release is published, and that no step prints a secret.
 - **UI (D6)**, `test/browser-api.test.js`, `test/tiles.test.js`,
   `test/viewer-flow.test.js`, `test/viewer-invariants.test.js`,
   `test/resolution.test.js` (자동 해상도, 구 앱 호환): same-origin requests
@@ -153,6 +167,10 @@ the real Electron opens the local address page with a throwaway data directory a
 network, and exits 0 only if the page, its title and both preload bridges are as expected.
 `--no-sandbox` is needed because the runner's Electron lacks a configured setuid sandbox.
 
+`.github/workflows/release.yml` (tags `v*`) runs `npm test` and `npm run check` on every
+platform before it builds, so it runs the same tests, including the updater and release tests
+above, and the same smoke test on Linux.
+
 Not covered by automation: the browser rendering on a real screen, real
 guacd with real GNOME Remote Desktop or macOS Screen Sharing. Those are the
 pre-tests and V-checks below.
@@ -226,6 +244,43 @@ and the agent was opened from its tile.
 Outcome: the first branch of P1 ("(a)(b) pass: unlock through the agent"). The switch is set:
 `REFUSE_WHEN_LOCKED = false` in `agent/mac/src/status.rs` and `LOCKED_TILE_ENABLED = true` in
 `src/tiles.ts` (the tile still says 잠김 but opens). The Mac (VNC) tile stays as the fallback.
+
+## Desktop auto-update: signing check, recorded 2026-10-16
+
+Run on an arm64 Mac (macOS 27.0.1): a throwaway certificate made by
+`scripts/make-mac-signing-cert.sh` was imported into a temporary keychain exactly as
+`release.yml` does, and a test bundle was signed with
+`codesign --force --deep --sign "Gome Remote Desktop Signing" --keychain <temporary keychain>`.
+
+- Signing exited 0; `codesign --verify --deep --strict` reported the bundle valid on disk and
+  satisfying its Designated Requirement.
+- `security find-identity -p codesigning` without `-v` lists the identity as
+  `CSSMERR_TP_NOT_TRUSTED`; with `-v` it reports 0 valid identities. Signing by name works
+  regardless.
+- The designated requirement is `identifier "net.gome.remote" and certificate leaf =
+H"<sha1 of the certificate>"`, so a later build signed with the same certificate meets the
+  requirement of the installed one (the hash is not recorded here; the certificate was thrown
+  away).
+
+This covers the keychain import and `codesign` calls only; it was not a release build and
+not an update.
+
+## Pending: the desktop auto-update's real-device checks (not yet run)
+
+Each entry is filled in with its date and evidence when it is run. Do not edit an entry to
+say "pass" without that evidence.
+
+- Real macOS signing in CI: a `v*` tag run of `release.yml` on the macOS runner with the
+  secrets set, the hook signing the real Electron bundle (`--deep` over the helpers and
+  frameworks), and the check of the zipped app (`Authority=` line) passing.
+- Squirrel.Mac update with the self-signed certificate: install 0.3.0 from the release, publish
+  0.3.1 signed by the same certificate, see the update download and install through
+  **원격 → 다시 시작해서 업데이트** and on quit; and that a build signed by another certificate
+  is refused.
+- Windows NSIS update 0.3.0 to 0.3.1 with the unsigned installer.
+- `release.yml` end to end: the draft created once, the three platforms uploading into it,
+  the completeness check, the release published as latest, and the asset names the updater
+  reads (`latest.yml`, `latest-mac.yml`, `latest-linux.yml`).
 
 ## Pending: the Mac agent's device checks (not yet run)
 

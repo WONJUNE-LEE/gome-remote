@@ -1,0 +1,152 @@
+name: Release
+# Push a tag vX.Y.Z (X.Y.Z = the version in package.json) to publish the desktop app.
+# One job makes the draft release, the three platform jobs upload into it, and the last
+# job publishes it only when every file the updater needs is there, so an installed app
+# never sees a release that is half filled.
+on:
+  push:
+    tags: ["v*"]
+permissions:
+  contents: read
+concurrency:
+  group: release-${{ github.ref_name }}
+  cancel-in-progress: false
+env:
+  GOME_MAC_SIGN_NAME: Gome Remote Desktop Signing
+jobs:
+  verify-version:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: The tag must be v plus the version in package.json
+        run: |
+          expected="v$(node -p "require('./package.json').version")"
+          if [ "$GITHUB_REF_NAME" != "$expected" ]; then
+            echo "::error::Tag $GITHUB_REF_NAME does not match package.json (expected $expected)"
+            exit 1
+          fi
+
+  draft:
+    needs: verify-version
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      # A single job creates the release, or parallel platform jobs would each create one.
+      # An existing draft (a re-run) is reused; a published release is never touched.
+      - name: Create the draft release
+        run: |
+          if state="$(gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft)"; then
+            if [ "$state" != "true" ]; then
+              echo "::error::Release $GITHUB_REF_NAME is already published"
+              exit 1
+            fi
+          else
+            gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --verify-tag --draft \
+              --title "$GITHUB_REF_NAME" \
+              --notes "Gome Remote $GITHUB_REF_NAME. Download the file for your system below. Installed apps update themselves."
+          fi
+
+  build:
+    needs: draft
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: write
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+      - run: npm ci
+      - run: npm test
+      - run: npm run check
+      - run: npm run build
+      - name: Electron smoke test
+        if: runner.os == 'Linux'
+        run: xvfb-run -a npx electron . --no-sandbox --smoke-test --user-data-dir="$RUNNER_TEMP/gome-remote-smoke"
+      # The Mac app is signed with the same self-signed certificate in every release:
+      # Squirrel.Mac refuses an update signed by a different one. An unsigned Mac build
+      # would break the update chain for everyone who installed before, so a missing
+      # secret fails this job instead of shipping something else.
+      - name: Import the Mac signing certificate
+        if: runner.os == 'macOS'
+        env:
+          MAC_SIGN_P12_BASE64: ${{ secrets.MAC_SIGN_P12_BASE64 }}
+          MAC_SIGN_P12_PASSWORD: ${{ secrets.MAC_SIGN_P12_PASSWORD }}
+        run: |
+          if [ -z "$MAC_SIGN_P12_BASE64" ] || [ -z "$MAC_SIGN_P12_PASSWORD" ]; then
+            echo "::error::The secrets MAC_SIGN_P12_BASE64 and MAC_SIGN_P12_PASSWORD are required; a release must not ship an unsigned Mac build (see scripts/make-mac-signing-cert.sh)"
+            exit 1
+          fi
+          keychain="$RUNNER_TEMP/gome-sign.keychain-db"
+          password="$(openssl rand -hex 24)"
+          echo "::add-mask::$password"
+          printf '%s' "$MAC_SIGN_P12_BASE64" | openssl base64 -d -A -out "$RUNNER_TEMP/gome-sign.p12"
+          security create-keychain -p "$password" "$keychain"
+          security set-keychain-settings -lut 21600 "$keychain"
+          security unlock-keychain -p "$password" "$keychain"
+          security import "$RUNNER_TEMP/gome-sign.p12" -k "$keychain" -P "$MAC_SIGN_P12_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$password" "$keychain" > /dev/null
+          rm -f "$RUNNER_TEMP/gome-sign.p12"
+          identities="$(security find-identity -p codesigning "$keychain")"
+          grep -Fq "$GOME_MAC_SIGN_NAME" <<< "$identities" \
+            || { echo "::error::The certificate named $GOME_MAC_SIGN_NAME is not in the imported file"; exit 1; }
+          echo "GOME_MAC_SIGN_KEYCHAIN=$keychain" >> "$GITHUB_ENV"
+          echo "GOME_MAC_SIGN_IDENTITY=$GOME_MAC_SIGN_NAME" >> "$GITHUB_ENV"
+      - name: Build, sign and upload into the draft release
+        run: npx electron-builder --publish always
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
+      # The hook signs before the zip is made; check the zip really holds a signed app.
+      - name: Check the Mac app inside the zip
+        if: runner.os == 'macOS'
+        run: |
+          check="$RUNNER_TEMP/gome-zip-check"
+          rm -rf "$check"
+          mkdir "$check"
+          ditto -x -k release/*.zip "$check"
+          app="$(echo "$check"/*.app)"
+          codesign --verify --deep --strict "$app"
+          details="$(codesign -dvv "$app" 2>&1)"
+          grep -Fq "Authority=$GOME_MAC_SIGN_NAME" <<< "$details" \
+            || { echo "::error::The app in the zip is not signed by $GOME_MAC_SIGN_NAME"; echo "$details"; exit 1; }
+      - name: Delete the signing keychain
+        if: always() && runner.os == 'macOS'
+        run: |
+          if [ -n "${GOME_MAC_SIGN_KEYCHAIN-}" ]; then security delete-keychain "$GOME_MAC_SIGN_KEYCHAIN" || true; fi
+          rm -f "$RUNNER_TEMP/gome-sign.p12"
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - name: Check that every update file is attached, then publish
+        run: |
+          assets="$(gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name')"
+          missing=0
+          for name in latest.yml latest-mac.yml latest-linux.yml; do
+            if ! grep -Fxq "$name" <<< "$assets"; then echo "::error::Missing $name"; missing=1; fi
+          done
+          for pattern in '\.exe$' '\.exe\.blockmap$' '\.dmg$' '\.zip$' '\.zip\.blockmap$' '\.AppImage$'; do
+            if ! grep -Eq "$pattern" <<< "$assets"; then echo "::error::Missing a file matching $pattern"; missing=1; fi
+          done
+          if [ "$missing" != 0 ]; then
+            echo "$assets"
+            exit 1
+          fi
+          gh release edit "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --draft=false --latest

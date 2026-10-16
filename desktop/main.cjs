@@ -11,6 +11,7 @@ const fs = require("node:fs/promises");
 const path = require("node:path");
 const { pathToFileURL } = require("node:url");
 const { AddressStore, gatewayOrigin } = require("./address.cjs");
+const { createUpdater } = require("./updater.cjs");
 const smokeTest = process.argv.includes("--smoke-test");
 let smokeTimer;
 
@@ -68,8 +69,16 @@ function handle(audience, channel, callback) {
 const resolutions = ["auto", "1440x900", "1920x1080", "2560x1440"];
 const resolutionLabel = (size) =>
   size === "auto" ? "자동 (창 크기)" : size.replace("x", " × ");
+const closedViewer = {
+  open: false,
+  connected: false,
+  protocol: null,
+  resolution: resolutions[0],
+};
+let viewerState = closedViewer;
 // Enables the Remote menu entries that make sense for what the page shows.
 function applyViewerState(state) {
+  viewerState = state;
   const menu = Menu.getApplicationMenu();
   if (!menu) return;
   for (const id of ["back", "disconnect"])
@@ -84,15 +93,96 @@ function applyViewerState(state) {
     menu.getMenuItemById(`resolution:${size}`).checked =
       size === state.resolution;
 }
+
+// The updater exists only in a packaged app (and never in the smoke test); readyVersion is
+// set once an update has been downloaded and waits for a restart.
+let updater;
+let readyVersion = "";
+function buildMenu() {
+  const command = (id, label) => ({
+    id,
+    label,
+    enabled: false,
+    click: () => window.webContents.send("remote:viewer-action", id),
+  });
+  return Menu.buildFromTemplate([
+    ...(process.platform === "darwin" ? [{ role: "appMenu" }] : []),
+    {
+      label: "View",
+      submenu: [
+        {
+          label: "전체 화면",
+          accelerator: "F11",
+          click: () =>
+            requestFullscreen(
+              fullscreenTransition ? !fullscreenTarget : !window.isFullScreen(),
+            ),
+        },
+        { role: "resetZoom" },
+      ],
+    },
+    {
+      label: "원격",
+      submenu: [
+        command("back", "서버 목록"),
+        { type: "separator" },
+        {
+          id: "resolution",
+          label: "해상도",
+          enabled: false,
+          submenu: resolutions.map((size) => ({
+            id: `resolution:${size}`,
+            label: resolutionLabel(size),
+            type: "radio",
+            checked: size === resolutions[0],
+            click: () =>
+              window.webContents.send(
+                "remote:viewer-action",
+                `resolution:${size}`,
+              ),
+          })),
+        },
+        command("text-input", "텍스트 입력"),
+        command("reconnect", "다시 연결"),
+        command("disconnect", "연결 종료"),
+        { type: "separator" },
+        {
+          id: "change-server",
+          label: "서버 주소 바꾸기",
+          click: () => void showSetup(),
+        },
+        ...(updater
+          ? [
+              { type: "separator" },
+              {
+                id: "check-update",
+                label: "업데이트 확인",
+                click: () => updater.checkNow(),
+              },
+              {
+                id: "restart-update",
+                label: `다시 시작해서 업데이트 (v${readyVersion})`,
+                visible: !!readyVersion,
+                click: () => updater.restart(),
+              },
+            ]
+          : []),
+      ],
+    },
+    { role: "windowMenu" },
+  ]);
+}
+// Replaces the whole application menu and carries the viewer state over. Changing
+// `visible` or the label of an item that is already in the menu is not reliably shown on
+// every platform (Windows and Linux draw the menu bar once), so a new menu is set instead.
+function setMenu() {
+  Menu.setApplicationMenu(buildMenu());
+  applyViewerState(viewerState);
+}
 function showSetup(reason) {
   // The address page has no viewer: close the menu entries and leave fullscreen, or a
   // viewer opened a moment ago would keep them enabled for a page that ignores them.
-  applyViewerState({
-    open: false,
-    connected: false,
-    protocol: null,
-    resolution: resolutions[0],
-  });
+  applyViewerState(closedViewer);
   requestFullscreen(false);
   return window
     .loadURL(reason ? `${setupPage}?reason=${reason}` : setupPage)
@@ -158,12 +248,6 @@ app
       requestFullscreen(enabled);
     });
     handle("gateway", "remote:fullscreen-state", () => window.isFullScreen());
-    const command = (id, label) => ({
-      id,
-      label,
-      enabled: false,
-      click: () => window.webContents.send("remote:viewer-action", id),
-    });
     handle("gateway", "remote:viewer-state", (state) => {
       if (
         !state ||
@@ -175,60 +259,28 @@ app
         throw new Error("Invalid viewer state.");
       applyViewerState(state);
     });
-    Menu.setApplicationMenu(
-      Menu.buildFromTemplate([
-        ...(process.platform === "darwin" ? [{ role: "appMenu" }] : []),
-        {
-          label: "View",
-          submenu: [
-            {
-              label: "전체 화면",
-              accelerator: "F11",
-              click: () =>
-                requestFullscreen(
-                  fullscreenTransition
-                    ? !fullscreenTarget
-                    : !window.isFullScreen(),
-                ),
-            },
-            { role: "resetZoom" },
-          ],
-        },
-        {
-          label: "원격",
-          submenu: [
-            command("back", "서버 목록"),
-            { type: "separator" },
-            {
-              id: "resolution",
-              label: "해상도",
-              enabled: false,
-              submenu: resolutions.map((size) => ({
-                id: `resolution:${size}`,
-                label: resolutionLabel(size),
-                type: "radio",
-                checked: size === resolutions[0],
-                click: () =>
-                  window.webContents.send(
-                    "remote:viewer-action",
-                    `resolution:${size}`,
-                  ),
-              })),
-            },
-            command("text-input", "텍스트 입력"),
-            command("reconnect", "다시 연결"),
-            command("disconnect", "연결 종료"),
-            { type: "separator" },
-            {
-              id: "change-server",
-              label: "서버 주소 바꾸기",
-              click: () => void showSetup(),
-            },
-          ],
-        },
-        { role: "windowMenu" },
-      ]),
-    );
+    if (app.isPackaged && !smokeTest) {
+      try {
+        updater = createUpdater({
+          autoUpdater: require("electron-updater").autoUpdater,
+          dialog,
+          getWindow: () =>
+            window && !window.isDestroyed() ? window : undefined,
+          appVersion: app.getVersion(),
+          onReady: (version) => {
+            readyVersion = version;
+            setMenu();
+          },
+          setTimeout,
+          setInterval,
+          log: (line) => console.error(line),
+        });
+      } catch (error) {
+        // An update problem must never keep the app from starting.
+        console.error(`Updater unavailable: ${error.message}`);
+      }
+    }
+    setMenu();
     window = new BrowserWindow({
       show: !smokeTest,
       width: 1420,
@@ -296,6 +348,12 @@ app
     window.webContents.session.setPermissionCheckHandler(() => false);
     if (smokeTest || !gateway) await showSetup();
     else void openGateway();
+    // Started last, so a failure in the updater cannot keep the window from opening.
+    try {
+      if (updater) updater.start();
+    } catch (error) {
+      console.error(`Updater not started: ${error.message}`);
+    }
     if (smokeTest) {
       // Run with a throwaway --user-data-dir: with no saved address it only shows the
       // local address page, so there is no network and no real settings are touched.
