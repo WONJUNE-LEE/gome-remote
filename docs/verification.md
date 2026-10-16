@@ -228,7 +228,13 @@ address) when it is run. Do not edit an entry to say "pass" without that evidenc
 
 - Agent P2. Real clients: the selected ICE pair and whether the path is direct, click-to-picture
   at 2560x1440, still-screen hold with 1000 ms and 100 ms repeat, the decoder in use.
-- Agent P3. Permissions survive updates of the same signing certificate.
+- Agent P3. Permissions survive updates of the same signing certificate. Passed 2026-10-16: the
+  owner ran `install.sh` again on the Mac to update the operational install (root-owned program,
+  same self-signed certificate, hardened runtime); the previous program was kept as `.prev`, and
+  after the restart the agent logged Screen Recording and Accessibility as granted without the
+  owner touching System Settings. The first install on this Mac (2026-10-15) also showed that
+  Terminal may find Homebrew's OpenSSL 3, whose default PKCS#12 macOS cannot import; fixed in
+  affe39b.
 - Agent P4. The 30-day screen-recording reconfirmation (scheduled for 2026-11-12): whether capture
   continues and whether the Mac (VNC) tile can click the confirmation window.
 - Agent V1. The agent tile measured from the gateway server's Chrome against S2, S3 and S4.
@@ -248,5 +254,10 @@ address) when it is run. Do not edit an entry to say "pass" without that evidenc
 - Agent V4. Agent states: lock screen (unlocking through the agent, P1), display sleep, takeover, agent restart, nothing left
   pressed after a session, missing permission.
 - Agent V5. Negative tests: wrong token, a caller other than the gateway, an `Origin` header, a
-  login outside `allowedLogins`, an extra argument or environment variable.
+  login outside `allowedLogins`, an extra argument or environment variable. 2026-10-16 against
+  the operational install and the parallel gateway: a wrong token and no token from the gateway
+  server got 401; an `Origin` header and a wrong `Host` got 403; a request from the Mac itself
+  (not the gateway) got 403; through the gateway's socket, an unlisted login and a request
+  without a login got 403. Arguments and environment variables are covered by the
+  `no_overrides` test, not by a run.
 - Agent V6. Cutover and rollback rehearsal, including the installer's rollback to `.prev`.
