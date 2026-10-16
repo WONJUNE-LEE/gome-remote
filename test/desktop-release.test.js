@@ -435,7 +435,7 @@ test("the zipped Mac app is checked after the upload, and the keychain is always
   assert.equal(indexOfStep("build", KEYCHAIN), steps("build").length - 1);
 });
 
-test("the release is published last, only when every update file and installer is attached", () => {
+test("the publish step checks every update file and installer, and un-drafts in one place", () => {
   const run = stepNamed("publish", PUBLISH_STEP).run;
   const names = ["latest.yml", "latest-mac.yml", "latest-linux.yml"];
   const list = run.match(/for name in ([^;]*); do/);
@@ -454,13 +454,117 @@ test("the release is published last, only when every update file and installer i
       "\\.AppImage$",
     ],
   );
-  const fail = run.indexOf("exit 1", loop.index);
-  const undraft = run.indexOf("gh release edit");
-  assert.ok(fail > loop.index, "fails when something is missing");
-  assert.ok(undraft > fail, "un-drafts only after that");
-  assert.match(run.slice(undraft), /--draft=false --latest/);
   assert.equal(releaseText.match(/--draft=false/g).length, 1);
 });
+
+// The publish step's real `run` text, run the way GitHub runs it (bash -e -o pipefail)
+// against a fake `gh`. view prints the asset names from a fixture (null makes it fail);
+// edit records its arguments, one call per line.
+const runPublish = (assetNames) => {
+  const dir = mkdtempSync(path.join(tmpdir(), "gome-publish-"));
+  try {
+    const bin = path.join(dir, "bin");
+    mkdirSync(bin);
+    const assets = path.join(dir, "assets");
+    const record = path.join(dir, "edit-calls");
+    if (assetNames !== null)
+      writeFileSync(assets, assetNames.join("\n") + "\n");
+    writeFileSync(
+      path.join(bin, "gh"),
+      [
+        "#!/bin/bash",
+        'if [ "$1 $2" = "release view" ]; then cat "$FAKE_ASSETS"; exit $?; fi',
+        'if [ "$1 $2" = "release edit" ]; then echo "$*" >> "$FAKE_RECORD"; exit 0; fi',
+        "exit 2",
+        "",
+      ].join("\n"),
+      { mode: 0o755 },
+    );
+    const res = spawnSync(
+      "bash",
+      ["-e", "-o", "pipefail", "-c", stepNamed("publish", PUBLISH_STEP).run],
+      {
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          PATH: `${bin}${path.delimiter}${process.env.PATH}`,
+          GITHUB_REF_NAME: "v9.9.9",
+          GITHUB_REPOSITORY: "owner/repo",
+          FAKE_ASSETS: assets,
+          FAKE_RECORD: record,
+        },
+      },
+    );
+    const calls = existsSync(record)
+      ? readFileSync(record, "utf8").split("\n").slice(0, -1)
+      : [];
+    return {
+      status: res.status,
+      stderr: res.stderr,
+      stdout: res.stdout,
+      calls,
+    };
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+};
+
+const ALL_ASSETS = [
+  "latest.yml",
+  "latest-mac.yml",
+  "latest-linux.yml",
+  "Gome-Remote-Setup-9.9.9.exe",
+  "Gome-Remote-Setup-9.9.9.exe.blockmap",
+  "Gome-Remote-9.9.9.dmg",
+  "Gome-Remote-9.9.9-mac.zip",
+  "Gome-Remote-9.9.9-mac.zip.blockmap",
+  "Gome-Remote-9.9.9.AppImage",
+];
+const PUBLISH_CALL =
+  "release edit v9.9.9 --repo owner/repo --draft=false --latest";
+
+test(
+  "publish: with every file attached the release is un-drafted once, extra assets are ignored",
+  { skip: !bashAvailable && "needs bash on a POSIX system" },
+  () => {
+    const r = runPublish([...ALL_ASSETS, "notes.txt", "debug.log"]);
+    assert.equal(r.status, 0, r.stderr);
+    assert.deepEqual(r.calls, [PUBLISH_CALL]);
+    assert.doesNotMatch(r.stdout, /Missing/);
+  },
+);
+
+test(
+  "publish: a missing update file stops the release from being un-drafted",
+  { skip: !bashAvailable && "needs bash on a POSIX system" },
+  () => {
+    const r = runPublish(ALL_ASSETS.filter((n) => n !== "latest-mac.yml"));
+    assert.notEqual(r.status, 0);
+    assert.deepEqual(r.calls, []);
+    assert.match(r.stdout, /Missing latest-mac\.yml/);
+  },
+);
+
+test(
+  "publish: a missing installer stops the release from being un-drafted",
+  { skip: !bashAvailable && "needs bash on a POSIX system" },
+  () => {
+    const r = runPublish(ALL_ASSETS.filter((n) => !n.endsWith(".AppImage")));
+    assert.notEqual(r.status, 0);
+    assert.deepEqual(r.calls, []);
+    assert.match(r.stdout, /Missing a file matching .*AppImage/);
+  },
+);
+
+test(
+  "publish: when the asset list cannot be read nothing is un-drafted",
+  { skip: !bashAvailable && "needs bash on a POSIX system" },
+  () => {
+    const r = runPublish(null);
+    assert.notEqual(r.status, 0);
+    assert.deepEqual(r.calls, []);
+  },
+);
 
 test("no step prints a secret, directly or through its environment variable", () => {
   const secretNames = new Set();
