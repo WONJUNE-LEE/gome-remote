@@ -91,6 +91,11 @@ export class FakeChannel {
     this.sent = [];
     this.closed = 0;
     this.onclose = null;
+    this.onmessage = null;
+  }
+  // A message from the agent.
+  receive(data) {
+    this.onmessage?.({ data });
   }
   open() {
     this.readyState = "open";

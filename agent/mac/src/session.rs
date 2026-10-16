@@ -69,7 +69,8 @@ struct SessionHandle {
 }
 impl Closer for SessionHandle {
     fn close(&self) {
-        self.peer.close();
+        // The slot closes a session only to replace it.
+        self.peer.close_replaced();
     }
 }
 
@@ -169,6 +170,10 @@ impl PeerHooks for Hooks {
     }
 
     fn input_closed(&self) {
+        self.core.slot.with_current(self.id(), || self.core.parts.input.release_all());
+    }
+
+    fn silent(&self) {
         self.core.slot.with_current(self.id(), || self.core.parts.input.release_all());
     }
 
@@ -777,6 +782,41 @@ mod tests {
         assert_eq!(rig.log.count("release_all"), released + 1);
         assert!(peer.is_alive());
         assert_eq!(rig.log.count("stop"), 0);
+    }
+
+    #[test]
+    fn a_silent_peer_has_its_keys_released_and_its_session_stays_up() {
+        let rig = rig();
+        let (hooks, peer) = rig.open();
+        rig.settle(|log| log.count("start") == 1);
+        let released = rig.log.count("release_all");
+        hooks.silent();
+        assert_eq!(rig.log.count("release_all"), released + 1);
+        assert!(peer.is_alive());
+        assert_eq!(rig.log.count("stop"), 0);
+    }
+
+    #[test]
+    fn a_replaced_sessions_silence_releases_nothing_of_the_new_session() {
+        let rig = rig();
+        let (old_hooks, _old) = rig.open();
+        rig.settle(|log| log.count("start") == 1);
+        rig.open();
+        rig.settle(|log| log.count("start") == 2);
+        let released = rig.log.count("release_all");
+        old_hooks.silent();
+        assert_eq!(rig.log.count("release_all"), released, "the new session's held keys stay down");
+    }
+
+    #[test]
+    fn a_take_over_closes_the_old_peer_as_replaced_and_only_that() {
+        let rig = rig();
+        let (_old_hooks, old) = rig.open();
+        rig.settle(|log| log.count("start") == 1);
+        assert!(!old.is_replaced());
+        let (_new_hooks, new) = rig.open();
+        assert!(!old.is_alive() && old.is_replaced(), "the old session is told it was replaced");
+        assert!(new.is_alive() && !new.is_replaced());
     }
 
     #[test]

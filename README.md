@@ -275,7 +275,11 @@ Open the same address in a browser for the identical screen.
   `https://your-server.your-tailnet.ts.net:8450/#measure`) shows a small panel that times
   click-to-picture for whichever Mac session is open; without it the page is unchanged.
 - Lost connection: the window says **연결이 끊겼습니다 / 작업은 그대로 남아 있습니다**.
-  Choose 다시 연결 or 목록으로.
+  Choose 다시 연결 or 목록으로. A Mac (agent) session also ends this way once its
+  connection has been down for 3 seconds. If another device opens the same Mac (agent), the
+  older window says **다른 기기에서 연결했습니다** at once; 다시 연결 takes the session
+  back. If the page vanishes (browser killed, network lost), the agent lets go of any held
+  key or mouse button after 3 seconds of silence.
 - If this device's Tailscale account is not in `allowedLogins`, the window says
   **이 기기의 Tailscale 계정으로는 쓸 수 없습니다**.
 

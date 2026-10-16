@@ -181,6 +181,93 @@ test("the transient 'disconnected' state is waited out, not reported", async () 
   assert.deepEqual(h.deps.ended, []);
 });
 
+test("a connection that stays 'disconnected' for 3 seconds ends the session, and one that recovers in time does not", async () => {
+  const h = await agentHarness();
+  const pc = await h.connect();
+  pc.setState("disconnected");
+  h.advance(2999);
+  assert.deepEqual(h.deps.ended, []);
+  h.advance(1);
+  assert.deepEqual(h.deps.ended, ["disconnected"]);
+  assert.ok(pc.closed >= 1, "the connection is released");
+  h.advance(60_000);
+  assert.deepEqual(h.deps.ended, ["disconnected"], "reported once");
+});
+
+test("a recovery within 3 seconds cancels the wait, and the next loss starts a fresh 3 seconds", async () => {
+  const h = await agentHarness();
+  const pc = await h.connect();
+  pc.setState("disconnected");
+  h.advance(2500);
+  pc.setState("connected");
+  h.advance(10_000);
+  assert.deepEqual(h.deps.ended, []);
+  pc.setState("disconnected");
+  h.advance(2999);
+  assert.deepEqual(h.deps.ended, []);
+  // A repeated 'disconnected' report does not restart the clock.
+  pc.setState("disconnected");
+  h.advance(1);
+  assert.deepEqual(h.deps.ended, ["disconnected"]);
+});
+
+test("'failed' still ends at once, and a pending wait does not report a second time", async () => {
+  const h = await agentHarness();
+  const pc = await h.connect();
+  pc.setState("disconnected");
+  h.advance(1000);
+  pc.setState("failed");
+  assert.deepEqual(h.deps.ended, ["disconnected"]);
+  h.advance(10_000);
+  assert.deepEqual(h.deps.ended, ["disconnected"]);
+});
+
+test("a page that closes the session while the connection is 'disconnected' reports nothing later", async () => {
+  const h = await agentHarness();
+  const pc = await h.connect();
+  pc.setState("disconnected");
+  h.session.close();
+  h.advance(60_000);
+  assert.deepEqual(h.deps.ended, []);
+});
+
+test("the agent's 'replaced' notice ends the session at once with its own reason", async () => {
+  const h = await agentHarness();
+  const pc = await h.connect();
+  h.channel().receive('{"type":"replaced"}');
+  assert.deepEqual(h.deps.ended, ["replaced"]);
+  assert.ok(pc.closed >= 1, "the connection is released");
+  h.advance(60_000);
+  assert.deepEqual(h.deps.ended, ["replaced"], "nothing more, no reconnect");
+  assert.equal(h.peers.length, 1, "no new connection was made");
+});
+
+test("anything else the agent sends is ignored", async () => {
+  const h = await agentHarness();
+  await h.connect();
+  for (const data of [
+    "",
+    "replaced",
+    "not json",
+    '{"type":"other"}',
+    '{"type":"release"}',
+    "[]",
+    "null",
+    new ArrayBuffer(4),
+    undefined,
+  ])
+    h.channel().receive(data);
+  assert.deepEqual(h.deps.ended, []);
+});
+
+test("a notice that arrives after the page let go reports nothing", async () => {
+  const h = await agentHarness();
+  await h.connect();
+  h.session.close();
+  h.channel().receive('{"type":"replaced"}');
+  assert.deepEqual(h.deps.ended, []);
+});
+
 test("a closed data channel ends the session", async () => {
   const h = await agentHarness();
   await h.connect();

@@ -14,7 +14,8 @@ const fixture = JSON.parse(
     "utf8",
   ),
 );
-const { message } = await loadTs("agent-input.ts");
+const input = await loadTs("agent-input.ts");
+const { message } = input;
 
 // How the page builds each message from the values the fixture carries.
 const build = {
@@ -46,6 +47,20 @@ test("the contract covers every message the page can send, and the page can send
     .filter((m) => m.type === "button")
     .map((m) => m.b);
   assert.deepEqual([...new Set(buttons)].sort(), [0, 1, 2]);
+});
+
+test("the page understands exactly the agent's notices of the contract", () => {
+  const { parseNotice } = input;
+  assert.ok(fixture.notice.length >= 1);
+  for (const sample of fixture.notice)
+    assert.equal(parseNotice(JSON.stringify(sample)), sample.type);
+  assert.deepEqual(
+    fixture.notice.map((n) => n.type),
+    ["replaced"],
+  );
+  // An input message is not a notice.
+  for (const sample of fixture.input)
+    assert.equal(parseNotice(JSON.stringify(sample)), undefined);
 });
 
 test("the gateway accepts every status document of the contract and reduces it as the contract says", () => {

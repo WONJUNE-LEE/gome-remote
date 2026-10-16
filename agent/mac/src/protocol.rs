@@ -7,6 +7,9 @@ use serde_json::Value;
 
 pub const MAX_MESSAGE: usize = 512;
 pub const MAX_TEXT_MESSAGE: usize = 8 * 1024;
+/// What the agent sends over the data channel to a session that another device replaced,
+/// just before it closes that peer (spec D5). The page ends its session on it.
+pub const NOTICE_REPLACED: &str = r#"{"type":"replaced"}"#;
 /// Pixels. Larger wheel deltas are cut to this, in both directions.
 pub const MAX_WHEEL: i32 = 2000;
 

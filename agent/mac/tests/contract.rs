@@ -53,6 +53,17 @@ fn every_input_message_of_the_contract_parses_to_the_matching_kind() {
     assert!(buttons[0] != buttons[1] && buttons[1] != buttons[2] && buttons[0] != buttons[2]);
 }
 
+#[test]
+fn the_notices_the_agent_sends_are_exactly_the_contracts() {
+    let fixture = fixture();
+    let notices = fixture["notice"].as_array().unwrap();
+    assert_eq!(notices.len(), 1, "the agent sends one kind of notice");
+    let sent: Value = serde_json::from_str(protocol::NOTICE_REPLACED).unwrap();
+    assert_eq!(sent, notices[0]);
+    // The notice is not an input message: the agent does not mistake its own wording for one.
+    assert!(protocol::parse(protocol::NOTICE_REPLACED.as_bytes()).is_none());
+}
+
 fn status(
     screen: Screen,
     display: DisplayState,

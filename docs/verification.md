@@ -115,7 +115,9 @@ npm run build     # vite build
   settings and token file ownership rules; the input message limits (512 bytes, 8 KiB for
   text), the key table, double-click counting, the typed-text chunking; bitrate following the
   estimate down to the 2 Mbps floor; the static-screen repeat and sharper-refresh timing; the black-frame
-  detector; status enumerations; one session with takeover; the 10 s idle rule; the log
+  detector; status enumerations; one session with takeover, which tells the old page
+  (`{"type":"replaced"}`) before it closes the peer; the 3 s silence release of held keys
+  (2999 ms nothing, 3000 ms once, again after packets resume) and the 10 s idle rule; the log
   cap; and that no source file reads arguments or the environment. `test/agent-install.test.js`
   runs `install.sh` and `uninstall.sh` against stand-ins for the macOS tools: layout, token
   mode, signing options, address checks before anything is installed, the 200/401/403 health check, refusal of test
@@ -280,6 +282,15 @@ address) when it is run. Do not edit an entry to say "pass" without that evidenc
     then cleared and stayed clear. A new session afterwards showed nothing stuck. The agent log
     has no line for the release itself, only `[session] ended; capture stopped` and
     `[peer] closed`.
+  - Change after these measurements (not yet re-measured; the 17.7 s, 17.8 s and 10.3 s above
+    are the numbers before it): the agent now sends `{"type":"replaced"}` to a session it
+    replaces and closes that peer at once, and the page ends on it with "다른 기기에서
+    연결했습니다"; the page also ends a connection that has been `disconnected` for 3 s
+    (instead of waiting for `failed`); and the agent releases held keys and buttons after 3 s
+    without any packet from the peer. Expected: the old page ends within about a second of
+    the takeover and about 3 s (plus the browser's time to report `disconnected`) after an
+    agent restart, and a held Shift clears about 3 s after a SIGKILLed client. To re-measure
+    on the operational install once the owner has updated it.
   - Missing permission: pending (owner), needs a permission switched off on the Mac.
 - Agent V5. Negative tests: wrong token, a caller other than the gateway, an `Origin` header, a
   login outside `allowedLogins`, an extra argument or environment variable. 2026-10-16 against

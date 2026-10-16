@@ -174,6 +174,21 @@ export const message = {
   size: (w: number, h: number) => JSON.stringify({ type: "size", w, h }),
 };
 
+// What the agent may send back over the same channel. Only `replaced`: another device took
+// the session over and the agent is about to close this connection. Anything else (other
+// types, binary data, malformed text) is ignored.
+export type Notice = "replaced";
+export function parseNotice(data: unknown): Notice | undefined {
+  if (typeof data !== "string" || data.length > 256) return undefined;
+  try {
+    const value: unknown = JSON.parse(data);
+    const type = (value as { type?: unknown } | null)?.type;
+    return type === "replaced" ? type : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 // The codecs the page offers, in order: H.264 only (the Mac encodes in hardware), with
 // the constrained-baseline, packetization-mode 1 variants first, and `video/rtx` KEPT.
 // Without RTX the agent cannot answer a NACK and every lost packet waits for a keyframe

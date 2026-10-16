@@ -252,6 +252,27 @@ test("when the session ends the ended card appears, no new attempt starts, and �
   assert.equal(v.agentRequests().length, 2);
 });
 
+test("a session another device took over shows its own words and keeps 다시 연결", async () => {
+  const v = await opened();
+  v.agents[0].deps.onFirstFrame();
+  v.agents[0].deps.onEnded("replaced");
+  await v.settle();
+  assert.equal(v.el("overlay").hidden, false);
+  assert.equal(v.el("overlay-title").textContent, "다른 기기에서 연결했습니다");
+  assert.equal(v.el("overlay-actions").hidden, false);
+  assert.equal(v.agentRequests().length, 1, "no automatic reconnect");
+  v.el("overlay-reconnect").click();
+  await v.settle();
+  assert.equal(v.agentRequests().length, 2);
+  v.agents[1].deps.onFirstFrame();
+  v.agents[1].deps.onEnded("disconnected");
+  assert.equal(
+    v.el("overlay-title").textContent,
+    ENDED,
+    "the usual words come back for the next ending",
+  );
+});
+
 test("an ending reported by a replaced session cannot end the new one", async () => {
   const v = await opened();
   v.el("overlay-back").click();

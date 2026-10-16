@@ -1,7 +1,7 @@
 // What the ended card says when a Mac (agent) session fails for a reason of its own
 // (spec section 6). Reasons come from the gateway's error code (`permission`, `locked`,
 // `setup`, `unavailable`) or from the session itself (`unsupported`, `timeout`,
-// `disconnected`). Anything else keeps the page's usual "연결이 끊겼습니다" card, so this
+// `disconnected`, `replaced`: another device took the session over). Anything else keeps the page's usual "연결이 끊겼습니다" card, so this
 // returns nothing for it.
 export interface EndText {
   title: string;
@@ -32,6 +32,10 @@ const texts: Record<string, EndText> = {
   timeout: {
     title: "연결할 수 없습니다",
     detail: "Mac에서 영상이 오지 않습니다",
+  },
+  replaced: {
+    title: "다른 기기에서 연결했습니다",
+    detail: "이 기기에서 다시 연결할 수 있습니다",
   },
 };
 

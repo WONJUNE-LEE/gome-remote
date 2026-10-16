@@ -5,15 +5,21 @@
 use crate::bitrate::estimator_restart;
 use crate::frame::{EncodedFrame, FrameTarget};
 use crate::http::LogLimiter;
+use crate::protocol::NOTICE_REPLACED;
+use crate::silence::{Silence, RELEASE_AFTER};
 use crate::tailnet::{filter_offer_candidates, is_tailnet_ip};
 use anyhow::{anyhow, Result};
 use std::net::{IpAddr, SocketAddr, UdpSocket};
-use std::sync::atomic::{AtomicBool, Ordering::Relaxed};
+use std::sync::atomic::{
+    AtomicBool,
+    Ordering::{Acquire, Relaxed, Release},
+};
 use std::sync::mpsc::{sync_channel, Receiver, RecvTimeoutError, SyncSender, TrySendError};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use str0m::bwe::{Bitrate, BweKind};
 use str0m::change::SdpOffer;
+use str0m::channel::ChannelId;
 use str0m::media::{Frequency, MediaTime, Mid};
 use str0m::net::{Protocol, Receive};
 use str0m::rtp::AbsCaptureTime;
@@ -50,6 +56,9 @@ pub trait PeerHooks: Send + Sync + 'static {
     /// The `input` data channel closed while the peer lives on: whatever the page still
     /// held down must be released (spec D4).
     fn input_closed(&self) {}
+    /// Nothing at all has arrived from the page for `RELEASE_AFTER`: whatever it held down
+    /// is released, the session stays (the idle close decides whether it ends).
+    fn silent(&self) {}
     /// The peer thread ended for any reason (input must release everything held).
     fn closed(&self);
 }
@@ -69,6 +78,9 @@ pub struct PeerHandle {
     /// Set when a frame was dropped for want of room: the picture is broken until the next
     /// keyframe, so the peer thread asks the encoder for one.
     repair: Arc<AtomicBool>,
+    /// Set (before `alive` is cleared) when a newer session took this one's place: the
+    /// peer thread then tells the page before it goes (`NOTICE_REPLACED`).
+    replaced: Arc<AtomicBool>,
 }
 impl PeerHandle {
     pub fn is_alive(&self) -> bool {
@@ -77,16 +89,40 @@ impl PeerHandle {
     pub fn close(&self) {
         self.alive.store(false, Relaxed);
     }
+    /// Closes the peer because another session took over: the page is told, so it does not
+    /// have to wait for its connection check to fail.
+    pub fn close_replaced(&self) {
+        self.replaced.store(true, Release);
+        self.alive.store(false, Release);
+    }
+    /// Whether the peer was closed by a take-over.
+    #[cfg(test)]
+    pub(crate) fn is_replaced(&self) -> bool {
+        self.replaced.load(Relaxed)
+    }
     /// A handle with no peer behind it, for tests of whatever holds handles.
     #[cfg(test)]
     pub fn detached() -> PeerHandle {
-        PeerHandle { alive: Arc::new(AtomicBool::new(true)), frames: sync_channel(1).0, repair: Arc::default() }
+        PeerHandle {
+            alive: Arc::new(AtomicBool::new(true)),
+            frames: sync_channel(1).0,
+            repair: Arc::default(),
+            replaced: Arc::default(),
+        }
     }
     /// Like `detached`, but the queue's other end is returned so a test can look into it.
     #[cfg(test)]
     fn detached_with_queue(capacity: usize) -> (PeerHandle, std::sync::mpsc::Receiver<Msg>) {
         let (frames, rx) = sync_channel(capacity);
-        (PeerHandle { alive: Arc::new(AtomicBool::new(true)), frames, repair: Arc::default() }, rx)
+        (
+            PeerHandle {
+                alive: Arc::new(AtomicBool::new(true)),
+                frames,
+                repair: Arc::default(),
+                replaced: Arc::default(),
+            },
+            rx,
+        )
     }
     /// A handle whose frame queue a test (of whatever holds handles) can look into.
     #[cfg(test)]
@@ -267,12 +303,20 @@ pub fn accept(offer_sdp: &str, params: PeerParams, hooks: Arc<dyn PeerHooks>) ->
         });
     }
     let repair = Arc::new(AtomicBool::new(false));
-    let handle = PeerHandle { alive: alive.clone(), frames: tx, repair: repair.clone() };
+    let replaced = Arc::new(AtomicBool::new(false));
+    let handle = PeerHandle { alive: alive.clone(), frames: tx, repair: repair.clone(), replaced: replaced.clone() };
     let thread_alive = alive.clone();
+    let thread_replaced = replaced;
     std::thread::spawn(move || {
         // The guard runs `closed` on every way out, a panic included, exactly once.
         let _released = ReleaseOnDrop { alive: thread_alive.clone(), hooks: hooks.clone() };
-        let signals = Signals { alive: &thread_alive, repair: &repair, idle_limit: IDLE_LIMIT };
+        let signals = Signals {
+            alive: &thread_alive,
+            repair: &repair,
+            replaced: &thread_replaced,
+            idle_limit: IDLE_LIMIT,
+            release_after: RELEASE_AFTER,
+        };
         if let Err(e) = run(rtc, socket, local, rx, signals, hooks.as_ref()) {
             eprintln!("[peer] ended with error: {e:?}");
         }
@@ -299,8 +343,12 @@ struct Signals<'a> {
     alive: &'a AtomicBool,
     /// Set when a frame was dropped (see `PeerHandle::repair`).
     repair: &'a AtomicBool,
+    /// Set when the peer was closed by a take-over (see `PeerHandle::replaced`).
+    replaced: &'a AtomicBool,
     /// How long without an accepted datagram ends the session (`IDLE_LIMIT`).
     idle_limit: Duration,
+    /// How long without an accepted datagram releases what the page held (`RELEASE_AFTER`).
+    release_after: Duration,
 }
 
 /// The one thing `handle_estimate` asks of the session's bandwidth estimator, so a test can see
@@ -330,6 +378,31 @@ fn handle_estimate(estimator: &mut impl Estimator, hooks: &dyn PeerHooks, restar
     }
 }
 
+/// Tells the page that another device took the session over, puts that on the wire, and
+/// shuts the connection down. (str0m's `disconnect` is silent: the notice is the page's only
+/// signal, and the page ends at once on receiving it.)
+fn dismiss(rtc: &mut Rtc, channel: Option<ChannelId>, socket: &UdpSocket) {
+    if let Some(mut channel) = channel.and_then(|id| rtc.channel(id)) {
+        let _ = channel.write(false, NOTICE_REPLACED.as_bytes());
+    }
+    // A few rounds: the first moves the message into SCTP, the next puts it on the wire.
+    for _ in 0..3 {
+        loop {
+            match rtc.poll_output() {
+                Ok(Output::Transmit(t)) => {
+                    let _ = socket.send_to(&t.contents, t.destination);
+                }
+                Ok(Output::Event(_)) => {}
+                Ok(Output::Timeout(_)) | Err(_) => break,
+            }
+        }
+        if rtc.handle_input(Input::Timeout(Instant::now())).is_err() {
+            break;
+        }
+    }
+    rtc.disconnect();
+}
+
 fn run(
     mut rtc: Rtc,
     socket: UdpSocket,
@@ -338,7 +411,7 @@ fn run(
     signals: Signals<'_>,
     hooks: &dyn PeerHooks,
 ) -> Result<()> {
-    let Signals { alive, repair, idle_limit } = signals;
+    let Signals { alive, repair, replaced, idle_limit, release_after } = signals;
     let epoch = Instant::now();
     let mut mid: Option<Mid> = None;
     let mut payload_type = None;
@@ -346,6 +419,8 @@ fn run(
     let mut sent_key = false;
     let mut rtx_configured = false;
     let mut last_rx = Instant::now();
+    let mut channel: Option<ChannelId> = None;
+    let mut silence = Silence::default();
     // A socket that fails does so for every packet: a line a second, not a line per packet.
     let (mut send_log, mut write_log, mut restart_log) =
         (LogLimiter::default(), LogLimiter::default(), LogLimiter::default());
@@ -386,6 +461,7 @@ fn run(
                     Event::EgressBitrateEstimate(BweKind::Twcc { estimate, .. }) => {
                         handle_estimate(&mut rtc, hooks, &mut restart_log, estimate.as_u64());
                     }
+                    Event::ChannelOpen(id, _) => channel = Some(id),
                     Event::ChannelData(data) => hooks.input(&data.data),
                     Event::ChannelClose(_) => hooks.input_closed(),
                     Event::Closed => return Ok(()),
@@ -393,12 +469,22 @@ fn run(
                 },
             }
         };
-        if !rtc.is_alive() || !alive.load(Relaxed) {
+        if !rtc.is_alive() {
+            return Ok(());
+        }
+        if !alive.load(Acquire) {
+            if replaced.load(Acquire) {
+                dismiss(&mut rtc, channel, &socket);
+            }
             return Ok(());
         }
         if idle_expired(idle_limit, last_rx, Instant::now()) {
             println!("[peer] idle for {idle_limit:?}, closing");
             return Ok(());
+        }
+        if silence.release_due(release_after, last_rx, Instant::now()) {
+            println!("[peer] nothing from the page for {release_after:?}, releasing its keys");
+            hooks.silent();
         }
         let wait = timeout.saturating_duration_since(Instant::now()).min(Duration::from_millis(200));
         match rx.recv_timeout(wait) {
@@ -655,6 +741,7 @@ mod tests {
         estimates: Mutex<Vec<u64>>,
         inputs: Mutex<Vec<Vec<u8>>>,
         input_closed: AtomicUsize,
+        silent: AtomicUsize,
         closed: AtomicUsize,
     }
     impl PeerHooks for Recorder {
@@ -669,6 +756,9 @@ mod tests {
         }
         fn input_closed(&self) {
             self.input_closed.fetch_add(1, SeqCst);
+        }
+        fn silent(&self) {
+            self.silent.fetch_add(1, SeqCst);
         }
         fn closed(&self) {
             self.closed.fetch_add(1, SeqCst);
@@ -685,6 +775,8 @@ mod tests {
         connected: bool,
         channel_open: bool,
         pictures: usize,
+        /// Every text message the agent sent over the data channel.
+        notices: Vec<String>,
     }
 
     /// The agent's peer thread (`run`, exactly as production runs it, with a short idle limit)
@@ -696,11 +788,17 @@ mod tests {
         queue: SyncSender<Msg>,
         hooks: Arc<Recorder>,
         alive: Arc<AtomicBool>,
+        /// The handle the session holds, to close the peer the way a take-over does.
+        handle: PeerHandle,
         thread: Option<std::thread::JoinHandle<()>>,
     }
 
     impl Call {
         fn start(idle_limit: Duration) -> Call {
+            Call::start_with(idle_limit, RELEASE_AFTER)
+        }
+
+        fn start_with(idle_limit: Duration, release_after: Duration) -> Call {
             let params = PeerParams {
                 bind_ip: "127.0.0.1".parse().unwrap(),
                 initial_bitrate: 6_000_000,
@@ -725,13 +823,21 @@ mod tests {
 
             let (queue, rx) = sync_channel::<Msg>(QUEUE_CAPACITY);
             let (alive, repair) = (Arc::new(AtomicBool::new(true)), Arc::new(AtomicBool::new(false)));
+            let replaced = Arc::new(AtomicBool::new(false));
+            let handle = PeerHandle {
+                alive: alive.clone(),
+                frames: queue.clone(),
+                repair: repair.clone(),
+                replaced: replaced.clone(),
+            };
             let hooks = Arc::new(Recorder::default());
             let sender = agent_socket.try_clone().unwrap();
             agent_socket.set_read_timeout(Some(Duration::from_millis(2))).unwrap();
             let thread = {
                 let (alive, repair, hooks) = (alive.clone(), repair.clone(), hooks.clone());
                 std::thread::spawn(move || {
-                    let signals = Signals { alive: &alive, repair: &repair, idle_limit };
+                    let signals =
+                        Signals { alive: &alive, repair: &repair, replaced: &replaced, idle_limit, release_after };
                     let result = run(agent, sender, local, rx, signals, hooks.as_ref());
                     if let Err(e) = result {
                         eprintln!("[test peer] ended with error: {e:?}");
@@ -739,9 +845,18 @@ mod tests {
                     hooks.closed();
                 })
             };
-            let browser =
-                Browser { rtc, socket, addr, channel, mid, connected: false, channel_open: false, pictures: 0 };
-            Call { browser, agent_socket, queue, hooks, alive, thread: Some(thread) }
+            let browser = Browser {
+                rtc,
+                socket,
+                addr,
+                channel,
+                mid,
+                connected: false,
+                channel_open: false,
+                pictures: 0,
+                notices: Vec::new(),
+            };
+            Call { browser, agent_socket, queue, hooks, alive, handle, thread: Some(thread) }
         }
 
         /// One round: the browser's output and timers, then every datagram either side has waiting.
@@ -756,6 +871,9 @@ mod tests {
                     Output::Event(Event::Connected) => b.connected = true,
                     Output::Event(Event::ChannelOpen(..)) => b.channel_open = true,
                     Output::Event(Event::MediaData(_)) => b.pictures += 1,
+                    Output::Event(Event::ChannelData(data)) => {
+                        b.notices.push(String::from_utf8_lossy(&data.data).into_owned());
+                    }
                     Output::Event(_) => {}
                 }
             }
@@ -956,6 +1074,61 @@ mod tests {
         }
         assert!(call.finished(), "silence did not end the session");
         assert!(silent_since.elapsed() >= limit / 2, "it ended at once, not after the idle limit");
+    }
+
+    #[test]
+    fn a_silent_peer_has_its_keys_released_but_keeps_its_session_and_can_be_released_again() {
+        let mut call = Call::start_with(Duration::from_secs(30), Duration::from_millis(400));
+        call.connect();
+        let before = call.hooks.silent.load(SeqCst);
+        // Nothing is pumped: the page is gone. The release comes once, the session stays.
+        let quiet_since = Instant::now();
+        while call.hooks.silent.load(SeqCst) == before && quiet_since.elapsed() < Duration::from_secs(3) {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert_eq!(call.hooks.silent.load(SeqCst), before + 1, "silence did not release");
+        assert!(quiet_since.elapsed() >= Duration::from_millis(300), "released at once, not after the silence");
+        std::thread::sleep(Duration::from_millis(900));
+        assert_eq!(call.hooks.silent.load(SeqCst), before + 1, "released again within the same silence");
+        assert!(!call.finished(), "the release ended the session");
+        // The page is back (its packets are accepted), then gone again: one more release.
+        call.send_text(r#"{"type":"pointer","x":0.5,"y":0.5}"#);
+        call.until(Duration::from_millis(150), |_| false);
+        let resumed = call.hooks.silent.load(SeqCst);
+        let again_since = Instant::now();
+        while call.hooks.silent.load(SeqCst) == resumed && again_since.elapsed() < Duration::from_secs(3) {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert_eq!(call.hooks.silent.load(SeqCst), resumed + 1, "the second silence did not release");
+        assert!(!call.finished());
+    }
+
+    #[test]
+    fn a_replaced_peer_tells_the_page_and_then_ends() {
+        let mut call = Call::start(IDLE_LIMIT);
+        call.connect();
+        call.handle.close_replaced();
+        let began = Instant::now();
+        assert!(
+            call.until(Duration::from_secs(3), |c| c.finished()
+                && c.browser.notices.iter().any(|n| n == NOTICE_REPLACED)),
+            "the page heard {:?}, finished: {}",
+            call.browser.notices,
+            call.finished()
+        );
+        assert!(began.elapsed() < Duration::from_secs(1), "the replaced peer took {:?} to go", began.elapsed());
+        assert_eq!(call.browser.notices, vec![NOTICE_REPLACED.to_string()]);
+        assert_eq!(serde_json::from_str::<serde_json::Value>(NOTICE_REPLACED).unwrap()["type"], "replaced");
+    }
+
+    #[test]
+    fn a_peer_that_is_closed_for_any_other_reason_sends_no_notice() {
+        let mut call = Call::start(IDLE_LIMIT);
+        call.connect();
+        call.handle.close();
+        assert!(call.until(Duration::from_secs(3), |c| c.finished()));
+        call.until(Duration::from_millis(200), |_| false);
+        assert!(call.browser.notices.is_empty(), "{:?}", call.browser.notices);
     }
 
     #[test]

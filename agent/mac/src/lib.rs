@@ -16,6 +16,7 @@ pub mod protocol;
 pub mod refine;
 pub mod retry;
 pub mod session;
+pub mod silence;
 pub mod size;
 pub mod slot;
 pub mod stats;

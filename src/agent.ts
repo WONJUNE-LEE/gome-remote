@@ -8,13 +8,14 @@ import {
   keyCode,
   message,
   normalise,
+  parseNotice,
   preferredCodecs,
   splitText,
   wheelDelta,
 } from "./agent-input";
 
 // Reasons a session ends by itself; the page turns each into its own words.
-export type EndReason = "disconnected" | "unsupported" | "timeout";
+export type EndReason = "disconnected" | "unsupported" | "timeout" | "replaced";
 
 export interface AgentDeps {
   // Sends the page's offer to the gateway and resolves the agent's answer SDP.
@@ -52,6 +53,9 @@ export interface AgentSession {
 
 export const GATHER_LIMIT_MS = 1500;
 export const FIRST_FRAME_LIMIT_MS = 20_000;
+// A connection that has been "disconnected" this long without recovering is over; the
+// browser itself takes about 15 s more to say "failed" (V4 measured 17.7 s).
+export const DISCONNECTED_LIMIT_MS = 3000;
 // A move is not sent while this much is queued in the channel: the pointer catches up
 // with its newest position instead of replaying an old path.
 const MAX_BUFFERED = 64 * 1024;
@@ -76,6 +80,7 @@ export function createAgentSession(deps: AgentDeps): AgentSession {
   let ended = false;
   let framed = false;
   let frameTimer: ReturnType<typeof setTimeout> | undefined;
+  let lostTimer: ReturnType<typeof setTimeout> | undefined;
   const pressedButtons = new Set<number>();
   const pressedKeys = new Set<string>();
   let lastPoint = { x: 0.5, y: 0.5 };
@@ -194,13 +199,18 @@ export function createAgentSession(deps: AgentDeps): AgentSession {
   const teardown = () => {
     if (frameTimer !== undefined) clearTimeout(frameTimer);
     frameTimer = undefined;
+    if (lostTimer !== undefined) clearTimeout(lostTimer);
+    lostTimer = undefined;
     document.removeEventListener("mouseup", onMouseUp);
     if (pc) {
       pc.onconnectionstatechange = null;
       pc.ontrack = null;
       pc.onicegatheringstatechange = null;
     }
-    if (channel) channel.onclose = null;
+    if (channel) {
+      channel.onclose = null;
+      channel.onmessage = null;
+    }
     try {
       channel?.close();
     } catch {}
@@ -281,13 +291,27 @@ export function createAgentSession(deps: AgentDeps): AgentSession {
         } catch {}
         channel = connection.createDataChannel("input", { ordered: true });
         channel.onclose = () => end("disconnected");
+        channel.onmessage = (event) => {
+          if (parseNotice(event.data) === "replaced") end("replaced");
+        };
         connection.ontrack = (event) => {
           video.srcObject = event.streams[0] ?? new MediaStream([event.track]);
           void video.play().catch(() => {});
         };
         connection.onconnectionstatechange = () => {
-          if (["failed", "closed"].includes(connection.connectionState))
-            end("disconnected");
+          const state = connection.connectionState;
+          if (state === "failed" || state === "closed") end("disconnected");
+          else if (state === "disconnected") {
+            // The browser may recover by itself; if it has not within the limit, the Mac
+            // is gone (or another device replaced us without the notice getting through).
+            lostTimer ??= setTimeout(
+              () => end("disconnected"),
+              DISCONNECTED_LIMIT_MS,
+            );
+          } else if (lostTimer !== undefined) {
+            clearTimeout(lostTimer);
+            lostTimer = undefined;
+          }
         };
         await connection.setLocalDescription(await connection.createOffer());
         if (closed || ended) return;
