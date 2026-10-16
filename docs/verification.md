@@ -311,7 +311,8 @@ address) when it is run. Do not edit an entry to say "pass" without that evidenc
     - Held key after SIGKILL of the client browser with Shift down (twice): the Mac's
       modifier flags (session state) cleared 3.3 s and 3.3 s after the kill (was 10.3 s);
       still held at 0.2 s and 0.3 s. Poll interval about 0.5 s plus ssh time.
-  - Missing permission: pending (owner), needs a permission switched off on the Mac.
+  - Missing permission: not run. The owner waived it on 2026-10-16 (the path is covered by unit and
+    gateway tests: a status of `permission` disables the tile and refuses sessions with 403).
 - Agent V5. Negative tests: wrong token, a caller other than the gateway, an `Origin` header, a
   login outside `allowedLogins`, an extra argument or environment variable. 2026-10-16 against
   the operational install and the parallel gateway: a wrong token and no token from the gateway
