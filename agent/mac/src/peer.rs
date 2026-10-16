@@ -310,13 +310,7 @@ pub fn accept(offer_sdp: &str, params: PeerParams, hooks: Arc<dyn PeerHooks>) ->
     std::thread::spawn(move || {
         // The guard runs `closed` on every way out, a panic included, exactly once.
         let _released = ReleaseOnDrop { alive: thread_alive.clone(), hooks: hooks.clone() };
-        let signals = Signals {
-            alive: &thread_alive,
-            repair: &repair,
-            replaced: &thread_replaced,
-            idle_limit: IDLE_LIMIT,
-            release_after: RELEASE_AFTER,
-        };
+        let signals = Signals::production(&thread_alive, &repair, &thread_replaced);
         if let Err(e) = run(rtc, socket, local, rx, signals, hooks.as_ref()) {
             eprintln!("[peer] ended with error: {e:?}");
         }
@@ -349,6 +343,13 @@ struct Signals<'a> {
     idle_limit: Duration,
     /// How long without an accepted datagram releases what the page held (`RELEASE_AFTER`).
     release_after: Duration,
+}
+
+impl<'a> Signals<'a> {
+    /// The limits a real session runs with.
+    fn production(alive: &'a AtomicBool, repair: &'a AtomicBool, replaced: &'a AtomicBool) -> Self {
+        Signals { alive, repair, replaced, idle_limit: IDLE_LIMIT, release_after: RELEASE_AFTER }
+    }
 }
 
 /// The one thing `handle_estimate` asks of the session's bandwidth estimator, so a test can see
@@ -775,8 +776,10 @@ mod tests {
         connected: bool,
         channel_open: bool,
         pictures: usize,
-        /// Every text message the agent sent over the data channel.
+        /// Every message the agent sent over the data channel, as text.
         notices: Vec<String>,
+        /// Whether each of them arrived as a binary frame (`ChannelData::binary`); the page reads text only.
+        notice_binary: Vec<bool>,
     }
 
     /// The agent's peer thread (`run`, exactly as production runs it, with a short idle limit)
@@ -855,6 +858,7 @@ mod tests {
                 channel_open: false,
                 pictures: 0,
                 notices: Vec::new(),
+                notice_binary: Vec::new(),
             };
             Call { browser, agent_socket, queue, hooks, alive, handle, thread: Some(thread) }
         }
@@ -873,6 +877,7 @@ mod tests {
                     Output::Event(Event::MediaData(_)) => b.pictures += 1,
                     Output::Event(Event::ChannelData(data)) => {
                         b.notices.push(String::from_utf8_lossy(&data.data).into_owned());
+                        b.notice_binary.push(data.binary);
                     }
                     Output::Event(_) => {}
                 }
@@ -1119,6 +1124,22 @@ mod tests {
         assert!(began.elapsed() < Duration::from_secs(1), "the replaced peer took {:?} to go", began.elapsed());
         assert_eq!(call.browser.notices, vec![NOTICE_REPLACED.to_string()]);
         assert_eq!(serde_json::from_str::<serde_json::Value>(NOTICE_REPLACED).unwrap()["type"], "replaced");
+        // The page's parseNotice reads strings only: the frame kind is part of the contract.
+        let fixture: serde_json::Value = serde_json::from_str(include_str!("../tests/fixtures/contract.json")).unwrap();
+        assert_eq!(fixture["noticeFrame"], "text");
+        assert_eq!(
+            call.browser.notice_binary,
+            vec![fixture["noticeFrame"] == "binary"],
+            "the notice must be a text frame"
+        );
+    }
+
+    #[test]
+    fn a_real_session_runs_with_the_production_limits() {
+        let (alive, repair, replaced) = (AtomicBool::new(true), AtomicBool::new(false), AtomicBool::new(false));
+        let signals = Signals::production(&alive, &repair, &replaced);
+        assert_eq!(signals.idle_limit, IDLE_LIMIT);
+        assert_eq!(signals.release_after, RELEASE_AFTER);
     }
 
     #[test]

@@ -61,6 +61,19 @@ test("the page understands exactly the agent's notices of the contract", () => {
   // An input message is not a notice.
   for (const sample of fixture.input)
     assert.equal(parseNotice(JSON.stringify(sample)), undefined);
+  // The agent sends it as a text frame (the Rust peer test checks that); a binary frame
+  // of the same bytes reaches the page as an ArrayBuffer and is ignored.
+  assert.equal(fixture.noticeFrame, "text");
+  for (const sample of fixture.notice) {
+    const bytes = new TextEncoder().encode(JSON.stringify(sample));
+    assert.equal(parseNotice(bytes), undefined);
+    assert.equal(parseNotice(bytes.buffer), undefined);
+  }
+  // A notice padded beyond 256 characters is not one.
+  const padded = JSON.stringify(fixture.notice[0]) + " ".repeat(256);
+  assert.ok(padded.length > 256);
+  assert.equal(parseNotice(padded), undefined);
+  assert.equal(parseNotice(padded.slice(0, 256)), fixture.notice[0].type);
 });
 
 test("the gateway accepts every status document of the contract and reduces it as the contract says", () => {

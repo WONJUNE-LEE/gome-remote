@@ -97,6 +97,14 @@ npm run build     # vite build
   size messages have the agent's exact shapes; blur, dialogs, fullscreen and the end of the
   session send `release`; first picture, 20 s without one, a failed or closed connection and
   a closed channel end the session once, and a session the page closed reports nothing;
+  a connection that stays `disconnected` for 3 s ends the session (2999 ms nothing, 3000 ms
+  once; a recovery cancels the wait and the next loss starts a fresh 3 s; closing clears the
+  timer and handlers); the agent's `{"type":"replaced"}` ends it at once with "다른 기기에서
+  연결했습니다" and no reconnect (`test/agent-session.test.js`, `test/viewer-agent.test.js`),
+  while any other agent message, a non-string frame or a notice over 256 characters is
+  ignored; `test/agent-contract.test.js` and `agent/mac/tests/contract.rs` share
+  `contract.json`, including that the notice is a text frame (the page reads strings only;
+  `peer::tests` checks the agent writes it as text);
   main.ts connects an agent tile without touching Guacamole, keeps the ended card and the
   single reconnect rule, shows each refusal in its own words, and sends the window size; a
   permission-less tile is not openable, a "suspect" one is, and a locked one follows the

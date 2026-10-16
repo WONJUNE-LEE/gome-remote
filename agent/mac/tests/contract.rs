@@ -60,6 +60,8 @@ fn the_notices_the_agent_sends_are_exactly_the_contracts() {
     assert_eq!(notices.len(), 1, "the agent sends one kind of notice");
     let sent: Value = serde_json::from_str(protocol::NOTICE_REPLACED).unwrap();
     assert_eq!(sent, notices[0]);
+    // The page reads strings only; `peer::tests` checks that the agent writes it as a text frame.
+    assert_eq!(fixture["noticeFrame"], "text");
     // The notice is not an input message: the agent does not mistake its own wording for one.
     assert!(protocol::parse(protocol::NOTICE_REPLACED.as_bytes()).is_none());
 }

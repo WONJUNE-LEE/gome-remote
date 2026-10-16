@@ -12,6 +12,7 @@
     { "type": "size", "w": 1920, "h": 1080 }
   ],
   "notice": [{ "type": "replaced" }],
+  "noticeFrame": "text",
   "status": [
     {
       "json": {

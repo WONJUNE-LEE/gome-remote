@@ -226,7 +226,12 @@ test("a page that closes the session while the connection is 'disconnected' repo
   const h = await agentHarness();
   const pc = await h.connect();
   pc.setState("disconnected");
+  const channel = h.channel();
+  assert.equal(h.timers.size, 1, "the wait is pending");
   h.session.close();
+  assert.equal(h.timers.size, 0, "closing clears the wait");
+  assert.equal(channel.onmessage, null, "and the handlers");
+  assert.equal(channel.onclose, null);
   h.advance(60_000);
   assert.deepEqual(h.deps.ended, []);
 });
@@ -258,6 +263,16 @@ test("anything else the agent sends is ignored", async () => {
   ])
     h.channel().receive(data);
   assert.deepEqual(h.deps.ended, []);
+});
+
+test("a notice longer than 256 characters is ignored, one of exactly 256 is not", async () => {
+  const h = await agentHarness();
+  await h.connect();
+  const notice = '{"type":"replaced"}';
+  h.channel().receive(notice + " ".repeat(257 - notice.length));
+  assert.deepEqual(h.deps.ended, []);
+  h.channel().receive(notice + " ".repeat(256 - notice.length));
+  assert.deepEqual(h.deps.ended, ["replaced"]);
 });
 
 test("a notice that arrives after the page let go reports nothing", async () => {
