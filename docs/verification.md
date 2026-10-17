@@ -294,8 +294,12 @@ say "pass" without that evidence.
   into a dot) while the zip is `Gome-Remote-0.3.1-arm64-mac.zip`. electron-updater fetches
   `<zip url>.blockmap`, so Mac differential downloads fell back to full downloads through
   0.3.1. From 0.3.2 the Mac artifact names are set in `package.json` and the publish step
-  refuses a release in which an `.exe` or `.zip` lacks its exact `<name>.blockmap`. Still to
-  check on the 0.3.2 release: that the asset list has `Gome-Remote-0.3.2-arm64-mac.zip.blockmap`.
+  refuses a release in which an `.exe` or `.zip` lacks its exact `<name>.blockmap`. Checked on
+  the `v0.3.2` release (run 39030284211, commit 3bcd9f1, published 2026-10-17 11:53:41Z): the
+  assets are `Gome-Remote-0.3.2-arm64-mac.zip` with `Gome-Remote-0.3.2-arm64-mac.zip.blockmap`
+  (served with HTTP 200), `Gome-Remote-0.3.2-arm64.dmg` (the same name pattern as before) with
+  its blockmap, the Windows `.exe` with its blockmap, the `.AppImage` and the three
+  `latest*.yml`, and `latest-mac.yml` points at that zip.
 - Squirrel.Mac update with the self-signed certificate, 0.3.0 to 0.3.1. Passed 2026-10-16 on
   an arm64 Mac (macOS 27.0.1): 0.3.0 was installed from the release zip (its sha512 matched
   `latest-mac.yml`); on launch it downloaded 0.3.1 in about 50 s and Squirrel.Mac accepted it
@@ -307,8 +311,9 @@ say "pass" without that evidence.
 - Mac differential download: pending. It was broken through 0.3.1 by the blockmap name above.
   The updater needs the blockmap of the old version as well as the new one, so the first
   differential update is 0.3.2 to 0.3.3; check then that the download is a partial one.
-- Windows NSIS update with the unsigned installer: pending, now to be checked 0.3.1 to 0.3.2
-  with the owner's hand-installed app.
+- Windows NSIS update with the unsigned installer. Passed 2026-10-17: the owner's Windows app,
+  installed by hand from an earlier release (0.3.0 or 0.3.1), updated itself to 0.3.2 after the
+  `v0.3.2` release was published (the owner's report; the update log was not read).
 
 ## Pending: the Mac agent's device checks (not yet run)
 
