@@ -157,6 +157,10 @@ jobs:
           for pattern in '\.exe$' '\.exe\.blockmap$' '\.dmg$' '\.zip$' '\.zip\.blockmap$' '\.AppImage$'; do
             if ! grep -Eq "$pattern" <<< "$assets"; then echo "::error::Missing a file matching $pattern"; missing=1; fi
           done
+          # electron-updater fetches "<installer url>.blockmap", so the name must match exactly.
+          while IFS= read -r name; do
+            if ! grep -Fxq "$name.blockmap" <<< "$assets"; then echo "::error::Missing $name.blockmap"; missing=1; fi
+          done < <(grep -E '\.(exe|zip)$' <<< "$assets" || true)
           if [ "$missing" != 0 ]; then
             echo "$assets"
             exit 1

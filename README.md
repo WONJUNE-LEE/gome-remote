@@ -364,8 +364,10 @@ updater is off in that run.
    does both) and merge it to `main`.
 2. Tag the merge commit `vX.Y.Z` and push the tag. `.github/workflows/release.yml` fails unless the
    tag is `v` plus the `package.json` version, builds Windows, Mac and Linux, uploads them into one
-   draft release, and publishes it only when `latest.yml`, `latest-mac.yml`, `latest-linux.yml` and
-   the installers are all attached. Installed apps never see a half-filled release.
+   draft release, and publishes it only when `latest.yml`, `latest-mac.yml`, `latest-linux.yml`,
+   the installers, and a `<name>.blockmap` for every `.exe` and `.zip` are all attached (the
+   updater fetches `<zip url>.blockmap`, so `package.json` sets Mac artifact names without a
+   space). Installed apps never see a half-filled release.
 3. The Mac job needs the repository secrets `MAC_SIGN_P12_BASE64` and `MAC_SIGN_P12_PASSWORD`
    (it fails without them rather than ship an unsigned Mac build). Make them once with
    `scripts/make-mac-signing-cert.sh --keep <private directory>`, which prints both values,
