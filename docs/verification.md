@@ -276,22 +276,39 @@ keychain to the search list after importing it.
 Mac (macOS 27) but is unverified on macOS 26.x, where the CI runner needed the keychain in the
 search list.
 
-## Pending: the desktop auto-update's real-device checks (not yet run)
+## Pending: the desktop auto-update's real-device checks (partly run)
 
 Each entry is filled in with its date and evidence when it is run. Do not edit an entry to
 say "pass" without that evidence.
 
-- Real macOS signing in CI: a `v*` tag run of `release.yml` on the macOS runner with the
-  secrets set, the hook signing the real Electron bundle (`--deep` over the helpers and
-  frameworks), and the check of the zipped app (`Authority=` line) passing.
-- Squirrel.Mac update with the self-signed certificate: install 0.3.0 from the release, publish
-  0.3.1 signed by the same certificate, see the update download and install through
-  **원격 → 다시 시작해서 업데이트** and on quit; and that a build signed by another certificate
-  is refused.
-- Windows NSIS update 0.3.0 to 0.3.1 with the unsigned installer.
-- `release.yml` end to end: the draft created once, the three platforms uploading into it,
-  the completeness check, the release published as latest, and the asset names the updater
-  reads (`latest.yml`, `latest-mac.yml`, `latest-linux.yml`).
+- Real macOS signing in CI and `release.yml` end to end. Passed 2026-10-16: the `v0.3.0` tag
+  run (commit 8b3d012, run 38856367017) and the `v0.3.1` tag run (commit 017eafb, run
+  38857231540) succeeded on the three runners (the first `v0.3.0` run, on 4f2dce1, had failed
+  in the signing hook, see above). Each created one draft, the macOS job signed the real
+  Electron bundle and its zipped-app `Authority=` check passed, and the completeness check
+  published the release as latest (`v0.3.0` at 05:34:59Z, `v0.3.1` at 05:45:25Z, neither a
+  draft). The `v0.3.1` release carries `latest.yml`, `latest-mac.yml`, `latest-linux.yml`,
+  the Windows `.exe` and `.exe.blockmap`, the Mac `.dmg`, `.dmg.blockmap` and `-mac.zip`, and
+  the Linux `.AppImage`. One defect: the Mac zip's blockmap was attached as
+  `Gome.Remote-0.3.1-arm64-mac.zip.blockmap` (GitHub turned the space of the product name
+  into a dot) while the zip is `Gome-Remote-0.3.1-arm64-mac.zip`. electron-updater fetches
+  `<zip url>.blockmap`, so Mac differential downloads fell back to full downloads through
+  0.3.1. From 0.3.2 the Mac artifact names are set in `package.json` and the publish step
+  refuses a release in which an `.exe` or `.zip` lacks its exact `<name>.blockmap`. Still to
+  check on the 0.3.2 release: that the asset list has `Gome-Remote-0.3.2-arm64-mac.zip.blockmap`.
+- Squirrel.Mac update with the self-signed certificate, 0.3.0 to 0.3.1. Passed 2026-10-16 on
+  an arm64 Mac (macOS 27.0.1): 0.3.0 was installed from the release zip (its sha512 matched
+  `latest-mac.yml`); on launch it downloaded 0.3.1 in about 50 s and Squirrel.Mac accepted it
+  (`nativeUpdater` reported `update-downloaded`); on quit ShipIt reported "Installation
+  completed successfully"; the installed 0.3.1 was signed by the same certificate; the relaunch
+  reported no newer version. Not run, still pending: the install through
+  **원격 → 다시 시작해서 업데이트** (only the install on quit was seen), and that a build signed
+  by another certificate is refused.
+- Mac differential download: pending. It was broken through 0.3.1 by the blockmap name above.
+  The updater needs the blockmap of the old version as well as the new one, so the first
+  differential update is 0.3.2 to 0.3.3; check then that the download is a partial one.
+- Windows NSIS update with the unsigned installer: pending, now to be checked 0.3.1 to 0.3.2
+  with the owner's hand-installed app.
 
 ## Pending: the Mac agent's device checks (not yet run)
 

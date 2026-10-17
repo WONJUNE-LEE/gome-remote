@@ -69,6 +69,20 @@ test("the Mac build is signed by the hook, not by electron-builder, and makes th
   assert.ok(pkg.build.mac.target.includes("dmg"));
 });
 
+test("the Mac zip and its blockmap get names without a space (the blockmap must be <zip url>.blockmap)", () => {
+  // GitHub turns the space of the productName into a dot in an uploaded asset name, which
+  // is how 0.3.1 got a zip the updater could not pair with its blockmap.
+  assert.equal(
+    pkg.build.mac.artifactName,
+    "Gome-Remote-${version}-${arch}-mac.${ext}",
+  );
+  // The dmg would otherwise inherit the mac pattern and be renamed.
+  assert.equal(
+    pkg.build.dmg.artifactName,
+    "Gome-Remote-${version}-${arch}.${ext}",
+  );
+});
+
 // ---- scripts/mac-sign.cjs ----
 
 const outDir = path.join("/out", "mac");
@@ -454,6 +468,12 @@ test("the publish step checks every update file and installer, and un-drafts in 
       "\\.AppImage$",
     ],
   );
+  assert.match(
+    run,
+    /grep -E '\\\.\(exe\|zip\)\$' <<< "\$assets" \|\| true/,
+    "pairs every .exe and .zip with its blockmap",
+  );
+  assert.match(run, /Missing \$name\.blockmap/);
   assert.equal(releaseText.match(/--draft=false/g).length, 1);
 });
 
@@ -553,6 +573,53 @@ test(
     assert.notEqual(r.status, 0);
     assert.deepEqual(r.calls, []);
     assert.match(r.stdout, /Missing a file matching .*AppImage/);
+  },
+);
+
+test(
+  "publish: the 0.3.1 shape, a zip whose blockmap has another name, is not published",
+  { skip: !bashAvailable && "needs bash on a POSIX system" },
+  () => {
+    const r = runPublish(
+      ALL_ASSETS.map((n) =>
+        n === "Gome-Remote-9.9.9-mac.zip.blockmap"
+          ? "Gome.Remote-9.9.9-mac.zip.blockmap"
+          : n,
+      ),
+    );
+    assert.notEqual(r.status, 0);
+    assert.deepEqual(r.calls, []);
+    assert.match(r.stdout, /Missing Gome-Remote-9\.9\.9-mac\.zip\.blockmap/);
+    assert.doesNotMatch(r.stdout, /Missing Gome-Remote-Setup/);
+  },
+);
+
+test(
+  "publish: an installer whose blockmap is missing or misnamed is not published",
+  { skip: !bashAvailable && "needs bash on a POSIX system" },
+  () => {
+    const missing = runPublish(
+      ALL_ASSETS.filter((n) => n !== "Gome-Remote-Setup-9.9.9.exe.blockmap"),
+    );
+    assert.notEqual(missing.status, 0);
+    assert.deepEqual(missing.calls, []);
+    assert.match(
+      missing.stdout,
+      /Missing Gome-Remote-Setup-9\.9\.9\.exe\.blockmap/,
+    );
+    const misnamed = runPublish(
+      ALL_ASSETS.map((n) =>
+        n === "Gome-Remote-Setup-9.9.9.exe.blockmap"
+          ? "Gome.Remote.Setup.9.9.9.exe.blockmap"
+          : n,
+      ),
+    );
+    assert.notEqual(misnamed.status, 0);
+    assert.deepEqual(misnamed.calls, []);
+    assert.match(
+      misnamed.stdout,
+      /Missing Gome-Remote-Setup-9\.9\.9\.exe\.blockmap/,
+    );
   },
 );
 

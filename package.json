@@ -1,6 +1,6 @@
 {
   "name": "gome-remote",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "private": true,
   "description": "A Tailscale-only remote desktop for your machines",
   "type": "module",
@@ -53,7 +53,11 @@
         "zip"
       ],
       "category": "public.app-category.productivity",
-      "identity": null
+      "identity": null,
+      "artifactName": "Gome-Remote-${version}-${arch}-mac.${ext}"
+    },
+    "dmg": {
+      "artifactName": "Gome-Remote-${version}-${arch}.${ext}"
     },
     "win": {
       "target": [
