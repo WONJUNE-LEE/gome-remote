@@ -311,9 +311,11 @@ say "pass" without that evidence.
 - Mac differential download: pending. It was broken through 0.3.1 by the blockmap name above.
   The updater needs the blockmap of the old version as well as the new one, so the first
   differential update is 0.3.2 to 0.3.3; check then that the download is a partial one.
-- Windows NSIS update with the unsigned installer. Passed 2026-10-17: the owner's Windows app,
-  installed by hand from an earlier release (0.3.0 or 0.3.1), updated itself to 0.3.2 after the
-  `v0.3.2` release was published (the owner's report; the update log was not read).
+- Windows NSIS update with the unsigned installer. Passed 2026-10-17 on the owner's report: asked
+  to open the Windows app, installed by hand from an earlier release (0.3.0 or 0.3.1), and see
+  whether it moved to 0.3.2 after the `v0.3.2` release was published, the owner answered that it
+  had updated. The report names no version and does not say the in-app updater did it rather
+  than a reinstall; the app's version display and update log were not read.
 
 ## Pending: the Mac agent's device checks (not yet run)
 
