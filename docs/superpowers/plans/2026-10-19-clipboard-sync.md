@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Text copied on the client pastes on the remote and the reverse (Mac agent, VNC, RDP), a lock-screen paste types the client text into the Mac password field, and the Windows key reaches the Mac as Command in the desktop app's full screen, with no key remapping.
+**Goal:** Text copied on the client pastes on the remote and the reverse (Mac agent, VNC, RDP), a lock-screen paste types the client text into the Mac password field, and the Windows key reaches the Mac as Command while the Windows desktop app's remote view is focused, windowed or full screen, with no key remapping.
 
 **Architecture:** The page owns the sync rules (a pure TS core: focus and paste-barrier triggers, dedupe, notices) and talks to the client clipboard through desktop bridge 4 (main-process Electron `clipboard`) or `navigator.clipboard`. The Mac agent gains clipboard and lock messages on the existing `input` data channel, a pasteboard layer behind its `Platform` trait, a per-session state machine (watch, held lock-screen text) and an outbound queue on the peer. The desktop app enters HTML full screen on request of main and the page takes `keyboard.lock()` while a session is open.
 
@@ -656,6 +656,8 @@ node --test test/public-hygiene.test.js && git commit -m "Document clipboard syn
 ---
 
 ### Task 14: Windows-only in-window key lock (spec revision 3, D4/G4)
+
+Supersedes Global Constraints lines 22 and 26 and Review Focus 5 for the key lock: `fullscreen` and `keyboardLock` are granted in the Windows app only; the Windows app now captures the Windows key windowed too (through an in-window HTML full screen), not only in full screen; F11 is plain native full screen, which the page forwards to main's native toggle while the lock is held.
 
 Added after the owner rejected full-screen-only capture (2026-10-19). Spec D4 "Decisions
 (revision 3 ...)" is the requirement; this task replaces Task 8's HTML-full-screen F11 path.

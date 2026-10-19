@@ -146,8 +146,8 @@ focused, windowed or full screen):
   lock — the same keys as the released 0.3.2.
 - The desktop app sets `disableHtmlFullscreenWindowResize: true`. HTML full screen becomes an
   in-window state that only serves the key lock; it is not what F11 does.
-- While a session view is shown AND the window is focused (Windows app with bridge ≥ 4, a page
-  that marks it supports the lock), the page holds HTML full screen + `keyboard.lock()`. It is
+- While a session view is shown AND the window is focused (Windows app with bridge ≥ 4; only a
+  new page calls `keyLock`, an old page has no lock code and never calls it), the page holds HTML full screen + `keyboard.lock()`. It is
   taken when the session's first frame arrives, when the window gains focus, and when the user
   clicks the remote view while not held — always through main's `executeJavaScript(..., true)`,
   so no page user-activation is needed. It is released (`keyboard.unlock()` +
@@ -169,9 +169,9 @@ focused, windowed or full screen):
   line (reason only) and shows no dialog.
 - Permission handler: grant `fullscreen` and `keyboardLock` only for the gateway origin, as before.
 - If HTML full screen or the lock is refused or hangs, the session works, the Windows key is not
-  captured, G5 still works; no error dialog. An old page (no marker) never gets HTML full screen.
-- Kill switch: the lock is gated by the page marker, so repointing the gateway to the previous
-  candidate turns the lock off for every installed app without an app downgrade.
+  captured, G5 still works; no error dialog. An old page never calls `keyLock`, so it never gets HTML full screen.
+- Kill switch: repointing the gateway to the previous candidate turns the lock off for every
+  installed app without an app downgrade (its page never calls `keyLock`).
 - Browsers: unchanged (no lock).
 
 ### D5. Lock-screen paste (Mac agent path)
