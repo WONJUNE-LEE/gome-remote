@@ -208,7 +208,15 @@ export function createClipboardSync(deps: SyncDeps): ClipboardSync {
     if (flight?.kind === "paste") flight = undefined;
     const run = held;
     held = [];
-    for (const item of run) item();
+    // One failing item (a send on a closed channel) must not lose the ones after it, such
+    // as a key-up, nor skip the next read.
+    for (const item of run) {
+      try {
+        item();
+      } catch {
+        // dropped: nothing about the item may be logged
+      }
+    }
     pump();
   }
 
@@ -218,6 +226,9 @@ export function createClipboardSync(deps: SyncDeps): ClipboardSync {
     barrierTimer = deps.setTimeout(() => {
       barrierTimer = undefined;
       if (!barrier) return;
+      // Whatever read is in flight (even a focus read stuck behind a permission prompt)
+      // is abandoned, so the next paste reads afresh.
+      flight = undefined;
       closeBarrier();
       deps.notify("read-timeout");
     }, PASTE_BARRIER_MS);
@@ -248,7 +259,10 @@ export function createClipboardSync(deps: SyncDeps): ClipboardSync {
       clearRetries();
       queue = [];
       flight = undefined;
+      // Keys held for a paste go out without the text: the user is told.
+      const pasting = barrier;
       closeBarrier();
+      if (pasting) deps.notify("read-timeout");
     },
     setRemoteLocked(next) {
       if (next === locked) return;

@@ -409,7 +409,7 @@ test("a_barrier_behind_a_slow_focus_read_times_out_without_a_late_paste_read", a
   assert.deepEqual(r.notices, ["read-timeout"]);
   await r.answer("focus text");
   assert.equal(r.pending(), 0, "the dropped paste trigger does not read");
-  assert.deepEqual(r.sent, [["focus text", false]]);
+  assert.deepEqual(r.sent, [], "the abandoned focus read is discarded");
 });
 
 test("two_paste_keys_in_one_barrier_read_once", async () => {
@@ -437,7 +437,7 @@ test("focus_loss_during_a_barrier_releases_the_queue_without_sending", async () 
   assert.deepEqual(r.log, ["V"]);
   await r.answer("late");
   assert.deepEqual(r.sent, []);
-  assert.deepEqual(r.notices, []);
+  assert.deepEqual(r.notices, ["read-timeout"]);
   assert.equal(r.timerCount(), 0);
 });
 
@@ -738,4 +738,54 @@ test("notice_text_is_the_approved_korean_copy", () => {
       "unsupported-chars": "이 화면은 한글 같은 문자를 붙여넣을 수 없습니다",
     },
   );
+});
+
+test("a_throwing_held_item_does_not_lose_the_rest_or_stop_the_next_read", async () => {
+  const r = rig();
+  r.s.setViewFocused(true);
+  await r.answer("");
+  r.s.pasteShortcut(key({ ctrlKey: true }));
+  r.event("V-down");
+  r.s.gate(() => {
+    throw new Error("channel closed");
+  });
+  r.event("V-up");
+  await r.answer("text");
+  assert.deepEqual(r.log, ["clipboard text", "V-down", "V-up"]);
+  // The core still works: the next paste reads again.
+  r.s.pasteShortcut(key({ ctrlKey: true }));
+  assert.equal(r.pending(), 1);
+});
+
+test("a_focus_read_that_never_settles_is_abandoned_at_the_barrier_timeout", async () => {
+  const r = rig();
+  r.s.setViewFocused(true); // read 0 never settles
+  r.s.pasteShortcut(key({ ctrlKey: true }));
+  r.event("V");
+  await r.advance(PASTE_BARRIER_MS);
+  assert.deepEqual(r.log, ["V"]);
+  assert.deepEqual(r.notices, ["read-timeout"]);
+  r.s.pasteShortcut(key({ ctrlKey: true }));
+  r.event("V2");
+  assert.equal(r.reads.length, 2, "the next paste reads at once");
+  r.reads[1].settled = true;
+  r.reads[1].resolve(ok("fresh"));
+  await tick();
+  assert.deepEqual(r.log, ["V", "clipboard fresh", "V2"]);
+  // The stuck read's late result is discarded.
+  r.reads[0].settled = true;
+  r.reads[0].resolve(ok("stale"));
+  await tick();
+  assert.deepEqual(r.sent, [["fresh", false]]);
+});
+
+test("end_releases_a_barrier_without_a_notice", async () => {
+  const r = rig();
+  r.s.setViewFocused(true);
+  await r.answer("");
+  r.s.pasteShortcut(key({ ctrlKey: true }));
+  r.event("V");
+  r.s.end();
+  assert.deepEqual(r.log, ["V"]);
+  assert.deepEqual(r.notices, []);
 });
