@@ -1025,6 +1025,7 @@ test("native remote menu enables valid commands and forwards exact actions", asy
     "back",
     "disconnect",
     "text-input",
+    "paste-clipboard",
     "reconnect",
     "resolution",
   ])
@@ -1039,6 +1040,8 @@ test("native remote menu enables valid commands and forwards exact actions", asy
   assert.equal(item("disconnect").enabled, true);
   assert.equal(item("reconnect").enabled, true);
   assert.equal(item("text-input").enabled, false);
+  assert.equal(item("paste-clipboard").enabled, false);
+  assert.equal(item("paste-clipboard").label, "클립보드 붙여넣기");
   assert.equal(item("resolution").enabled, false);
   await f.invoke("viewer-state", {
     open: true,
@@ -1048,6 +1051,7 @@ test("native remote menu enables valid commands and forwards exact actions", asy
   });
   assert.equal(item("reconnect").enabled, false);
   assert.equal(item("text-input").enabled, true);
+  assert.equal(item("paste-clipboard").enabled, true);
   assert.equal(item("resolution").enabled, true);
   assert.equal(item("resolution:1920x1080").checked, true);
   assert.equal(item("resolution:1440x900").checked, false);
@@ -1055,6 +1059,7 @@ test("native remote menu enables valid commands and forwards exact actions", asy
     "back",
     "disconnect",
     "text-input",
+    "paste-clipboard",
     "reconnect",
     "resolution:2560x1440",
     "resolution:auto",
@@ -1073,6 +1078,22 @@ test("native remote menu enables valid commands and forwards exact actions", asy
   });
   assert.equal(item("resolution").enabled, false);
   assert.equal(item("text-input").enabled, true);
+  for (const protocol of ["vnc", "rdp", "agent"]) {
+    await f.invoke("viewer-state", {
+      open: true,
+      connected: true,
+      protocol,
+      resolution: "1920x1080",
+    });
+    assert.equal(item("paste-clipboard").enabled, true, protocol);
+  }
+  await f.invoke("viewer-state", {
+    open: true,
+    connected: false,
+    protocol: "agent",
+    resolution: "1920x1080",
+  });
+  assert.equal(item("paste-clipboard").enabled, false, "not connected");
   await f.invoke("viewer-state", {
     open: false,
     connected: false,
@@ -1083,6 +1104,7 @@ test("native remote menu enables valid commands and forwards exact actions", asy
     "back",
     "disconnect",
     "text-input",
+    "paste-clipboard",
     "reconnect",
     "resolution",
   ])
@@ -1323,6 +1345,7 @@ test("showing the address page closes the Remote menu entries and leaves fullscr
       "disconnect",
       "reconnect",
       "text-input",
+      "paste-clipboard",
       "resolution",
     ])
       assert.equal(item(id).enabled, false, `${how}: ${id}`);
@@ -1921,7 +1944,13 @@ test("rebuilding the menu for an update keeps the viewer state and the other ent
   });
   f.autoUpdater.emit("update-downloaded", { version: "0.3.1" });
   const menu = f.menu;
-  for (const id of ["back", "disconnect", "text-input", "resolution"])
+  for (const id of [
+    "back",
+    "disconnect",
+    "text-input",
+    "paste-clipboard",
+    "resolution",
+  ])
     assert.equal(menu.getMenuItemById(id).enabled, true, id);
   assert.equal(menu.getMenuItemById("reconnect").enabled, false);
   assert.equal(menu.getMenuItemById("resolution:1920x1080").checked, true);

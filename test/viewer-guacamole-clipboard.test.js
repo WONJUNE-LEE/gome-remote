@@ -476,3 +476,60 @@ test("a mouse press and release made on one reused state object while a paste is
     "the press was not lost",
   );
 });
+
+test("the paste action on a Mac VNC session sends the clipboard stream, then Meta+V", async () => {
+  const { v, client } = await session(macVnc, { clipboardText: "메뉴 글" });
+  assert.equal(v.el("paste-remote").disabled, false, "enabled once connected");
+  v.action("paste-clipboard");
+  await v.settle();
+  const order = client.log.map((e) =>
+    e[0] === "clipboard"
+      ? "CLIPBOARD"
+      : `${e[1] ? "down" : "up"}:${e[2].toString(16)}`,
+  );
+  assert.deepEqual(order, [
+    "CLIPBOARD",
+    `down:${META.toString(16)}`,
+    "down:76",
+    "up:76",
+    `up:${META.toString(16)}`,
+  ]);
+  assert.deepEqual(clipboards(client), ["메뉴 글"]);
+});
+
+test("the #paste-remote button on an RDP session sends Ctrl+V, is disabled before the connection and after the end, and does nothing without a local clipboard", async () => {
+  const v = await viewer({
+    appMode: true,
+    targets: [linuxRdp],
+    clipboardText: "글",
+  });
+  v.tiles()[0].click();
+  await v.settle();
+  const client = v.clients.at(-1);
+  assert.equal(v.el("paste-remote").disabled, true, "before the connection");
+  client.onstatechange(3);
+  await v.settle();
+  assert.equal(v.el("paste-remote").disabled, false);
+  v.el("paste-remote").click();
+  await v.settle();
+  assert.deepEqual(keys(client), [
+    `down:${CTRL.toString(16)}`,
+    "down:76",
+    "up:76",
+    `up:${CTRL.toString(16)}`,
+  ]);
+  assert.deepEqual(clipboards(client), ["글"]);
+  client.onstatechange(5);
+  await v.settle();
+  assert.equal(v.el("paste-remote").disabled, true, "after the end");
+
+  const old = await session(linuxRdp, { bridgeVersion: 3 });
+  assert.equal(old.v.el("paste-remote").disabled, true);
+  old.v.action("paste-clipboard");
+  old.v.el("paste-remote").click();
+  await old.v.settle();
+  assert.deepEqual(
+    old.client.log.filter((e) => e[0] === "key"),
+    [],
+  );
+});

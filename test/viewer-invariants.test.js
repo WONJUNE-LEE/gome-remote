@@ -49,6 +49,8 @@ test("F11 stays local and the viewer keeps its commands", () => {
     '"disconnect"',
     '"reconnect"',
     '"text-input"',
+    '"paste-clipboard"',
+    '<button id="paste-remote" disabled>클립보드 붙여넣기</button>',
   ])
     assert.ok(main.includes(command), command);
   assert.match(main, /client\?\.sendSize\(size\.width, size\.height\)/);

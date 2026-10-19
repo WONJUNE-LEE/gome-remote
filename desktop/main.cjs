@@ -148,6 +148,8 @@ function applyViewerState(state) {
     menu.getMenuItemById(id).enabled = state.open;
   menu.getMenuItemById("reconnect").enabled = state.open && !state.connected;
   menu.getMenuItemById("text-input").enabled = state.open && state.connected;
+  menu.getMenuItemById("paste-clipboard").enabled =
+    state.open && state.connected;
   menu.getMenuItemById("resolution").enabled =
     state.open &&
     state.connected &&
@@ -206,6 +208,7 @@ function buildMenu() {
           })),
         },
         command("text-input", "텍스트 입력"),
+        command("paste-clipboard", "클립보드 붙여넣기"),
         command("reconnect", "다시 연결"),
         command("disconnect", "연결 종료"),
         { type: "separator" },

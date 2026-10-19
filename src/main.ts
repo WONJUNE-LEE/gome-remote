@@ -56,6 +56,7 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
       <div class="toolbar-spacer"></div>
       <label class="sr-only" for="resolution">해상도</label>
       <select id="resolution"><option value="auto">자동 (창 크기)</option><option value="1440x900">1440 × 900</option><option value="1920x1080">1920 × 1080</option><option value="2560x1440">2560 × 1440</option></select>
+      <button id="paste-remote" disabled>클립보드 붙여넣기</button>
       <button id="text-input" disabled>텍스트 입력</button>
       <button id="fullscreen">전체 화면</button>
       <button id="disconnect" class="danger">연결 종료</button>
@@ -324,6 +325,7 @@ function stop() {
   el("display").classList.remove("agent-display");
   el("display").replaceChildren();
   el<HTMLButtonElement>("text-input").disabled = true;
+  el<HTMLButtonElement>("paste-remote").disabled = true;
 }
 function showOverlay(
   kind: "connecting" | "ended",
@@ -355,6 +357,7 @@ function sessionEnded(reason?: string) {
     ?.classList.remove("remote-connected");
   syncViewerMenu();
   el<HTMLButtonElement>("text-input").disabled = true;
+  el<HTMLButtonElement>("paste-remote").disabled = true;
 }
 async function connect(input: ConnectInput) {
   stop();
@@ -541,6 +544,7 @@ async function connect(input: ConnectInput) {
         el("session-state").textContent = "연결됨";
         el("overlay").hidden = true;
         el<HTMLButtonElement>("text-input").disabled = false;
+        el<HTMLButtonElement>("paste-remote").disabled = !thisSync;
         surface.focus();
         fit();
         // Session start pushes nothing: the clipboard is not read.
@@ -601,6 +605,7 @@ async function connectAgent(
       el("session-state").textContent = "연결됨";
       el("overlay").hidden = true;
       el<HTMLButtonElement>("text-input").disabled = false;
+      el<HTMLButtonElement>("paste-remote").disabled = !thisSync;
       session.focus();
       // Session start pushes nothing: the watch goes on, the clipboard is not read.
       updateSyncFocus({ read: false });
@@ -667,6 +672,26 @@ function disconnect() {
   stop();
   flow.ended();
 }
+// The 클립보드 붙여넣기 menu item and bar button: the paste barrier sends the changed local
+// clipboard, then the paste keys go out behind it. Called straight from the click or the
+// menu action (nothing awaited before it) so the window is still focused for the read.
+function pasteClipboard() {
+  if (!flow.active || !sync) return;
+  if (agent) {
+    const session = agent;
+    sync.pasteFromMenu(() => session.pasteShortcut());
+    return;
+  }
+  const connection = client;
+  if (!connection) return;
+  const [modifier, v] = pasteKeysFor(selected?.platform);
+  sync.pasteFromMenu(() => {
+    connection.sendKeyEvent(1, modifier);
+    connection.sendKeyEvent(1, v);
+    connection.sendKeyEvent(0, v);
+    connection.sendKeyEvent(0, modifier);
+  });
+}
 function openTextDialog() {
   if (!flow.active) return;
   releaseInput();
@@ -712,6 +737,7 @@ document
     button.onclick = () => el<HTMLDialogElement>(button.dataset.close!).close();
   });
 el("text-input").onclick = openTextDialog;
+el("paste-remote").onclick = pasteClipboard;
 el<HTMLFormElement>("text-form").onsubmit = (event) => {
   event.preventDefault();
   if (flow.active) {
@@ -754,6 +780,7 @@ api.onViewerAction((action) => {
   else if (action === "disconnect") disconnect();
   else if (action === "reconnect") flow.reconnect();
   else if (action === "text-input") openTextDialog();
+  else if (action === "paste-clipboard") pasteClipboard();
 });
 window.addEventListener("blur", releaseInput);
 window.addEventListener("focus", () => updateSyncFocus());

@@ -993,3 +993,97 @@ test("the session start does not read the clipboard, a later focus gain does", a
     concealed: false,
   });
 });
+
+const types2 = (channel) => channel.messages().map((m) => m.type);
+
+test("the 클립보드 붙여넣기 action sends the changed text, then Command+V, in that order", async () => {
+  const { v, channel } = await syncing({ clipboardText: "메뉴 글" });
+  const before = channel.sent.length;
+  v.action("paste-clipboard");
+  await v.settle();
+  const sent = channel
+    .messages()
+    .slice(before)
+    .filter((m) => m.type !== "release") // the action first lets go of held input
+    .map((m) =>
+      m.type === "key" ? `${m.code}:${m.down ? "down" : "up"}` : m.type,
+    );
+  assert.deepEqual(sent, [
+    "clipboard",
+    "MetaLeft:down",
+    "KeyV:down",
+    "KeyV:up",
+    "MetaLeft:up",
+  ]);
+  // The same text is not sent twice; the keys still go.
+  const again = channel.sent.length;
+  v.action("paste-clipboard");
+  await v.settle();
+  assert.equal(
+    channel
+      .messages()
+      .slice(again)
+      .filter((m) => m.type === "clipboard").length,
+    0,
+  );
+  assert.equal(keysOf(channel).length, 8);
+});
+
+test("the #paste-remote button is disabled until the first frame, does the same as the action, and is disabled when the session ends", async () => {
+  const v = await opened({ realAgent: true, clipboardText: "버튼 글" });
+  assert.equal(v.el("paste-remote").disabled, true, "not connected yet");
+  const pc = v.rig.peers.at(-1);
+  const channel = pc.channels[0];
+  channel.open();
+  pc.setState("connected");
+  await v.settle();
+  assert.equal(v.el("paste-remote").disabled, true, "no frame yet");
+  const surface = v.el("display").children.at(-1);
+  pc.track({ id: "stream" });
+  surface.children[0].showFrame(1);
+  await v.settle();
+  assert.equal(v.el("paste-remote").disabled, false);
+  v.el("paste-remote").click();
+  await v.settle();
+  assert.deepEqual(
+    types2(channel).filter((t) => t === "clipboard" || t === "key"),
+    ["clipboard", "key", "key", "key", "key"],
+  );
+  assert.deepEqual(keysOf(channel), [
+    "MetaLeft:down",
+    "KeyV:down",
+    "KeyV:up",
+    "MetaLeft:up",
+  ]);
+  v.el("disconnect").click();
+  await v.settle();
+  assert.equal(v.el("paste-remote").disabled, true);
+  const after = channel.messages().length;
+  v.action("paste-clipboard");
+  v.el("paste-remote").click();
+  await v.settle();
+  assert.deepEqual(
+    channel
+      .messages()
+      .slice(after)
+      .filter((m) => m.type !== "release"),
+    [],
+    "nothing after the session ended",
+  );
+});
+
+test("with no local clipboard (bridge 3) the button stays disabled and the action does nothing", async () => {
+  const { v, channel } = await syncing({ bridgeVersion: 3 });
+  assert.equal(v.el("paste-remote").disabled, true);
+  const before = channel.messages().length;
+  v.action("paste-clipboard");
+  v.el("paste-remote").click();
+  await v.settle();
+  assert.deepEqual(
+    channel
+      .messages()
+      .slice(before)
+      .filter((m) => m.type !== "release"),
+    [],
+  );
+});
