@@ -375,3 +375,56 @@ test("hold-Escape at the end of a session, while a take is in flight, does not l
   q.lock.update(ON);
   assert.equal(q.log.filter((x) => x === "enter").length, 2);
 });
+
+test("after a refusal a click retries once; further clicks do nothing until the focus changes", async () => {
+  const r = rig();
+  const enters = () => r.log.filter((x) => x === "enter").length;
+  r.lock.update(ON);
+  r.next("enter").resolve(false); // refused
+  await settle();
+  await r.finishExits();
+  assert.equal(enters(), 1);
+  r.lock.click(); // the one retry
+  assert.equal(enters(), 2);
+  r.next("enter").resolve(false); // refused again
+  await settle();
+  await r.finishExits();
+  for (let i = 0; i < 3; i++) {
+    r.lock.click();
+    await settle();
+  }
+  assert.equal(enters(), 2, "no enter/exit flicker on later clicks");
+  assert.deepEqual(r.reasons, [
+    "html-full-screen-refused",
+    "html-full-screen-refused",
+  ]);
+  // A focus loss and gain is a new chance, with one click retry again.
+  r.lock.update({ session: true, focused: false });
+  await settle();
+  r.lock.update(ON);
+  assert.equal(enters(), 3);
+  r.next("enter").resolve(false);
+  await settle();
+  await r.finishExits();
+  r.lock.click();
+  assert.equal(enters(), 4);
+});
+
+test("a click after hold-Escape still takes the lock at once, whatever the retry limit", async () => {
+  const r = rig();
+  r.lock.update(ON);
+  r.next("enter").resolve(false);
+  await settle();
+  await r.finishExits();
+  r.lock.click();
+  r.next("enter").resolve(true);
+  await settle();
+  r.next("lock").resolve();
+  await settle();
+  assert.equal(r.lock.held, true);
+  r.escapeHeld();
+  await r.finishExits();
+  r.lock.click();
+  await settle();
+  assert.equal(r.log.filter((x) => x === "enter").length, 3);
+});

@@ -32,6 +32,7 @@ export function createKeyLock(deps: KeyLockDeps) {
   let focused = false;
   let releasedByUser = false; // hold-Escape: no re-take until a click or a new focus
   let failed = false; // refused or timed out: no retry until a click or a new focus
+  let clickRetried = false; // a click retries a refusal once; a focus change clears this
   let held = false;
   let taking = false; // enterHtml sent and not yet resolved into held / failed
   let busy = false; // one enter or exit in flight at a time
@@ -103,6 +104,7 @@ export function createKeyLock(deps: KeyLockDeps) {
         return settle();
       }
       held = true;
+      clickRetried = false;
       if (mine === epoch && !notified) {
         notified = true;
         deps.notify("key-lock-on");
@@ -129,15 +131,21 @@ export function createKeyLock(deps: KeyLockDeps) {
         // Losing or gaining the focus is a new chance after hold-Escape or a refusal.
         releasedByUser = false;
         failed = false;
+        clickRetried = false;
       }
       session = want.session;
       focused = want.focused;
       evaluate();
     },
-    // A click on the remote view: take the lock again after hold-Escape or a refusal.
+    // A click on the remote view: take the lock again after hold-Escape, and retry a
+    // refusal once (a refusal that repeats would flicker through full screen on every
+    // click); the next focus change allows one more retry.
     click() {
       releasedByUser = false;
-      failed = false;
+      if (failed && !clickRetried) {
+        clickRetried = true;
+        failed = false;
+      }
       evaluate();
     },
     // The document's fullscreenchange. With no full screen element while the lock is held
@@ -160,6 +168,7 @@ export function createKeyLock(deps: KeyLockDeps) {
       session = false;
       releasedByUser = false;
       failed = false;
+      clickRetried = false;
       notified = false;
       evaluate();
     },
