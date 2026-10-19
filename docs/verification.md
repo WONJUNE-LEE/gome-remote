@@ -62,7 +62,8 @@ npm run build     # vite build
   script is run against the URL `main.cjs` really loads (unreachable state, retry, a
   rejected save without Electron's error prefix); showing the address page closes the
   Remote menu and leaves fullscreen; `--smoke-test` checks the page and bridge and
-  cannot hang; fullscreen and F11 serialization; native menu states.
+  cannot hang; fullscreen and F11 serialization; native menu states; `remote:key-lock`
+  (Windows only, focus, origin, user-gesture scripts, 2 s guard, native full screen untouched).
 - **Desktop auto-update**, `test/desktop.test.js` (updater part) and
   `test/desktop-release.test.js`: against a stand-in `electron-updater`, the updater is off
   when unpackaged and in the smoke test; a packaged app checks once 30 s after start and
@@ -412,3 +413,104 @@ address) when it is run. Do not edit an entry to say "pass" without that evidenc
   without a login got 403. Arguments and environment variables are covered by the
   `no_overrides` test, not by a run.
 - Agent V6. Cutover and rollback rehearsal, including the installer's rollback to `.prev`.
+
+## Clipboard sync and Command key capture: device checks (partly run)
+
+The code is on branch `feat/clipboard-sync`; its automated tests ran on Linux, and the Mac
+build loop (tests, `--features dev-install`, fmt, clippy) ran on the owner's Mac; there has been
+no CI run for this branch yet (see "Automated checks"). Apart from the owner's partial rehearsal
+report recorded below (2026-10-19), none of the checks below has been run on a
+real Windows PC or against a real Mac session. The design is `docs/superpowers/specs/2026-10-19-clipboard-sync-design.md`
+(§5 rehearsal, §6 list). Each entry is filled in with its date and evidence (numbers and
+words, no tailnet login, device name or address) when it is run; do not edit an entry to say
+"pass" without that evidence. Rehearsal setup: agent 0.2.0 installed by the owner with
+`./install.sh`; a candidate gateway on a spare port; the CI build of the desktop app on the
+Windows PC pointed at it, and pointed back at the production address afterwards.
+
+### Rehearsal result, recorded 2026-10-19, owner's report
+
+Rehearsal on the owner's Windows PC against the :8451 candidate gateway at commit `3ceb94a`,
+with Mac agent 0.2.0 installed. The owner released first and chose to check the rest later
+("지금 배포, 나중에 확인").
+
+PASSED per the owner's report:
+
+- Windows to Mac paste: Ctrl+C on Windows, then Win+V / Cmd+V on the Mac (windowed mode).
+- Mac to Windows paste: Cmd+C on the Mac, then Ctrl+V on Windows.
+- Windows key capture in windowed mode, with release: the Start menu was not opened from the
+  remote view; Win and Alt+Tab worked normally after leaving the window; hold-Escape
+  released the lock.
+
+Limits of this evidence: it is the owner's verbal report only. There are no screenshots or logs,
+full-screen mode was not reported, and the exact sub-checks of items 1, 2 and 4 below (for
+example the "immediately after copying" timing, or Win+C / Win+A, the Escape tap, F11 and the
+focus re-lock) were not itemised. The device-list lines below stay "Not yet run" until each
+sub-check is recorded with its own evidence.
+
+NOT YET RUN (the owner chose to release first):
+
+- Lock-screen paste (item 3).
+- VNC and Ubuntu RDP with Korean text (item 6), and the VNC clipboard encoding outcome A/B
+  (0.3.3 ships with guacd's default encoding).
+- Windows Clipboard History exclusion mark.
+- Mac client check 4b.
+- The over-64 KiB notice (item 7).
+- Old-app combinations (item 8).
+
+Spec §6 device list, verbatim:
+
+1. Windows: Ctrl+C in Notepad, switch to the app, immediately Cmd+V (full screen) in TextEdit
+   pastes the new text (not the previous one). Not yet run.
+2. Mac: Cmd+C in TextEdit → Ctrl+V in Notepad pastes it; a Mac-side change while the app is
+   in the background does not change the Windows clipboard. Not yet run.
+3. Mac locked: dummy text first, then the real password, via Cmd+V and via 클립보드 붙여넣기;
+   the Mac pasteboard does not contain it afterwards. Both cases: text copied after the lock,
+   and text already synced before the lock. Negative: with only the display asleep (within the
+   lock delay) Cmd+V pastes normally and types nothing; right after unlock, pasting the same
+   text again pastes it (not the older pasteboard content). Not yet run.
+4. Windows, windowed AND full screen: Win+V / Win+C / Win+A reach the Mac; a bare Win tap does
+   not open Start; an Escape tap reaches the Mac; F11 toggles native full screen while locked;
+   hold-Escape releases the lock (notice shown) and a click on the remote view takes it again;
+   negative: after clicking another app, after minimising the window, and after hold-Escape,
+   Win / Alt+Tab / Win+D work in Windows as usual; Win+L locks Windows (expected). After
+   clicking back into the app window, Win+V reaches the Mac again (focus re-lock). If the
+   Windows key is not captured, open DevTools (if available) or note it: the page logs
+   `key lock: <reason>` through console.warn. Not yet run.
+4b. Mac client app: Cmd+Q / Cmd+W / Cmd+H act on the local app as in 0.3.2 (no lock on Mac
+   clients). Not yet run.
+5. 클립보드 붙여넣기 pastes on the Mac (windowed, and after hold-Escape). Not yet run.
+6. VNC and Ubuntu RDP: both directions, Korean text, multi-line text with no ping-pong.
+   Not yet run.
+7. Over 64 KiB: notice shown, nothing pasted silently. Not yet run.
+8. Old app against the new gateway/agent and new app against the old agent: sessions work.
+   Not yet run.
+
+Rehearsal checks added by the implementation (all not yet run):
+
+- Console lock signal. The agent's `lock` notice (from `IOConsoleLocked`) is false while the
+  display is only asleep within the lock delay and true at the lock screen. Not yet run.
+- Windows Clipboard History. Whether the `ExcludeClipboardContentFromMonitorProcessing` mark
+  the app writes for Mac-concealed text keeps Mac-copied text out of Win+V history, through
+  Electron 44's `application/osclipboard` formats; if it does not, README's residual risk
+  stands. Not yet run.
+- Menu F11 against page F11 under keyboard lock. With the lock held, F11 (handled by the page,
+  which asks main for the native toggle) and the menu's View → 전체 화면 each toggle native full
+  screen once and do not toggle it twice. Not yet run.
+- Native menu paste on Windows. 클립보드 붙여넣기 from the native menu reads the freshly
+  copied Windows clipboard even though focus was in the menu (the focus timing and the single
+  retry). Not yet run.
+- VNC clipboard encoding. Copy `안녕 한글` and an emoji both ways against the Mac (VNC) tile with
+  guacd's default encoding and with `clipboard-encoding` `UTF-8`. Outcome A (UTF-8 works): add
+  `"clipboard-encoding": "UTF-8"` to the VNC settings. Outcome B (Latin-1 only): wire
+  `latin1Only` for VNC targets and keep the README limit. Neither is applied yet. Not yet run.
+- Largest message. A 64 KiB (65 536 bytes of UTF-8) clipboard message reaches the agent through
+  the data channel (SCTP maximum message size), including the JSON-escaped form. Not yet run.
+- Lock-screen typing with Command still held. Typing the held text while the Command key is
+  still down types plain characters, not shortcuts. Not yet run.
+- Escape tap under the lock. A short Escape press stays a remote key (the lock stays); only
+  holding it for about 1.5 seconds releases it. Not yet run.
+- Old app (0.3.2) against the new gateway and the new agent: the session works and no
+  clipboard control appears. Not yet run.
+
+Known limits stated to the user in README: a Mac copy in the last few hundred milliseconds
+before focus loss may not arrive; a browser refusing the clipboard permission is silent.

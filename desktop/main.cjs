@@ -1,6 +1,8 @@
 const {
   app,
   BrowserWindow,
+  clipboard,
+  ClipboardItem,
   ipcMain,
   dialog,
   Menu,
@@ -12,6 +14,7 @@ const path = require("node:path");
 const { pathToFileURL } = require("node:url");
 const { AddressStore, gatewayOrigin } = require("./address.cjs");
 const { createUpdater } = require("./updater.cjs");
+const { createClipboardService } = require("./clipboard.cjs");
 const smokeTest = process.argv.includes("--smoke-test");
 let smokeTimer;
 
@@ -33,6 +36,36 @@ let store;
 let gateway = ""; // configured gateway origin, "" until the user enters one
 let fullscreenTarget = false;
 let fullscreenTransition = false;
+// How long the page may take to answer a key lock script. A denied fullscreen permission
+// makes requestFullscreen hang (measured on Electron 44), so a page that never answers
+// counts as a refusal.
+const KEY_LOCK_SCRIPT_MS = 2000;
+const KEY_LOCK_ON =
+  "document.documentElement.requestFullscreen().then(() => true)";
+const KEY_LOCK_OFF =
+  "document.fullscreenElement ? document.exitFullscreen().then(() => true) : true";
+// Runs a key lock script in the page with a user gesture. Resolves true only when the
+// page says so; rejection, any other answer or silence for KEY_LOCK_SCRIPT_MS is false.
+function runKeyLockScript(script) {
+  return new Promise((resolve) => {
+    let settled = false;
+    const done = (value) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(value);
+    };
+    const timer = setTimeout(() => done(false), KEY_LOCK_SCRIPT_MS);
+    try {
+      window.webContents.executeJavaScript(script, true).then(
+        (result) => done(result === true),
+        () => done(false),
+      );
+    } catch {
+      done(false);
+    }
+  });
+}
 function applyFullscreenTarget() {
   if (fullscreenTransition || window.isFullScreen() === fullscreenTarget)
     return;
@@ -85,6 +118,8 @@ function applyViewerState(state) {
     menu.getMenuItemById(id).enabled = state.open;
   menu.getMenuItemById("reconnect").enabled = state.open && !state.connected;
   menu.getMenuItemById("text-input").enabled = state.open && state.connected;
+  menu.getMenuItemById("paste-clipboard").enabled =
+    state.open && state.connected;
   menu.getMenuItemById("resolution").enabled =
     state.open &&
     state.connected &&
@@ -143,6 +178,7 @@ function buildMenu() {
           })),
         },
         command("text-input", "텍스트 입력"),
+        command("paste-clipboard", "클립보드 붙여넣기"),
         command("reconnect", "다시 연결"),
         command("disconnect", "연결 종료"),
         { type: "separator" },
@@ -184,6 +220,13 @@ function showSetup(reason) {
   // viewer opened a moment ago would keep them enabled for a page that ignores them.
   applyViewerState(closedViewer);
   requestFullscreen(false);
+  // A page that holds the key lock gives it back before it goes (navigating away would
+  // end it too, but nothing should depend on that).
+  if (
+    process.platform === "win32" &&
+    originOf(window.webContents.mainFrame.url) === gateway
+  )
+    void runKeyLockScript(KEY_LOCK_OFF);
   return window
     .loadURL(reason ? `${setupPage}?reason=${reason}` : setupPage)
     .catch(() => {});
@@ -248,6 +291,16 @@ app
       requestFullscreen(enabled);
     });
     handle("gateway", "remote:fullscreen-state", () => window.isFullScreen());
+    // The Windows key lock: the page asks for HTML full screen (which, with
+    // disableHtmlFullscreenWindowResize, keeps the window as it is) and takes
+    // navigator.keyboard.lock() itself. Main only runs the full screen script with a user
+    // gesture. Native full screen is never touched here. Other systems refuse.
+    handle("gateway", "remote:key-lock", async (on) => {
+      if (typeof on !== "boolean") throw new Error("Invalid key lock state.");
+      if (process.platform !== "win32") return false;
+      if (on && !window.isFocused()) return false;
+      return runKeyLockScript(on ? KEY_LOCK_ON : KEY_LOCK_OFF);
+    });
     handle("gateway", "remote:viewer-state", (state) => {
       if (
         !state ||
@@ -259,6 +312,20 @@ app
         throw new Error("Invalid viewer state.");
       applyViewerState(state);
     });
+    // Clipboard text only moves while this window has focus; the service answers with a
+    // result instead of throwing when it does not.
+    const clipboardService = createClipboardService({
+      clipboard,
+      ClipboardItem,
+      Blob: require("node:buffer").Blob,
+      platform: process.platform,
+      isFocused: () => !!window && !window.isDestroyed() && window.isFocused(),
+      log: (line) => console.error(line),
+    });
+    handle("gateway", "remote:clipboard-read", () => clipboardService.read());
+    handle("gateway", "remote:clipboard-write", (text, opts) =>
+      clipboardService.write(text, opts),
+    );
     if (app.isPackaged && !smokeTest) {
       try {
         updater = createUpdater({
@@ -295,6 +362,9 @@ app
         contextIsolation: true,
         sandbox: true,
         webSecurity: true,
+        // HTML full screen (the key lock's carrier) must not resize or full-screen the
+        // window; F11 is the only way into native full screen.
+        disableHtmlFullscreenWindowResize: true,
       },
     });
     const publishFullscreen = () => {
@@ -342,8 +412,18 @@ app
       if (originOf(url) === gateway && status >= 400)
         void showSetup("unreachable");
     });
+    // Full screen and the keyboard lock (HTML full screen is how the lock is taken) are
+    // granted to the gateway page only; the check handler stays closed, so everything
+    // else, automatic full screen included, is refused.
     window.webContents.session.setPermissionRequestHandler(
-      (_webContents, _permission, callback) => callback(false),
+      (_webContents, permission, callback, details) =>
+        callback(
+          // Only the Windows app has the key lock; elsewhere nothing is granted, as in 0.3.2.
+          process.platform === "win32" &&
+            (permission === "fullscreen" || permission === "keyboardLock") &&
+            !!gateway &&
+            originOf(details?.requestingUrl) === gateway,
+        ),
     );
     window.webContents.session.setPermissionCheckHandler(() => false);
     if (smokeTest || !gateway) await showSetup();
@@ -358,13 +438,15 @@ app
       // Run with a throwaway --user-data-dir: with no saved address it only shows the
       // local address page, so there is no network and no real settings are touched.
       const state = await window.webContents.executeJavaScript(
-        "({page: location.href.split(/[?#]/)[0], title: document.title, bridgeVersion: window.desktop.bridgeVersion, setup: typeof window.desktopSetup.save})",
+        "({page: location.href.split(/[?#]/)[0], title: document.title, bridgeVersion: window.desktop.bridgeVersion, read: typeof window.desktop.readClipboard, keyLock: typeof window.desktop.keyLock, setup: typeof window.desktopSetup.save})",
       );
       console.log(JSON.stringify(state));
       if (
         state.page !== setupPage ||
         state.title !== "Gome Remote" ||
-        state.bridgeVersion !== 3 ||
+        state.bridgeVersion !== 4 ||
+        state.read !== "function" ||
+        state.keyLock !== "function" ||
         state.setup !== "function"
       )
         throw new Error("The address page or the bridge is not as expected.");

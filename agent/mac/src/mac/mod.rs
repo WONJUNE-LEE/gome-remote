@@ -4,6 +4,7 @@ pub mod capture;
 pub mod encoder;
 pub mod ffi;
 pub mod inject;
+pub mod pasteboard;
 pub mod pipeline;
 pub mod scale;
 pub mod system;

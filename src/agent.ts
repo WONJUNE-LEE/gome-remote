@@ -4,14 +4,18 @@
 // flow directly between this page and the Mac over the tailnet. The Guacamole path in
 // main.ts is not involved.
 import {
+  MAX_CLIPBOARD_MESSAGE_BYTES,
   contentRect,
   keyCode,
   message,
   normalise,
-  parseNotice,
+  parseAgentMessage,
   preferredCodecs,
   splitText,
+  utf8Length,
+  wellFormed,
   wheelDelta,
+  type AgentMessage,
 } from "./agent-input";
 
 // Reasons a session ends by itself; the page turns each into its own words.
@@ -24,6 +28,16 @@ export interface AgentDeps {
   onFirstFrame(): void;
   // The session ended without the page asking for it (never called after close()).
   onEnded(reason: EndReason): void;
+  // The clipboard paste barrier (src/clipboard-sync.ts) wraps every input message: while it
+  // is closed `run` happens at once, while it is open `run` waits. Clipboard text, the
+  // watch switch and the release at the end of the session do not go through it.
+  gate?(run: () => void): void;
+  // A key-down is about to be sent (before it is): the paste barrier decides here.
+  onPasteKey?(event: KeyboardEvent): void;
+  // The input channel opened.
+  onChannelOpen?(): void;
+  // Anything the agent sends besides `replaced` (which ends the session by itself).
+  onAgentMessage?(m: Exclude<AgentMessage, { type: "replaced" }>): void;
 }
 
 export interface FrameReport {
@@ -41,6 +55,17 @@ export interface AgentSession {
   start(): Promise<void>;
   sendSize(width: number, height: number): void;
   sendText(text: string): boolean;
+  // The local clipboard text for the Mac's pasteboard. Not gated. "too-large" when the
+  // encoded message would not fit the channel (nothing is sent), "closed" when the channel
+  // is not open. A lone surrogate is replaced by U+FFFD first.
+  sendClipboard(
+    text: string,
+    concealed: boolean,
+  ): "sent" | "too-large" | "closed";
+  // Turns the Mac's pasteboard watch on or off. Not gated; nothing when the channel is closed.
+  sendWatch(on: boolean): void;
+  // The paste shortcut as the Mac knows it (Command+V), through the gate.
+  pasteShortcut(): void;
   // Lets go of every key and button (blur, dialog, fullscreen, end).
   release(): void;
   focus(): void;
@@ -86,9 +111,13 @@ export function createAgentSession(deps: AgentDeps): AgentSession {
   let lastPoint = { x: 0.5, y: 0.5 };
 
   const open = () => channel?.readyState === "open";
-  const send = (text: string) => {
+  const sendNow = (text: string) => {
     if (open()) channel!.send(text);
   };
+  // Input waits behind the paste barrier; whoever runs it later finds a closed channel
+  // (a session that has ended) and sends nothing.
+  const send = (text: string) =>
+    (deps.gate ?? ((run) => run()))(() => sendNow(text));
 
   // ---- pointer moves are coalesced to one per animation frame, and ordered before clicks ----
   let pendingMove: { x: number; y: number } | undefined;
@@ -161,6 +190,12 @@ export function createAgentSession(deps: AgentDeps): AgentSession {
     event.preventDefault();
     event.stopPropagation();
     if (!code) return;
+    if (down)
+      try {
+        deps.onPasteKey?.(event);
+      } catch {
+        // the paste decision failing must not lose the key
+      }
     // Browsers on macOS send no keyup for a key pressed while Command is held, so the Mac
     // would keep that key down. When the Command key (the Meta key here) comes up, every
     // other key still held is let go first, while Command is still down on the Mac.
@@ -188,11 +223,11 @@ export function createAgentSession(deps: AgentDeps): AgentSession {
   surface.addEventListener("contextmenu", onContextMenu);
   surface.addEventListener("blur", onBlur);
 
-  function release() {
+  function release(immediately = false) {
     pendingMove = undefined;
     pressedButtons.clear();
     pressedKeys.clear();
-    send(message.release());
+    (immediately ? sendNow : send)(message.release());
   }
 
   // ---- the end of a session ----
@@ -210,6 +245,7 @@ export function createAgentSession(deps: AgentDeps): AgentSession {
     if (channel) {
       channel.onclose = null;
       channel.onmessage = null;
+      channel.onopen = null;
     }
     try {
       channel?.close();
@@ -224,8 +260,9 @@ export function createAgentSession(deps: AgentDeps): AgentSession {
     ended = true;
     // Whatever the page still held down on the Mac is let go while the channel can still
     // carry the message (a channel that is already gone cannot; the agent releases on its
-    // own when the channel closes).
-    release();
+    // own when the channel closes). Not behind the paste barrier: what it still holds is
+    // dropped with the channel.
+    release(true);
     teardown();
     deps.onEnded(reason);
   };
@@ -291,8 +328,20 @@ export function createAgentSession(deps: AgentDeps): AgentSession {
         } catch {}
         channel = connection.createDataChannel("input", { ordered: true });
         channel.onclose = () => end("disconnected");
+        channel.onopen = () => {
+          try {
+            deps.onChannelOpen?.();
+          } catch {}
+        };
         channel.onmessage = (event) => {
-          if (parseNotice(event.data) === "replaced") end("replaced");
+          const m = parseAgentMessage(event.data);
+          if (!m) return;
+          if (m.type === "replaced") return end("replaced");
+          try {
+            deps.onAgentMessage?.(m);
+          } catch {
+            // the page's handler failing must not break the channel
+          }
         };
         connection.ontrack = (event) => {
           video.srcObject = event.streams[0] ?? new MediaStream([event.track]);
@@ -343,13 +392,29 @@ export function createAgentSession(deps: AgentDeps): AgentSession {
       for (const piece of splitText(text)) send(message.text(piece));
       return true;
     },
-    release,
+    sendClipboard(text, concealed) {
+      if (!open()) return "closed";
+      const encoded = message.clipboard(wellFormed(text), concealed);
+      if (utf8Length(encoded) > MAX_CLIPBOARD_MESSAGE_BYTES) return "too-large";
+      sendNow(encoded);
+      return "sent";
+    },
+    sendWatch(on) {
+      sendNow(message.clipboardWatch(on));
+    },
+    pasteShortcut() {
+      send(message.key("MetaLeft", true));
+      send(message.key("KeyV", true));
+      send(message.key("KeyV", false));
+      send(message.key("MetaLeft", false));
+    },
+    release: () => release(),
     focus() {
       surface.focus({ preventScroll: true });
     },
     close() {
       if (closed) return;
-      release(); // nothing stays pressed on the Mac when the page lets go
+      release(true); // nothing stays pressed on the Mac when the page lets go
       closed = true;
       teardown();
     },

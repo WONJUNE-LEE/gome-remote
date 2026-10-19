@@ -3,6 +3,7 @@
 //! each session's hooks may touch (spec D3, D4, D5). `mac::agent` plugs the real capture,
 //! input and system calls into it.
 use crate::bitrate::BitrateController;
+use crate::clipboard::{self, Access, Board, ClipState, KeyAct, PasteRead};
 use crate::frame::FrameTarget;
 use crate::http::{Backend, SessionFailure, SessionRequest};
 use crate::peer::{PeerHandle, PeerHooks, PeerParams};
@@ -12,8 +13,9 @@ use crate::slot::{Closer, Slot};
 use crate::status::{screen_of, Accessibility, DisplayState, Status, REFUSE_WHEN_LOCKED};
 use std::any::Any;
 use std::net::IpAddr;
-use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering::Relaxed};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock, Weak};
+use std::time::Duration;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 /// Used when the display's size cannot be read.
@@ -37,10 +39,12 @@ pub trait Capture: Send + Sync + 'static {
 pub trait Input: Send + Sync + 'static {
     fn handle(&self, message: InputMsg);
     fn release_all(&self);
+    /// Types single-line text as key codes (the lock screen), Unicode for what they cannot type.
+    fn type_keys(&self, text: &str);
 }
 
-/// What the system says (permissions, display, lock screen).
-pub trait Platform: Send + Sync + 'static {
+/// What the system says (permissions, display, lock screen), and the pasteboard (`Board`).
+pub trait Platform: Board + Send + Sync + 'static {
     fn screen_recording_granted(&self) -> bool;
     fn accessibility_granted(&self) -> bool;
     fn display_state(&self) -> DisplayState;
@@ -87,9 +91,36 @@ struct Core {
     capture_on: Mutex<bool>,
     /// Whether a locked screen refuses a session (P1's switch, `REFUSE_WHEN_LOCKED`).
     refuse_when_locked: bool,
+    /// How often a session's ticker looks at the lock and the pasteboard (`clipboard::POLL`).
+    poll: Duration,
+}
+
+/// `Platform` seen as the `Board` it contains (a trait object cannot be upcast on the
+/// toolchain this crate supports).
+struct PlatformBoard<'a>(&'a dyn Platform);
+impl Board for PlatformBoard<'_> {
+    fn change_count(&self) -> i64 {
+        self.0.change_count()
+    }
+    fn access(&self) -> Access {
+        self.0.access()
+    }
+    fn read(&self) -> PasteRead {
+        self.0.read()
+    }
+    fn write(&self, text: &str, concealed: bool) -> i64 {
+        self.0.write(text, concealed)
+    }
+    fn console_locked(&self) -> bool {
+        self.0.console_locked()
+    }
 }
 
 impl Core {
+    fn board(&self) -> PlatformBoard<'_> {
+        PlatformBoard(&*self.parts.platform)
+    }
+
     fn lifecycle(&self) -> MutexGuard<'_, ()> {
         self.lifecycle.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
     }
@@ -106,6 +137,11 @@ impl Sessions {
 
     /// `new` with P1's lock-screen switch given, so both of its values can be exercised.
     fn with_lock_policy(parts: Parts, refuse_when_locked: bool) -> Sessions {
+        Sessions::with_options(parts, refuse_when_locked, clipboard::POLL)
+    }
+
+    /// `with_lock_policy` with the clipboard ticker's period given too, so a test need not wait 300 ms.
+    fn with_options(parts: Parts, refuse_when_locked: bool, poll: Duration) -> Sessions {
         Sessions {
             core: Arc::new(Core {
                 parts,
@@ -113,6 +149,7 @@ impl Sessions {
                 lifecycle: Mutex::new(()),
                 capture_on: Mutex::new(false),
                 refuse_when_locked,
+                poll,
             }),
         }
     }
@@ -128,11 +165,86 @@ struct Hooks {
     display_px: Size,
     /// The stream size the page last asked for, for a capture that starts after the request.
     size: Mutex<Size>,
+    /// The clipboard sync's state. Only touched inside the slot's lock (or after the session is over).
+    clip: Mutex<ClipState>,
+    /// Set once the accepted peer is known, before the session is installed.
+    peer: OnceLock<PeerHandle>,
+    /// This session's hooks, for the ticker thread to hold weakly.
+    me: Weak<Hooks>,
+    /// Whether this session's ticker thread was started (one per session).
+    ticking: AtomicBool,
 }
 
 impl Hooks {
     fn id(&self) -> u64 {
         self.id.load(Relaxed)
+    }
+
+    /// Releases every key the page held down, and the clipboard sync's memory of them.
+    fn release_held(&self) {
+        self.core.slot.with_current(self.id(), || {
+            self.clip().release();
+            self.core.parts.input.release_all();
+        });
+    }
+
+    fn clip(&self) -> MutexGuard<'_, ClipState> {
+        self.clip.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    /// Sends the page what the clipboard sync decided to say. A `lock` notice that could not be
+    /// queued is announced again at the next tick: a lost one would bring back a stale paste.
+    fn send(&self, clip: &mut ClipState, texts: Vec<String>) {
+        let Some(peer) = self.peer.get() else { return };
+        for text in texts {
+            let is_lock = text == protocol::lock_notice(true) || text == protocol::lock_notice(false);
+            if !peer.send_text(text) && is_lock {
+                clip.forget_lock();
+            }
+        }
+    }
+
+    /// One poll of the lock and the pasteboard. False when this session is over (replaced,
+    /// ended, or its peer gone), which ends the ticker.
+    ///
+    /// The pasteboard read runs between two short stretches under the slot's and the clip
+    /// state's locks: a macOS paste-privacy alert can hold the read until the user answers it
+    /// through the very view whose input needs those locks.
+    fn tick(&self) -> bool {
+        if !self.peer.get().is_some_and(PeerHandle::is_alive) {
+            return false;
+        }
+        let Some(read) = self.core.slot.with_current(self.id(), || {
+            let mut clip = self.clip();
+            let step = clip.tick_begin(&self.core.board());
+            self.send(&mut clip, step.texts);
+            step.read
+        }) else {
+            return false;
+        };
+        let Some(ticket) = read else { return true };
+        let message = ClipState::read_for_page(&self.core.board());
+        // The session may have been replaced meanwhile; the state may have moved on (a stale
+        // read is dropped by `tick_finish`).
+        self.core
+            .slot
+            .with_current(self.id(), || {
+                let mut clip = self.clip();
+                let message = clip.tick_finish(ticket, message);
+                self.send(&mut clip, message.into_iter().collect());
+            })
+            .is_some()
+    }
+}
+
+/// The session's clipboard ticker: every `poll` until the session is over.
+fn run_ticker(hooks: Weak<Hooks>, poll: Duration) {
+    loop {
+        std::thread::sleep(poll);
+        let Some(hooks) = hooks.upgrade() else { return };
+        if !hooks.tick() {
+            return;
+        }
     }
 }
 
@@ -164,21 +276,58 @@ impl PeerHooks for Hooks {
                     eprintln!("[session] resize failed: {e}");
                 }
             }
+            Some(InputMsg::Clipboard { text, concealed }) => {
+                self.clip().inbound(&self.core.board(), &text, concealed);
+            }
+            Some(InputMsg::ClipboardWatch(on)) => self.clip().watch(&self.core.board(), on),
+            Some(InputMsg::Key { action, down }) => {
+                let mut clip = self.clip();
+                let decision = clip.on_key(&self.core.board(), action, down);
+                // Typing happens here, under the lock that made the decision: the lock state
+                // cannot change between deciding to type and typing.
+                match decision.act {
+                    KeyAct::Inject => self.core.parts.input.handle(InputMsg::Key { action, down }),
+                    KeyAct::Swallow => {}
+                    KeyAct::Type(text) => self.core.parts.input.type_keys(&text),
+                }
+                self.send(&mut clip, decision.notice.into_iter().collect());
+            }
+            Some(InputMsg::Release) => {
+                self.clip().release();
+                self.core.parts.input.handle(InputMsg::Release);
+            }
             Some(message) => self.core.parts.input.handle(message),
-            None => {}
+            None => {
+                if data.len() > protocol::MAX_TEXT_MESSAGE {
+                    eprintln!("[clipboard] dropped message ({} bytes)", data.len());
+                }
+            }
         });
     }
 
     fn input_closed(&self) {
-        self.core.slot.with_current(self.id(), || self.core.parts.input.release_all());
+        self.release_held();
+    }
+
+    fn channel_open(&self) {
+        // The channel is open now: the first tick's `lock` notice is the first thing the page
+        // hears (a text sent before this would have been dropped). A reopened channel is told again.
+        self.core.slot.with_current(self.id(), || self.clip().forget_lock());
+        self.tick();
+        if !self.ticking.swap(true, Relaxed) {
+            let (hooks, poll) = (self.me.clone(), self.core.poll);
+            std::thread::spawn(move || run_ticker(hooks, poll));
+        }
     }
 
     fn silent(&self) {
-        self.core.slot.with_current(self.id(), || self.core.parts.input.release_all());
+        self.release_held();
     }
 
     fn closed(&self) {
         let core = &self.core;
+        // Whatever text this session held goes with it, replaced or not (the state is its own).
+        self.clip().end();
         // A replaced session's late end is a no-op: its keys were released when it was
         // replaced, and the capture belongs to the session that replaced it.
         let ended = {
@@ -241,6 +390,7 @@ fn begin_capture(core: &Core, hooks: &Hooks, id: u64, peer: &PeerHandle) {
                 core.slot.finished(id)
             };
             if ended {
+                hooks.clip().end();
                 core.parts.input.release_all();
             }
             stop_if_idle(core, &mut on);
@@ -258,6 +408,7 @@ fn begin_capture(core: &Core, hooks: &Hooks, id: u64, peer: &PeerHandle) {
             core.slot.finished(id)
         };
         if ended {
+            hooks.clip().end();
             core.parts.input.release_all();
         }
         // Nothing may keep capturing without a session.
@@ -309,16 +460,22 @@ impl Backend for Sessions {
         let cap = bitrate_cap(size);
         let controller = BitrateController::new(cap);
         let params = PeerParams { bind_ip: parts.bind, initial_bitrate: controller.current(), desired_bitrate: cap };
-        let hooks = Arc::new(Hooks {
+        let hooks = Arc::new_cyclic(|me| Hooks {
             core: core.clone(),
             id: AtomicU64::new(0),
             controller: Mutex::new(controller),
             display_px,
             size: Mutex::new(size),
+            clip: Mutex::new(ClipState::new()),
+            peer: OnceLock::new(),
+            me: me.clone(),
+            ticking: AtomicBool::new(false),
         });
         // The offer is accepted before anything else changes: a bad offer must not end a good session.
         let (answer, peer) = (parts.accept)(&request.sdp, params, hooks.clone())
             .map_err(|e| SessionFailure::BadOffer(format!("{e:#}")))?;
+        // Known before the session is installed, so no hook can find it missing.
+        let _ = hooks.peer.set(peer.clone());
         {
             let _life = core.lifecycle();
             // The previous session's peer is closed by the take-over; what it still held down is
@@ -338,6 +495,7 @@ impl Backend for Sessions {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::clipboard::{Access, FakeBoard, PasteRead};
     use crate::frame::EncodedFrame;
     use crate::peer::QueueProbe;
     use crate::status::{Gate, Screen};
@@ -427,6 +585,9 @@ mod tests {
         fn release_all(&self) {
             self.0.add("release_all");
         }
+        fn type_keys(&self, text: &str) {
+            self.0.add(format!("type_keys {} chars", text.chars().count()));
+        }
     }
 
     struct FakePlatform {
@@ -434,11 +595,29 @@ mod tests {
         accessibility: AtomicBool,
         locked: AtomicBool,
         wakes_held: Arc<AtomicUsize>,
+        board: FakeBoard,
     }
     struct WakeGuard(Arc<AtomicUsize>);
     impl Drop for WakeGuard {
         fn drop(&mut self) {
             self.0.fetch_sub(1, SeqCst);
+        }
+    }
+    impl Board for Arc<FakePlatform> {
+        fn change_count(&self) -> i64 {
+            self.board.change_count()
+        }
+        fn access(&self) -> Access {
+            self.board.access()
+        }
+        fn read(&self) -> PasteRead {
+            self.board.read()
+        }
+        fn write(&self, text: &str, concealed: bool) -> i64 {
+            self.board.write(text, concealed)
+        }
+        fn console_locked(&self) -> bool {
+            self.board.console_locked()
         }
     }
     impl Platform for Arc<FakePlatform> {
@@ -463,6 +642,24 @@ mod tests {
         }
     }
 
+    #[test]
+    fn the_fake_platform_is_a_board_driven_through_its_fake_board() {
+        let platform = Arc::new(FakePlatform {
+            screen: AtomicBool::new(true),
+            accessibility: AtomicBool::new(true),
+            locked: AtomicBool::new(false),
+            wakes_held: Arc::new(AtomicUsize::new(0)),
+            board: FakeBoard::default(),
+        });
+        let as_platform: &dyn Platform = &platform;
+        let before = as_platform.change_count();
+        assert_eq!(as_platform.write("a", false), before + 1);
+        assert_eq!(platform.board.writes(), vec![("a".to_string(), false)]);
+        platform.board.set_locked(true);
+        assert!(as_platform.console_locked());
+        assert!(!as_platform.screen_locked(), "the console lock is a separate signal from the CGS one");
+    }
+
     type Peers = Arc<Mutex<Vec<(Arc<dyn PeerHooks>, PeerHandle, String)>>>;
 
     /// The test's grip on one agent: fakes for everything outside it, and the hooks of every
@@ -480,15 +677,20 @@ mod tests {
     }
 
     fn rig() -> Rig {
-        build_rig(None)
+        build_rig(None, clipboard::POLL)
+    }
+
+    /// An agent whose sessions look at the lock and the pasteboard every few milliseconds.
+    fn rig_polling() -> Rig {
+        build_rig(None, Duration::from_millis(5))
     }
 
     /// An agent whose lock-screen switch is set by the test instead of by P1's constant.
     fn rig_with_lock_policy(refuse_when_locked: bool) -> Rig {
-        build_rig(Some(refuse_when_locked))
+        build_rig(Some(refuse_when_locked), clipboard::POLL)
     }
 
-    fn build_rig(lock_policy: Option<bool>) -> Rig {
+    fn build_rig(lock_policy: Option<bool>, poll: Duration) -> Rig {
         let log = Arc::new(Log::default());
         let capture = Arc::new(FakeCapture {
             log: log.clone(),
@@ -506,6 +708,7 @@ mod tests {
             accessibility: AtomicBool::new(true),
             locked: AtomicBool::new(false),
             wakes_held: Arc::new(AtomicUsize::new(0)),
+            board: FakeBoard::default(),
         });
         let peers: Peers = Arc::default();
         let queues: Arc<Mutex<Vec<QueueProbe>>> = Arc::default();
@@ -531,13 +734,18 @@ mod tests {
             accept,
         };
         let agent = match lock_policy {
-            None => Sessions::new(parts),
-            Some(refuse) => Sessions::with_lock_policy(parts, refuse),
+            None if poll == clipboard::POLL => Sessions::new(parts),
+            None => Sessions::with_options(parts, REFUSE_WHEN_LOCKED, poll),
+            Some(refuse) => Sessions::with_options(parts, refuse, poll),
         };
         Rig { agent, log, capture, platform, peers, queues, params }
     }
 
     impl Rig {
+        /// What peer number `peer` (in the order accepted) was asked to send since the last call.
+        fn texts(&self, peer: usize) -> Vec<String> {
+            self.queues.lock().unwrap()[peer].texts()
+        }
         fn offer(&self) -> SessionRequest {
             self.offer_of_width(1280)
         }
@@ -746,6 +954,10 @@ mod tests {
             controller: Mutex::new(BitrateController::new(12_000_000)),
             display_px: Size { w: 2560, h: 1440 },
             size: Mutex::new(Size { w: 1280, h: 720 }),
+            clip: Mutex::new(ClipState::new()),
+            peer: OnceLock::new(),
+            me: Weak::new(),
+            ticking: AtomicBool::new(false),
         };
         let before = rig.log.all();
         stray.input(KEY_A);
@@ -900,6 +1112,10 @@ mod tests {
             controller: Mutex::new(BitrateController::new(12_000_000)),
             display_px: Size { w: 2560, h: 1440 },
             size: Mutex::new(Size { w: 1280, h: 720 }),
+            clip: Mutex::new(ClipState::new()),
+            peer: OnceLock::new(),
+            me: Weak::new(),
+            ticking: AtomicBool::new(false),
         };
         begin_capture(&core, &late, 1, &peer);
         assert_eq!(rig.log.count("start"), 1, "no second start for a dead peer");
@@ -1027,5 +1243,328 @@ mod tests {
         // The old target, if something still held it, finds a closed peer and says so.
         assert!(!first.send_frame(frame(3)), "a frame for the replaced peer is refused so the sender drops it");
         assert!(queues[0].frames().is_empty());
+    }
+
+    // ---- clipboard sync and lock notices ----
+
+    const CMD_DOWN: &[u8] = br#"{"type":"key","code":"MetaLeft","down":true}"#;
+    const CMD_UP: &[u8] = br#"{"type":"key","code":"MetaLeft","down":false}"#;
+    const V_DOWN: &[u8] = br#"{"type":"key","code":"KeyV","down":true}"#;
+    const V_UP: &[u8] = br#"{"type":"key","code":"KeyV","down":false}"#;
+
+    fn clipboard_message(text: &str) -> Vec<u8> {
+        format!(r#"{{"type":"clipboard","text":"{text}","concealed":false}}"#).into_bytes()
+    }
+
+    /// Collects what the peer was asked to send until `done` holds of it all, or gives up.
+    fn texts_until(rig: &Rig, peer: usize, done: impl Fn(&[String]) -> bool) -> Vec<String> {
+        let mut seen = Vec::new();
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while Instant::now() < deadline {
+            seen.extend(rig.texts(peer));
+            if done(&seen) {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        seen
+    }
+
+    /// Lets the ticker run for a while and returns everything it sent meanwhile.
+    fn texts_after_a_while(rig: &Rig, peer: usize) -> Vec<String> {
+        std::thread::sleep(Duration::from_millis(150));
+        rig.texts(peer)
+    }
+
+    /// How many times the fake input was asked to post the V key.
+    fn injected_vs(log: &Log) -> usize {
+        log.all().iter().filter(|l| l.starts_with("input") && l.contains("Code(9)")).count()
+    }
+
+    #[test]
+    fn the_channel_opening_sends_the_lock_state_once() {
+        let rig = rig_polling();
+        let (hooks, _peer) = rig.open();
+        assert!(rig.texts(0).is_empty(), "nothing is sent before the channel is open");
+        hooks.channel_open();
+        assert_eq!(rig.texts(0), vec![protocol::lock_notice(false)]);
+        assert!(texts_after_a_while(&rig, 0).is_empty(), "a tick with no change sends nothing");
+    }
+
+    #[test]
+    fn a_reopened_channel_is_told_the_lock_state_again() {
+        let rig = rig_polling();
+        let (hooks, _peer) = rig.open();
+        hooks.channel_open();
+        assert_eq!(rig.texts(0), vec![protocol::lock_notice(false)]);
+        hooks.channel_open(); // the channel closed and opened again: the page has forgotten
+        assert_eq!(rig.texts(0), vec![protocol::lock_notice(false)], "announced again on the second opening");
+        assert!(texts_after_a_while(&rig, 0).is_empty());
+    }
+
+    #[test]
+    fn the_end_of_a_session_drops_the_text_it_held() {
+        let rig = rig();
+        // A session's hooks built by hand, so its clipboard state can be looked at.
+        let own = Hooks {
+            core: rig.agent.core.clone(),
+            id: AtomicU64::new(0),
+            controller: Mutex::new(BitrateController::new(12_000_000)),
+            display_px: Size { w: 2560, h: 1440 },
+            size: Mutex::new(Size { w: 1280, h: 720 }),
+            clip: Mutex::new(ClipState::new()),
+            peer: OnceLock::new(),
+            me: Weak::new(),
+            ticking: AtomicBool::new(false),
+        };
+        rig.platform.board.set_locked(true);
+        own.clip().inbound(&rig.platform.board, "pw", false);
+        assert_eq!(own.clip().held_text(), Some("pw"), "the text is held on the locked console");
+        own.closed();
+        assert_eq!(own.clip().held_text(), None, "the session's end took the held text with it");
+    }
+
+    #[test]
+    fn a_lock_change_is_sent_once_within_one_poll() {
+        let rig = rig_polling();
+        let (hooks, _peer) = rig.open();
+        hooks.channel_open();
+        rig.texts(0);
+        rig.platform.board.set_locked(true);
+        let seen = texts_until(&rig, 0, |seen| !seen.is_empty());
+        assert_eq!(seen, vec![protocol::lock_notice(true)]);
+        assert!(texts_after_a_while(&rig, 0).is_empty(), "exactly one notice");
+        rig.platform.board.set_locked(false);
+        assert_eq!(texts_until(&rig, 0, |seen| !seen.is_empty()), vec![protocol::lock_notice(false)]);
+    }
+
+    #[test]
+    fn a_lock_notice_the_peer_could_not_take_is_sent_again() {
+        let rig = rig_polling();
+        let (hooks, peer) = rig.open();
+        for i in 0..8 {
+            assert!(peer.send_text(format!("filler {i}")), "the text queue holds 8");
+        }
+        hooks.channel_open(); // the lock notice finds the queue full
+        let mut seen = rig.texts(0);
+        assert_eq!(seen.len(), 8);
+        seen = texts_until(&rig, 0, |seen| !seen.is_empty());
+        assert_eq!(seen, vec![protocol::lock_notice(false)], "announced again at the next tick");
+        assert!(texts_after_a_while(&rig, 0).is_empty());
+    }
+
+    #[test]
+    fn watch_on_then_a_pasteboard_change_sends_the_text_and_watch_off_stops_reading() {
+        let rig = rig_polling();
+        let (hooks, _peer) = rig.open();
+        hooks.channel_open();
+        rig.texts(0);
+        hooks.input(br#"{"type":"clipboard-watch","on":true}"#);
+        rig.platform.board.set_read(PasteRead::Text { text: "from the mac".into(), concealed: false });
+        rig.platform.board.bump();
+        let seen = texts_until(&rig, 0, |seen| !seen.is_empty());
+        assert_eq!(seen, vec![protocol::clipboard_notice("from the mac", false)]);
+        hooks.input(br#"{"type":"clipboard-watch","on":false}"#);
+        let reads = rig.platform.board.reads();
+        rig.platform.board.bump();
+        assert!(texts_after_a_while(&rig, 0).is_empty());
+        assert_eq!(rig.platform.board.reads(), reads, "no read while the page is not watching");
+    }
+
+    /// Runs `f` on another thread and says whether it finished within 2 s (so a deadlock fails the
+    /// test instead of hanging it).
+    fn finishes_quickly(f: impl FnOnce() + Send + 'static) -> bool {
+        let (done, finished) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            f();
+            let _ = done.send(());
+        });
+        finished.recv_timeout(Duration::from_secs(2)).is_ok()
+    }
+
+    #[test]
+    fn a_pasteboard_read_stuck_on_an_alert_does_not_block_input() {
+        let rig = rig_polling();
+        let (hooks, _peer) = rig.open();
+        hooks.channel_open();
+        rig.texts(0);
+        hooks.input(br#"{"type":"clipboard-watch","on":true}"#);
+        rig.platform.board.set_read(PasteRead::Text { text: "after the alert".into(), concealed: false });
+        rig.platform.board.hold_reads();
+        rig.platform.board.bump();
+        assert!(rig.platform.board.wait_for_blocked_read(), "the ticker never reached the read");
+        // The user answers the alert through the very view this input comes from.
+        let typed = Arc::clone(&hooks);
+        assert!(finishes_quickly(move || typed.input(V_DOWN)), "input is stuck behind the blocked pasteboard read");
+        assert_eq!(injected_vs(&rig.log), 1);
+        rig.platform.board.release_reads();
+        let seen = texts_until(&rig, 0, |seen| !seen.is_empty());
+        assert_eq!(seen, vec![protocol::clipboard_notice("after the alert", false)]);
+    }
+
+    #[test]
+    fn a_read_finished_after_the_page_wrote_or_stopped_watching_is_dropped() {
+        for stop in ["page wrote", "watch off"] {
+            let rig = rig_polling();
+            let (hooks, _peer) = rig.open();
+            hooks.channel_open();
+            rig.texts(0);
+            hooks.input(br#"{"type":"clipboard-watch","on":true}"#);
+            rig.platform.board.set_read(PasteRead::Text { text: "stale".into(), concealed: false });
+            rig.platform.board.hold_reads();
+            rig.platform.board.bump();
+            assert!(rig.platform.board.wait_for_blocked_read(), "{stop}");
+            let same = Arc::clone(&hooks);
+            let acted = if stop == "page wrote" {
+                finishes_quickly(move || same.input(&clipboard_message("from the page")))
+            } else {
+                finishes_quickly(move || same.input(br#"{"type":"clipboard-watch","on":false}"#))
+            };
+            assert!(acted, "{stop}");
+            rig.platform.board.release_reads();
+            assert!(texts_after_a_while(&rig, 0).is_empty(), "{stop}: the old text must not be sent");
+        }
+    }
+
+    #[test]
+    fn an_old_page_that_never_sends_watch_never_has_its_pasteboard_read() {
+        let rig = rig_polling();
+        let (hooks, _peer) = rig.open();
+        hooks.channel_open();
+        rig.platform.board.set_read(PasteRead::Text { text: "private".into(), concealed: false });
+        for _ in 0..10 {
+            rig.platform.board.bump();
+            std::thread::sleep(Duration::from_millis(12));
+        }
+        assert_eq!(rig.platform.board.reads(), 0);
+        assert_eq!(rig.texts(0), vec![protocol::lock_notice(false)], "only the lock state was sent");
+    }
+
+    #[test]
+    fn a_clipboard_message_is_written_when_unlocked_and_held_when_locked() {
+        let rig = rig();
+        let (hooks, _peer) = rig.open();
+        hooks.input(&clipboard_message("open"));
+        assert_eq!(rig.platform.board.writes(), vec![("open".to_string(), false)]);
+        rig.platform.board.set_locked(true);
+        hooks.input(&clipboard_message("secret"));
+        assert_eq!(rig.platform.board.writes().len(), 1, "nothing is written while locked");
+    }
+
+    #[test]
+    fn locked_command_v_types_held_text_and_injects_no_v() {
+        let rig = rig();
+        let (hooks, _peer) = rig.open();
+        rig.platform.board.set_locked(true);
+        hooks.input(&clipboard_message("pw"));
+        for key in [CMD_DOWN, V_DOWN, V_DOWN, V_UP, CMD_UP] {
+            hooks.input(key);
+        }
+        assert_eq!(rig.log.count("type_keys"), 1, "typed once, not per autorepeat: {:?}", rig.log.all());
+        assert_eq!(injected_vs(&rig.log), 0, "the V was swallowed: {:?}", rig.log.all());
+        assert!(rig.texts(0).is_empty());
+        assert!(rig.platform.board.writes().is_empty());
+
+        // Multi-line text is not typed: the page is told, and V is not injected either.
+        hooks.input(&clipboard_message("a\\nb"));
+        for key in [CMD_DOWN, V_DOWN, V_UP, CMD_UP] {
+            hooks.input(key);
+        }
+        assert_eq!(rig.log.count("type_keys"), 1);
+        assert_eq!(injected_vs(&rig.log), 0);
+        assert_eq!(rig.texts(0), vec![protocol::skipped_notice(protocol::SkipReason::LockedMultiline)]);
+    }
+
+    #[test]
+    fn locked_command_v_with_nothing_held_injects_v_and_says_so_once() {
+        let rig = rig();
+        let (hooks, _peer) = rig.open();
+        rig.platform.board.set_locked(true);
+        for key in [CMD_DOWN, V_DOWN, V_DOWN, V_DOWN, V_UP, CMD_UP] {
+            hooks.input(key);
+        }
+        assert_eq!(rig.log.count("type_keys"), 0);
+        assert_eq!(injected_vs(&rig.log), 4, "every down and the up reach the Mac as before");
+        assert_eq!(rig.texts(0), vec![protocol::skipped_notice(protocol::SkipReason::LockedEmpty)]);
+    }
+
+    #[test]
+    fn held_text_is_dropped_on_unlock_replacement_and_session_end() {
+        let rig = rig_polling();
+        let paste = |hooks: &Arc<dyn PeerHooks>| {
+            for key in [CMD_DOWN, V_DOWN, V_UP, CMD_UP] {
+                hooks.input(key);
+            }
+        };
+        rig.platform.board.set_locked(true);
+        // Replacement.
+        let (first, _) = rig.open();
+        first.input(&clipboard_message("pw"));
+        let (second, _) = rig.open();
+        paste(&second);
+        assert_eq!(rig.log.count("type_keys"), 0, "the new session holds nothing");
+        // End.
+        second.input(&clipboard_message("pw"));
+        second.closed();
+        let (third, _) = rig.open();
+        paste(&third);
+        assert_eq!(rig.log.count("type_keys"), 0);
+        // Unlock, noticed by the ticker, then lock again.
+        third.channel_open();
+        third.input(&clipboard_message("pw"));
+        rig.platform.board.set_locked(false);
+        texts_until(&rig, 2, |seen| seen.contains(&protocol::lock_notice(false)));
+        rig.platform.board.set_locked(true);
+        texts_until(&rig, 2, |seen| seen.contains(&protocol::lock_notice(true)));
+        paste(&third);
+        assert_eq!(rig.log.count("type_keys"), 0, "unlocking dropped it");
+        third.input(&clipboard_message("pw"));
+        paste(&third);
+        assert_eq!(rig.log.count("type_keys"), 1, "and text received now is held and typed");
+    }
+
+    #[test]
+    fn a_replaced_session_sends_no_more_notices() {
+        let rig = rig_polling();
+        let (old, _peer) = rig.open();
+        old.channel_open();
+        rig.texts(0);
+        rig.open();
+        rig.platform.board.set_locked(true);
+        old.input(&clipboard_message("late"));
+        assert!(texts_after_a_while(&rig, 0).is_empty());
+        assert!(rig.platform.board.writes().is_empty(), "and its messages go nowhere");
+    }
+
+    #[test]
+    fn the_status_reports_version_0_2_0() {
+        assert_eq!(rig().agent.status().version, "0.2.0");
+    }
+
+    #[test]
+    fn release_and_a_closed_channel_forget_a_held_command() {
+        let rig = rig();
+        let (hooks, _peer) = rig.open();
+        rig.platform.board.set_locked(true);
+        hooks.input(&clipboard_message("pw"));
+        let stuck_command_then = |forget: &dyn Fn()| {
+            hooks.input(CMD_DOWN);
+            forget();
+            let typed = rig.log.count("type_keys");
+            hooks.input(V_DOWN);
+            hooks.input(V_UP);
+            assert_eq!(rig.log.count("type_keys"), typed, "a forgotten Command no longer makes V a paste");
+        };
+        stuck_command_then(&|| hooks.input(br#"{"type":"release"}"#));
+        stuck_command_then(&|| hooks.input_closed());
+        stuck_command_then(&|| hooks.silent());
+        // A swallowed V is forgotten too: the next Command+V decides again.
+        hooks.input(CMD_DOWN);
+        hooks.input(V_DOWN);
+        assert_eq!(rig.log.count("type_keys"), 1);
+        hooks.input_closed();
+        hooks.input(CMD_DOWN);
+        hooks.input(V_DOWN);
+        assert_eq!(rig.log.count("type_keys"), 2);
     }
 }

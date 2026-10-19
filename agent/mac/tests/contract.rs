@@ -3,7 +3,7 @@
 //! page's message builders produce exactly these input messages and that the gateway's
 //! status reader accepts exactly these status documents; here the agent checks that it
 //! understands every message and writes exactly these documents.
-use gome_agent::protocol::{self, InputMsg, MAX_MESSAGE, MAX_TEXT_MESSAGE};
+use gome_agent::protocol::{self, InputMsg, SkipReason, MAX_CLIPBOARD_MESSAGE, MAX_MESSAGE, MAX_TEXT_MESSAGE};
 use gome_agent::status::{Accessibility, DisplayState, Screen, Status};
 use serde_json::Value;
 
@@ -21,7 +21,11 @@ fn every_input_message_of_the_contract_parses_to_the_matching_kind() {
     for message in messages {
         let bytes = serde_json::to_vec(message).unwrap();
         let kind = message["type"].as_str().unwrap();
-        let limit = if kind == "text" { MAX_TEXT_MESSAGE } else { MAX_MESSAGE };
+        let limit = match kind {
+            "text" => MAX_TEXT_MESSAGE,
+            "clipboard" => MAX_CLIPBOARD_MESSAGE,
+            _ => MAX_MESSAGE,
+        };
         assert!(bytes.len() <= limit, "{message}");
         let parsed = protocol::parse(&bytes).unwrap_or_else(|| panic!("the agent drops {message}"));
         let expected = match kind {
@@ -32,12 +36,18 @@ fn every_input_message_of_the_contract_parses_to_the_matching_kind() {
             "text" => parsed == InputMsg::Text("안녕 😀".into()),
             "release" => parsed == InputMsg::Release,
             "size" => matches!(parsed, InputMsg::Size(size) if (size.w, size.h) == (1920, 1080)),
+            "clipboard" => matches!(
+                &parsed,
+                InputMsg::Clipboard { text, concealed }
+                    if !text.is_empty() && *concealed == message["concealed"].as_bool().unwrap()
+            ),
+            "clipboard-watch" => parsed == InputMsg::ClipboardWatch(true),
             other => panic!("the fixture has a kind the test does not know: {other}"),
         };
         assert!(expected, "{message} parsed as {parsed:?}");
         kinds.push(kind.to_string());
     }
-    for kind in ["pointer", "button", "wheel", "key", "text", "release", "size"] {
+    for kind in ["pointer", "button", "wheel", "key", "text", "release", "size", "clipboard", "clipboard-watch"] {
         assert!(kinds.iter().any(|k| k == kind), "the fixture has no {kind} message");
     }
     // The three buttons are distinct in the parse, not just accepted.
@@ -57,13 +67,41 @@ fn every_input_message_of_the_contract_parses_to_the_matching_kind() {
 fn the_notices_the_agent_sends_are_exactly_the_contracts() {
     let fixture = fixture();
     let notices = fixture["notice"].as_array().unwrap();
-    assert_eq!(notices.len(), 1, "the agent sends one kind of notice");
-    let sent: Value = serde_json::from_str(protocol::NOTICE_REPLACED).unwrap();
-    assert_eq!(sent, notices[0]);
-    // The page reads strings only; `peer::tests` checks that the agent writes it as a text frame.
+    let mut reasons = Vec::new();
+    for sample in notices {
+        let built = match sample["type"].as_str().unwrap() {
+            "replaced" => protocol::NOTICE_REPLACED.to_string(),
+            "lock" => protocol::lock_notice(sample["locked"].as_bool().unwrap()),
+            "clipboard" => {
+                protocol::clipboard_notice(sample["text"].as_str().unwrap(), sample["concealed"].as_bool().unwrap())
+            }
+            "clipboard-skipped" => {
+                let reason = [
+                    SkipReason::TooLarge,
+                    SkipReason::ReadDenied,
+                    SkipReason::LockedMultiline,
+                    SkipReason::LockedEmpty,
+                ]
+                .into_iter()
+                .find(|r| r.as_str() == sample["reason"].as_str().unwrap())
+                .unwrap_or_else(|| panic!("the fixture has a reason the agent lacks: {sample}"));
+                reasons.push(reason);
+                protocol::skipped_notice(reason)
+            }
+            other => panic!("the fixture has a notice the test does not know: {other}"),
+        };
+        let sent: Value = serde_json::from_str(&built).unwrap();
+        assert_eq!(&sent, sample, "the agent's notice drifted from the contract");
+    }
+    for reason in [SkipReason::TooLarge, SkipReason::ReadDenied, SkipReason::LockedMultiline, SkipReason::LockedEmpty] {
+        assert!(reasons.contains(&reason), "the fixture has no clipboard-skipped notice for {}", reason.as_str());
+    }
+    // The page reads strings only; `peer::tests` checks that the agent writes `replaced` as a text frame.
     assert_eq!(fixture["noticeFrame"], "text");
-    // The notice is not an input message: the agent does not mistake its own wording for one.
-    assert!(protocol::parse(protocol::NOTICE_REPLACED.as_bytes()).is_none());
+    // Apart from `clipboard` (the same shape both ways), a notice is not an input message.
+    for sample in notices.iter().filter(|n| n["type"] != "clipboard") {
+        assert!(protocol::parse(&serde_json::to_vec(sample).unwrap()).is_none(), "{sample}");
+    }
 }
 
 fn status(

@@ -3,6 +3,7 @@
 pub mod auth;
 pub mod bitrate;
 pub mod black;
+pub mod clipboard;
 pub mod config;
 pub mod frame;
 pub mod http;

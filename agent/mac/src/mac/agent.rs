@@ -1,9 +1,11 @@
 //! The agent proper on macOS: the real capture pipeline, event injection and system calls
 //! plugged into `session::Sessions`, which holds the decisions (spec D5).
 use super::inject::Injector;
+use super::pasteboard::Pasteboard;
 use super::pipeline::Pipeline;
 use super::system;
 use super::wake::WakeLock;
+use crate::clipboard::{Access, Board, PasteRead};
 use crate::frame::FrameTarget;
 use crate::http::{Backend, SessionFailure, SessionRequest};
 use crate::peer;
@@ -50,9 +52,32 @@ impl Input for Injector {
     fn release_all(&self) {
         Injector::release_all(self)
     }
+    fn type_keys(&self, text: &str) {
+        Injector::type_keys(self, text)
+    }
 }
 
-struct System;
+struct System {
+    board: Pasteboard,
+}
+
+impl Board for System {
+    fn change_count(&self) -> i64 {
+        self.board.change_count()
+    }
+    fn access(&self) -> Access {
+        self.board.access()
+    }
+    fn read(&self) -> PasteRead {
+        self.board.read()
+    }
+    fn write(&self, text: &str, concealed: bool) -> i64 {
+        self.board.write(text, concealed)
+    }
+    fn console_locked(&self) -> bool {
+        system::console_locked()
+    }
+}
 
 impl Platform for System {
     fn screen_recording_granted(&self) -> bool {
@@ -88,7 +113,7 @@ impl Agent {
         Agent {
             sessions: Sessions::new(Parts {
                 bind,
-                platform: Box::new(System),
+                platform: Box::new(System { board: Pasteboard::general() }),
                 capture: Box::new(Pipeline::default()),
                 input: Box::new(Injector::default()),
                 accept: Box::new(peer::accept),

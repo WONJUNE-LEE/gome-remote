@@ -52,6 +52,21 @@ pub fn screen_locked() -> bool {
     }
 }
 
+/// True while the console is locked (the I/O Registry root's `IOConsoleLocked`). The display
+/// merely sleeping leaves it false; the lock screen sets it. False when the key is absent.
+pub fn console_locked() -> bool {
+    unsafe {
+        let root = IORegistryGetRootEntry(0);
+        if root == 0 {
+            return false;
+        }
+        let key = cf_string("IOConsoleLocked");
+        let value = Cf(IORegistryEntryCreateCFProperty(root, key.0, std::ptr::null(), 0));
+        IOObjectRelease(root);
+        !value.0.is_null() && value.0 == kCFBooleanTrue
+    }
+}
+
 /// The main display's size in real pixels (a 4K panel shown as 1920x1080 points is 3840x2160).
 pub fn native_pixels() -> Option<Size> {
     unsafe {

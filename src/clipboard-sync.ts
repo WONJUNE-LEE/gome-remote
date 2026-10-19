@@ -1,0 +1,348 @@
+// The page's clipboard sync rules, with no DOM and no timers of its own: the local
+// clipboard, the remote channel and the timers are injected. It decides when the local
+// clipboard text goes to the remote computer (on focus gain and at a paste key), holds the
+// paste key and everything after it until that text is sent (the paste barrier), and
+// writes remote text to the local clipboard. Clipboard text is never logged.
+import { utf8Length, type SkipReason } from "./agent-input";
+
+export { utf8Length };
+
+export const MAX_CLIPBOARD_BYTES = 64 * 1024;
+export const PASTE_BARRIER_MS = 500;
+export const FOCUS_RETRY_MS = 150;
+
+export type NoticeKey =
+  SkipReason | "bridge-refused" | "read-timeout" | "unsupported-chars";
+
+export const NOTICE_TEXT: Record<NoticeKey, string> = {
+  "too-large": "클립보드가 너무 커서(64 KiB 초과) 동기화하지 못했습니다",
+  "read-denied": "Mac이 클립보드 읽기를 허용하지 않았습니다",
+  "locked-multiline": "잠금 화면에는 여러 줄을 붙여넣을 수 없습니다",
+  "locked-empty": "입력할 텍스트가 없습니다",
+  "bridge-refused": "클립보드에 접근하지 못했습니다",
+  "read-timeout": "클립보드를 제때 읽지 못했습니다",
+  "unsupported-chars": "이 화면은 한글 같은 문자를 붙여넣을 수 없습니다",
+};
+
+export function normaliseNewlines(text: string): string {
+  return text.replace(/\r\n?/g, "\n");
+}
+
+export interface PasteKeyEvent {
+  code: string;
+  key: string;
+  metaKey: boolean;
+  ctrlKey: boolean;
+  shiftKey: boolean;
+  altKey: boolean;
+}
+
+export function isPasteShortcut(
+  e: PasteKeyEvent,
+  target: "mac" | "other",
+): boolean {
+  const v = e.code === "KeyV" || e.key.toLowerCase() === "v";
+  if (target === "mac") return v && e.metaKey && !e.ctrlKey && !e.altKey;
+  if (v) return e.ctrlKey && !e.metaKey && !e.altKey;
+  const insert = e.code === "Insert" || e.key === "Insert";
+  return insert && e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey;
+}
+
+export type LocalResult =
+  | { ok: true; text: string; concealed: boolean }
+  | { ok: false; reason: "unfocused" | "failed" | "denied" };
+export interface LocalClipboard {
+  read(): Promise<LocalResult>;
+  write(
+    text: string,
+    concealed: boolean,
+  ): Promise<
+    { ok: true } | { ok: false; reason: "unfocused" | "failed" | "denied" }
+  >;
+}
+export interface RemoteClipboard {
+  sendClipboard(
+    text: string,
+    concealed: boolean,
+  ): "sent" | "too-large" | "closed";
+  sendWatch?(on: boolean): void;
+}
+export interface SyncDeps {
+  local: LocalClipboard;
+  remote: RemoteClipboard;
+  target: "mac" | "other";
+  notify(key: NoticeKey): void;
+  setTimeout: typeof setTimeout;
+  clearTimeout: typeof clearTimeout;
+  latin1Only?: boolean;
+}
+export interface ClipboardSync {
+  // `read: false` marks the view focused (and turns the watch on) without reading the
+  // local clipboard: the session start pushes nothing.
+  setViewFocused(focused: boolean, opts?: { read?: boolean }): void;
+  setRemoteLocked(locked: boolean): void;
+  remoteClipboard(text: string, concealed: boolean): void;
+  remoteSkipped(reason: SkipReason): void;
+  pasteShortcut(event: PasteKeyEvent): void;
+  pasteFromMenu(press: () => void): void;
+  gate(run: () => void): void;
+  flush(): void;
+  // The lock changed or the remote clipboard was replaced by something unknown: forget what
+  // was last in sync.
+  invalidate(): void;
+  // The remote clipboard now holds exactly this text (the page put it there): it becomes the
+  // baseline, so the remote announcing it back is not written to the local clipboard.
+  markSynced(text: string): void;
+  end(): void;
+}
+
+interface Flight {
+  kind: "focus" | "paste";
+  retried: boolean;
+  // The paste menu item or bar button: a user action that reads even if the view has not
+  // (yet) been marked focused.
+  menu?: boolean;
+  // remoteClipboard() calls seen when the read began; a focus read that a newer remote
+  // text overtook is stale and must not be sent back.
+  epoch: number;
+}
+type Timer = ReturnType<typeof setTimeout>;
+
+export function createClipboardSync(deps: SyncDeps): ClipboardSync {
+  const { local, remote } = deps;
+  let focused = false;
+  let locked = false;
+  // The normalised text last sent to or received from the remote computer.
+  let lastSynced: string | undefined;
+  // The refusal a focus trigger already told the user about, so one text is not repeated.
+  let refused: string | undefined;
+  let epoch = 0;
+  // At most one read is in flight. A trigger waits in `queue` and re-reads when its turn
+  // comes, so texts are sent in trigger order.
+  let flight: Flight | undefined;
+  let queue: Array<{
+    kind: "focus" | "paste";
+    retried: boolean;
+    menu?: boolean;
+  }> = [];
+  let barrier = false;
+  let barrierTimer: Timer | undefined;
+  let pasteRetry: Timer | undefined;
+  let held: Array<() => void> = [];
+  const retryTimers = new Set<Timer>();
+
+  const refuse = (key: NoticeKey, text: string, paste: boolean) => {
+    if (!paste) {
+      const mark = `${key}\0${text}`;
+      if (refused === mark) return;
+      refused = mark;
+    }
+    deps.notify(key);
+  };
+
+  // Returns "retry" when a menu paste read hit the focus guard and will be read once more
+  // within the same barrier.
+  const handle = (read: Flight, result: LocalResult): "retry" | undefined => {
+    const paste = read.kind === "paste";
+    if (!result.ok) {
+      if (paste) {
+        if (result.reason === "unfocused" && read.menu && !read.retried) {
+          // The menu may still be closing: the window is focused again a moment later.
+          pasteRetry = deps.setTimeout(() => {
+            pasteRetry = undefined;
+            if (!barrier) return;
+            queue.push({ kind: "paste", retried: true, menu: true });
+            pump();
+          }, FOCUS_RETRY_MS);
+          return "retry";
+        }
+        if (result.reason !== "denied") deps.notify("bridge-refused");
+      } else if (result.reason === "unfocused" && !read.retried) {
+        const id = deps.setTimeout(() => {
+          retryTimers.delete(id);
+          if (!focused) return;
+          queue.push({ kind: "focus", retried: true });
+          pump();
+        }, FOCUS_RETRY_MS);
+        retryTimers.add(id);
+      }
+      return;
+    }
+    if (!paste && read.epoch !== epoch) return;
+    const text = normaliseNewlines(result.text);
+    if (text === "") return;
+    if (text === lastSynced && !(paste && locked)) return;
+    if (deps.latin1Only && /[^\u0000-ÿ]/.test(text))
+      return void refuse("unsupported-chars", text, paste);
+    if (utf8Length(text) > MAX_CLIPBOARD_BYTES)
+      return void refuse("too-large", text, paste);
+    const sent = remote.sendClipboard(text, result.concealed);
+    if (sent === "sent") lastSynced = text;
+    else if (sent === "too-large") refuse("too-large", text, paste);
+  };
+
+  const settle = (mine: Flight, result: LocalResult) => {
+    if (flight !== mine) return; // abandoned: timed out, focus lost or ended
+    flight = undefined;
+    let retry: "retry" | undefined;
+    try {
+      retry = handle(mine, result);
+    } finally {
+      if (mine.kind === "paste" && retry !== "retry") closeBarrier();
+      pump();
+    }
+  };
+
+  function pump() {
+    if (flight || queue.length === 0) return;
+    const trigger = queue.shift()!;
+    const mine: Flight = { ...trigger, epoch };
+    flight = mine;
+    let read: Promise<LocalResult>;
+    try {
+      read = Promise.resolve(local.read());
+    } catch {
+      read = Promise.resolve({ ok: false, reason: "failed" });
+    }
+    read.then(
+      (result) => settle(mine, result),
+      () => settle(mine, { ok: false, reason: "failed" }),
+    );
+  }
+
+  // Releases the held items in order. A read still pending for the barrier is abandoned:
+  // its late result is ignored and never marks anything synced.
+  function closeBarrier() {
+    if (barrierTimer !== undefined) deps.clearTimeout(barrierTimer);
+    barrierTimer = undefined;
+    if (pasteRetry !== undefined) deps.clearTimeout(pasteRetry);
+    pasteRetry = undefined;
+    barrier = false;
+    queue = queue.filter((t) => t.kind !== "paste");
+    if (flight?.kind === "paste") flight = undefined;
+    const run = held;
+    held = [];
+    // One failing item (a send on a closed channel) must not lose the ones after it, such
+    // as a key-up, nor skip the next read.
+    for (const item of run) {
+      try {
+        item();
+      } catch {
+        // dropped: nothing about the item may be logged
+      }
+    }
+    pump();
+  }
+
+  function openBarrier(menu = false) {
+    if ((!focused && !menu) || barrier) return;
+    barrier = true;
+    barrierTimer = deps.setTimeout(() => {
+      barrierTimer = undefined;
+      if (!barrier) return;
+      // Whatever read is in flight (even a focus read stuck behind a permission prompt)
+      // is abandoned, so the next paste reads afresh.
+      flight = undefined;
+      closeBarrier();
+      deps.notify("read-timeout");
+    }, PASTE_BARRIER_MS);
+    queue.push({ kind: "paste", retried: false, menu });
+    pump();
+  }
+
+  const gate = (run: () => void) => {
+    if (barrier) held.push(run);
+    else run();
+  };
+
+  const clearRetries = () => {
+    for (const id of retryTimers) deps.clearTimeout(id);
+    retryTimers.clear();
+  };
+
+  return {
+    setViewFocused(next, opts) {
+      if (next === focused) return;
+      focused = next;
+      remote.sendWatch?.(next);
+      if (next) {
+        if (opts?.read === false) return;
+        queue.push({ kind: "focus", retried: false });
+        pump();
+        return;
+      }
+      clearRetries();
+      queue = [];
+      flight = undefined;
+      // Keys held for a paste go out without the text: the user is told.
+      const pasting = barrier;
+      closeBarrier();
+      if (pasting) deps.notify("read-timeout");
+    },
+    setRemoteLocked(next) {
+      if (next === locked) return;
+      locked = next;
+      lastSynced = undefined;
+      refused = undefined;
+    },
+    remoteClipboard(text, concealed) {
+      if (!focused) return;
+      const normalised = normaliseNewlines(text);
+      if (normalised === "") return;
+      // The remote announcing what is already in sync must not overwrite the local clipboard.
+      if (normalised === lastSynced) return;
+      epoch++;
+      const before = lastSynced;
+      lastSynced = normalised;
+      const failed = () => {
+        if (lastSynced === normalised) lastSynced = before;
+      };
+      let write: Promise<Awaited<ReturnType<LocalClipboard["write"]>>>;
+      try {
+        write = Promise.resolve(local.write(normalised, concealed));
+      } catch {
+        failed();
+        return;
+      }
+      write.then((r) => {
+        if (r.ok) return;
+        failed();
+        // Only the browser's own permission refusal is silent (D8).
+        if (r.reason !== "denied") deps.notify("bridge-refused");
+      }, failed);
+    },
+    remoteSkipped(reason) {
+      deps.notify(reason);
+    },
+    pasteShortcut(event) {
+      if (isPasteShortcut(event, deps.target)) openBarrier();
+    },
+    pasteFromMenu(press) {
+      // An explicit user action: always opens the barrier and reads, whatever the focus
+      // flag says (a native menu click may blur the window first).
+      openBarrier(true);
+      gate(press);
+    },
+    gate,
+    flush() {
+      closeBarrier();
+    },
+    invalidate() {
+      lastSynced = undefined;
+      refused = undefined;
+    },
+    markSynced(text) {
+      lastSynced = normaliseNewlines(text);
+    },
+    end() {
+      closeBarrier();
+      clearRetries();
+      queue = [];
+      flight = undefined;
+      focused = false;
+      locked = false;
+      lastSynced = undefined;
+      refused = undefined;
+    },
+  };
+}

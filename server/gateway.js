@@ -78,7 +78,7 @@ export function connectionSettings(target, credentials, size = {}) {
         height,
         dpi: 96,
         "read-only": false,
-        "disable-copy": true,
+        "disable-copy": false,
         "disable-paste": false,
         ...(target.protocol === "rdp"
           ? {

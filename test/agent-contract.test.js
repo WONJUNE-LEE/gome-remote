@@ -15,7 +15,7 @@ const fixture = JSON.parse(
   ),
 );
 const input = await loadTs("agent-input.ts");
-const { message } = input;
+const { message, parseAgentMessage, parseNotice } = input;
 
 // How the page builds each message from the values the fixture carries.
 const build = {
@@ -26,7 +26,13 @@ const build = {
   text: (m) => message.text(m.s),
   release: () => message.release(),
   size: (m) => message.size(m.w, m.h),
+  clipboard: (m) => message.clipboard(m.text, m.concealed),
+  "clipboard-watch": (m) => message.clipboardWatch(m.on),
 };
+// `message` names its builders in camelCase, the wire in kebab-case.
+// The page code runs in its own realm; compare by value across it.
+const plain = (value) => JSON.parse(JSON.stringify(value));
+const wireType = (name) => name.replace(/[A-Z]/g, (c) => `-${c.toLowerCase()}`);
 
 test("the page's message builders produce exactly the contract's input messages", () => {
   for (const sample of fixture.input) {
@@ -40,9 +46,10 @@ test("the page's message builders produce exactly the contract's input messages"
 });
 
 test("the contract covers every message the page can send, and the page can send nothing the contract lacks", () => {
-  assert.deepEqual(Object.keys(build).sort(), Object.keys(message).sort());
+  const builders = Object.keys(message).map(wireType).sort();
+  assert.deepEqual(Object.keys(build).sort(), builders);
   const types = new Set(fixture.input.map((m) => m.type));
-  assert.deepEqual([...types].sort(), Object.keys(message).sort());
+  assert.deepEqual([...types].sort(), builders);
   const buttons = fixture.input
     .filter((m) => m.type === "button")
     .map((m) => m.b);
@@ -50,24 +57,44 @@ test("the contract covers every message the page can send, and the page can send
 });
 
 test("the page understands exactly the agent's notices of the contract", () => {
-  const { parseNotice } = input;
   assert.ok(fixture.notice.length >= 1);
   for (const sample of fixture.notice)
-    assert.equal(parseNotice(JSON.stringify(sample)), sample.type);
+    assert.deepEqual(plain(parseAgentMessage(JSON.stringify(sample))), sample);
+  assert.deepEqual([...new Set(fixture.notice.map((n) => n.type))].sort(), [
+    "clipboard",
+    "clipboard-skipped",
+    "lock",
+    "replaced",
+  ]);
   assert.deepEqual(
-    fixture.notice.map((n) => n.type),
-    ["replaced"],
+    fixture.notice
+      .filter((n) => n.type === "clipboard-skipped")
+      .map((n) => n.reason)
+      .sort(),
+    ["locked-empty", "locked-multiline", "read-denied", "too-large"],
   );
-  // An input message is not a notice.
-  for (const sample of fixture.input)
+  // `parseNotice` still reads only `replaced`.
+  for (const sample of fixture.notice)
+    assert.equal(
+      parseNotice(JSON.stringify(sample)),
+      sample.type === "replaced" ? "replaced" : undefined,
+    );
+  // An input message is not an agent message, except `clipboard`, which has the same shape
+  // in both directions (the agent never receives its own notices, nor the page its own).
+  for (const sample of fixture.input) {
     assert.equal(parseNotice(JSON.stringify(sample)), undefined);
-  // The agent sends it as a text frame (the Rust peer test checks that); a binary frame
-  // of the same bytes reaches the page as an ArrayBuffer and is ignored.
+    if (sample.type !== "clipboard")
+      assert.equal(parseAgentMessage(JSON.stringify(sample)), undefined);
+  }
+  // The agent sends text frames (the Rust peer test checks that); a binary frame of the
+  // same bytes reaches the page as an ArrayBuffer and is ignored.
   assert.equal(fixture.noticeFrame, "text");
   for (const sample of fixture.notice) {
     const bytes = new TextEncoder().encode(JSON.stringify(sample));
     assert.equal(parseNotice(bytes), undefined);
     assert.equal(parseNotice(bytes.buffer), undefined);
+    assert.equal(parseAgentMessage(bytes), undefined);
+    assert.equal(parseAgentMessage(bytes.buffer), undefined);
   }
   // A notice padded beyond 256 characters is not one.
   const padded = JSON.stringify(fixture.notice[0]) + " ".repeat(256);

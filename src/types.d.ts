@@ -34,7 +34,14 @@ interface ViewerState {
 // Functions the desktop app contributes to the page it shows. Version 1 is the first;
 // later versions only add members or accepted values. Version 2 adds the "auto"
 // resolution to viewerState and the resolution:auto menu action. Version 3 adds the
-// protocol "agent" to viewerState (the page sends "rdp" to older apps).
+// protocol "agent" to viewerState (the page sends "rdp" to older apps). Version 4 adds
+// readClipboard and writeClipboard: text only, answered only while the window has focus.
+type ClipboardRead =
+  | { ok: true; text: string; concealed: boolean }
+  | { ok: false; reason: "unfocused" | "failed" };
+type ClipboardWrite =
+  | { ok: true; concealed: boolean }
+  | { ok: false; reason: "unfocused" | "failed" | "too-large" };
 interface NativeBridge {
   fullscreen(enabled: boolean): Promise<void>;
   fullscreenState(): Promise<boolean>;
@@ -45,6 +52,25 @@ interface NativeBridge {
 interface DesktopBridge extends NativeBridge {
   bridgeVersion?: number;
   openSetup(): Promise<void>;
+  // The Windows key lock: true only in the Windows app. keyLock(true) puts the page in
+  // in-window HTML full screen (main refuses unless the window has focus), keyLock(false)
+  // leaves it; both answer whether it worked. Absent in older (unreleased) bridge 4 builds.
+  keyLockSupported?: boolean;
+  keyLock?(on: boolean): Promise<boolean>;
+  // Absent in apps older than bridge version 4 and in browsers (no navigator.clipboard
+  // fallback inside the app).
+  readClipboard?(): Promise<ClipboardRead>;
+  writeClipboard?(
+    text: string,
+    opts?: { concealed?: boolean },
+  ): Promise<ClipboardWrite>;
+}
+// navigator.keyboard (Keyboard Lock API); Chromium only, so it may be absent.
+interface Navigator {
+  readonly keyboard?: {
+    lock(keyCodes?: string[]): Promise<void>;
+    unlock(): void;
+  };
 }
 interface Window {
   desktop?: DesktopBridge;

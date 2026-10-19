@@ -26,8 +26,11 @@ export class ApiError extends Error {
 
 // Bridge version 1 or later means the page runs inside the desktop app. Anything else,
 // including an older app without a version, is treated as an ordinary browser.
-export const appMode =
-  (window.desktop?.bridgeVersion ?? 0) >= REQUIRED_BRIDGE_VERSION;
+export const bridgeVersion = window.desktop?.bridgeVersion ?? 0;
+export const appMode = bridgeVersion >= REQUIRED_BRIDGE_VERSION;
+// Bridge version 4 adds readClipboard and writeClipboard. An app with a lower bridge gets
+// no clipboard sync, and the page never falls back to navigator.clipboard inside the app.
+export const clipboardBridge = appMode && bridgeVersion >= 4;
 // An app with bridge version 1 rejects the "auto" resolution in viewerState, so only
 // browsers and newer apps may offer it.
 export const autoResolution = !appMode || window.desktop!.bridgeVersion! >= 2;
@@ -131,6 +134,12 @@ export const api = {
   viewerState: (state: ViewerState) => native.viewerState(forBridge(state)),
   onViewerAction: (callback: (action: string) => void) =>
     native.onViewerAction(callback),
+  // True only in the Windows app (bridge 4 with the key lock); browsers never have it.
+  keyLockSupported: appMode && window.desktop!.keyLockSupported === true,
+  keyLock: (on: boolean) =>
+    appMode && window.desktop!.keyLock
+      ? window.desktop!.keyLock(on)
+      : Promise.resolve(false),
   // Only the app has an address to change; in a browser the address bar is the setting.
   openSetup: () => (appMode ? window.desktop!.openSetup() : Promise.resolve()),
 };

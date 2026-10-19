@@ -49,6 +49,8 @@ test("F11 stays local and the viewer keeps its commands", () => {
     '"disconnect"',
     '"reconnect"',
     '"text-input"',
+    '"paste-clipboard"',
+    '<button id="paste-remote" disabled>클립보드 붙여넣기</button>',
   ])
     assert.ok(main.includes(command), command);
   assert.match(main, /client\?\.sendSize\(size\.width, size\.height\)/);
@@ -102,7 +104,24 @@ test("main.ts takes its failure screens and its connection policy from flow.ts",
   assert.match(main, /errorScreen\(kind, appMode\)/);
   assert.match(main, /connectFailure\(kind\)/);
   assert.match(main, /createSessionFlow\(/);
-  assert.doesNotMatch(main, /setTimeout|setInterval/);
+  // No timer starts a connection: the only timers are the clipboard notice's 4 seconds
+  // and the ones handed to the clipboard sync (its paste barrier), and no timer callback
+  // calls connect() or the flow.
+  assert.doesNotMatch(main, /setInterval/);
+  const timerLines = main
+    .split("\n")
+    .filter((line) => /setTimeout|clearTimeout/.test(line));
+  assert.ok(timerLines.length > 0);
+  for (const line of timerLines)
+    assert.match(
+      line,
+      /noticeTimer|hideNotice|setTimeout: \(|setTimeout\(callback, ms\)|clearTimeout: \(|clearTimeout\(id\)/,
+      `an unexpected timer: ${line.trim()}`,
+    );
+  assert.doesNotMatch(
+    main,
+    /set(Timeout|Interval)\((?:[^)]*\b)?(connect|begin|reconnect|flow)\b/,
+  );
   // The only call of connect() is the `begin` effect handed to flow.ts.
   assert.equal(
     (main.match(/(?<![.\w])connect\(/g) || []).length,

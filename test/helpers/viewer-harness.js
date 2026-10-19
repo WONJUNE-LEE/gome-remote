@@ -83,7 +83,9 @@ class FakeElement {
   click() {
     this.onclick?.({ stopPropagation() {} });
   }
-  focus() {}
+  focus() {
+    this.focusCount = (this.focusCount ?? 0) + 1;
+  }
   showModal() {
     this.open = true;
   }
@@ -102,7 +104,7 @@ const BRIDGE_1_RESOLUTIONS = ["1440x900", "1920x1080", "2560x1440"];
 // on any resolution but the fixed sizes.
 export async function viewer({
   appMode = false,
-  bridgeVersion = 3,
+  bridgeVersion = 4,
   targets,
   fetchHandler,
   hash = "",
@@ -110,6 +112,20 @@ export async function viewer({
   // Use the real src/agent.ts (on the agent harness's fake RTCPeerConnection) instead of the
   // recorder, for tests about what the page really sends the Mac.
   realAgent = false,
+  // navigator.keyboard.lock() answers like Chromium in full screen: "granted" resolves,
+  // "refused" rejects, "hang" never answers, "absent" leaves navigator.keyboard undefined.
+  keyboardLock = "granted",
+  // The Windows app announces keyLockSupported; the other apps have the functions but
+  // answer false. `keyLockAnswer` is what the bridge says to keyLock(true): "granted"
+  // puts the document in HTML full screen, "refused" answers false, "hang" never answers.
+  keyLockSupported = false,
+  keyLockAnswer = "granted",
+  // What the local clipboard holds (the bridge's readClipboard answers it). The page's
+  // window has the focus unless `windowFocused` says otherwise.
+  clipboardText = "",
+  windowFocused = true,
+  // A browser's navigator.clipboard, for the page outside the app.
+  browserClipboard,
 } = {}) {
   const rig = realAgent ? await agentHarness() : undefined;
   const fetches = [];
@@ -163,15 +179,65 @@ export async function viewer({
       (documentListeners[type] ??= []).push(listener),
     removeEventListener() {},
     async exitFullscreen() {},
+    hasFocus: () => windowFocus,
   };
-  const bridgeCalls = { viewerState: [], openSetup: 0 };
+  let windowFocus = windowFocused;
+  const bridgeCalls = {
+    viewerState: [],
+    openSetup: 0,
+    fullscreen: [],
+    keyLock: [],
+  };
+  const keyboardCalls = { lock: [], unlock: 0 };
+  // The local clipboard the bridge reads and writes. `hold` keeps reads pending until
+  // `resolve()`; `fail` makes them answer that failure instead of the text.
+  const clipboard = {
+    text: clipboardText,
+    concealed: false,
+    reads: 0,
+    writes: [],
+    hold: false,
+    fail: undefined,
+    held: [],
+    resolve() {
+      for (const release of clipboard.held.splice(0)) release();
+    },
+  };
+  const navigator = {
+    ...(browserClipboard ? { clipboard: browserClipboard } : {}),
+    ...(keyboardLock === "absent"
+      ? {}
+      : {
+          keyboard: {
+            lock: async (...args) => {
+              keyboardCalls.lock.push(args);
+              if (keyboardLock === "hang") return new Promise(() => {});
+              if (keyboardLock === "refused")
+                throw new Error("NotAllowedError");
+            },
+            unlock: () => {
+              keyboardCalls.unlock++;
+            },
+          },
+        }),
+  };
   let actionListener;
+  // The window's native full screen state, as main reports it (the bridge's fullscreen()
+  // calls only record; a test drives the state with setNativeFullscreen).
+  let nativeFullscreen = false;
+  let fullscreenListener;
+  const warnings = []; // console.warn lines of the page, each an array of arguments
   const desktop = appMode
     ? {
         bridgeVersion,
-        fullscreen: async () => {},
-        fullscreenState: async () => false,
-        onFullscreenChange: () => () => {},
+        fullscreen: async (enabled) => {
+          bridgeCalls.fullscreen.push(enabled);
+        },
+        fullscreenState: async () => nativeFullscreen,
+        onFullscreenChange: (callback) => {
+          fullscreenListener = callback;
+          return () => {};
+        },
         viewerState: async (state) => {
           bridgeCalls.viewerState.push(state);
           if (
@@ -187,6 +253,41 @@ export async function viewer({
         openSetup: async () => {
           bridgeCalls.openSetup++;
         },
+        ...(bridgeVersion >= 4
+          ? {
+              keyLockSupported,
+              keyLock: async (on) => {
+                bridgeCalls.keyLock.push(on);
+                if (!keyLockSupported) return false;
+                if (on && keyLockAnswer === "refused") return false;
+                if (on && keyLockAnswer === "hang")
+                  return new Promise(() => {});
+                document.fullscreenElement = on
+                  ? document.documentElement
+                  : null;
+                (documentListeners.fullscreenchange ?? []).forEach((l) =>
+                  l({ type: "fullscreenchange" }),
+                );
+                return true;
+              },
+              readClipboard: async () => {
+                clipboard.reads++;
+                if (clipboard.hold)
+                  await new Promise((resolve) => clipboard.held.push(resolve));
+                return (
+                  clipboard.fail ?? {
+                    ok: true,
+                    text: clipboard.text,
+                    concealed: clipboard.concealed,
+                  }
+                );
+              },
+              writeClipboard: async (text, options) => {
+                clipboard.writes.push([text, options]);
+                return { ok: true };
+              },
+            }
+          : {}),
       }
     : undefined;
   // devicePixelRatio is read from the window each time, as in a browser.
@@ -264,6 +365,10 @@ export async function viewer({
       this.connected = [];
       this.disconnected = 0;
       this.sizes = [];
+      // Everything the page sends the remote, in order: ["mouse", state], ["key", down,
+      // keysym] and ["clipboard", mimetype, text] (a finished clipboard stream).
+      this.log = [];
+      this.onclipboard = null;
       this.display = {
         getCursorLayer: () => new FakeElement("canvas"),
         getElement: () => new FakeElement("div"),
@@ -282,12 +387,23 @@ export async function viewer({
     disconnect() {
       this.disconnected++;
     }
-    sendMouseState() {}
-    sendKeyEvent() {}
+    sendMouseState(state) {
+      this.log.push(["mouse", state]);
+    }
+    sendKeyEvent(down, keysym) {
+      this.log.push(["key", down, keysym]);
+    }
+    createClipboardStream(mimetype) {
+      return { client: this, mimetype, text: "" };
+    }
     sendSize(width, height) {
       this.sizes.push([width, height]);
     }
   }
+  // The pointer, keyboard and clipboard stream classes record themselves like the clients.
+  const mice = [];
+  const keyboards = [];
+  const readers = [];
   // The Mac (agent) session is replaced by a recorder: src/agent.ts has its own tests with
   // a fake RTCPeerConnection. Here only main.ts's wiring is under test. By default `start`
   // relays a fake offer through the page's own signalling function, as the real one does.
@@ -299,6 +415,9 @@ export async function viewer({
       this.video = new FakeElement("video");
       this.sizes = [];
       this.texts = [];
+      this.clipboards = [];
+      this.watches = [];
+      this.pasteShortcuts = 0;
       this.releases = 0;
       this.closed = 0;
       this.focused = 0;
@@ -316,6 +435,16 @@ export async function viewer({
       this.texts.push(text);
       return true;
     }
+    sendClipboard(text, concealed) {
+      this.clipboards.push([text, concealed]);
+      return "sent";
+    }
+    sendWatch(on) {
+      this.watches.push(on);
+    }
+    pasteShortcut() {
+      this.pasteShortcuts++;
+    }
     release() {
       this.releases++;
     }
@@ -331,11 +460,62 @@ export async function viewer({
   const Guacamole = {
     WebSocketTunnel: Tunnel,
     Client,
-    Mouse: class {},
-    Keyboard: class {
-      reset() {}
+    Mouse: class {
+      constructor(element) {
+        this.element = element;
+        mice.push(this);
+      }
     },
-    StringWriter: class {},
+    // Like the real one, it listens for keydown on the element it is given, so the order
+    // of listeners on that element is what the test sees. `modifiers` is its own state.
+    Keyboard: class {
+      constructor(element) {
+        this.element = element;
+        this.modifiers = {};
+        this.pressed = new Set();
+        keyboards.push(this);
+        element.addEventListener("keydown", (event) => {
+          if (event.keysym === undefined) return;
+          this.pressed.add(event.keysym);
+          if (this.onkeydown?.(event.keysym) === false)
+            event.preventDefault?.();
+        });
+        element.addEventListener("keyup", (event) => {
+          if (event.keysym === undefined) return;
+          this.pressed.delete(event.keysym);
+          this.onkeyup?.(event.keysym);
+        });
+      }
+      reset() {
+        for (const keysym of [...this.pressed]) {
+          this.pressed.delete(keysym);
+          this.onkeyup?.(keysym);
+        }
+      }
+    },
+    StringWriter: class {
+      constructor(stream) {
+        this.stream = stream;
+      }
+      sendText(text) {
+        this.stream.text += text;
+      }
+      sendEnd() {
+        this.stream.client.log.push([
+          "clipboard",
+          this.stream.mimetype,
+          this.stream.text,
+        ]);
+      }
+    },
+    StringReader: class {
+      constructor(stream) {
+        this.stream = stream;
+        this.ontext = null;
+        this.onend = null;
+        readers.push(this);
+      }
+    },
   };
 
   const tiles = await loadTs("tiles.ts");
@@ -348,7 +528,19 @@ export async function viewer({
     JSON,
   });
   const flow = await loadTs("flow.ts");
+  const keyboardLockModule = await loadTs("keyboard-lock.ts");
   const agentMessages = await loadTs("agent-messages.ts");
+  const agentInput = await loadTs("agent-input.ts");
+  const clipboardSync = await loadTs(
+    "clipboard-sync.ts",
+    {},
+    { "./agent-input": agentInput },
+  );
+  const clipboardLocal = await loadTs(
+    "clipboard-local.ts",
+    { window, navigator },
+    { "./api": api },
+  );
   // The measurement module is given recording stand-ins: a page without #measure must
   // leave `measureUse` empty (no document access, no timer, no message port).
   const measureUse = [];
@@ -380,6 +572,10 @@ export async function viewer({
     {
       window,
       document,
+      navigator,
+      console: { warn: (...args) => warnings.push(args) },
+      setTimeout: fakeSetTimeout,
+      clearTimeout: fakeClearTimeout,
       location: { hash },
       Event,
       ResizeObserver: class {
@@ -401,6 +597,9 @@ export async function viewer({
       "./api": api,
       "./tiles": tiles,
       "./flow": flow,
+      "./keyboard-lock": keyboardLockModule,
+      "./clipboard-sync": clipboardSync,
+      "./clipboard-local": clipboardLocal,
       "./agent": rig
         ? { createAgentSession: (deps) => rig.mod.createAgentSession(deps) }
         : { createAgentSession: (deps) => new FakeAgent(deps) },
@@ -422,11 +621,61 @@ export async function viewer({
     clients,
     tunnels,
     agents,
+    mice,
+    keyboards,
+    readers,
     rig,
     body,
     measureUse,
     bridgeCalls,
+    keyboardCalls,
+    warnings,
+    clipboard,
+    window,
     settle,
+    // The window gains or loses the focus: document.hasFocus() answers, then the
+    // window's own event fires.
+    setWindowFocus: (on) => {
+      windowFocus = on;
+      (windowListeners[on ? "focus" : "blur"] ?? []).forEach((l) =>
+        l({ type: on ? "focus" : "blur" }),
+      );
+    },
+    // The app window enters or leaves native full screen; main tells the page.
+    setNativeFullscreen: (on) => {
+      nativeFullscreen = on;
+      fullscreenListener?.(on);
+    },
+    // The page enters or leaves HTML full screen (the document's own state).
+    setHtmlFullscreen: (on) => {
+      document.fullscreenElement = on ? document.documentElement : null;
+      (documentListeners.fullscreenchange ?? []).forEach((l) =>
+        l({ type: "fullscreenchange" }),
+      );
+    },
+    // A key event for the page's window listeners, in listener order; a listener that
+    // calls stopImmediatePropagation ends the delivery, as in a browser.
+    windowKey: (type, init = {}) => {
+      const event = {
+        type,
+        key: "F11",
+        repeat: false,
+        defaultPrevented: false,
+        stopped: false,
+        preventDefault() {
+          event.defaultPrevented = true;
+        },
+        stopImmediatePropagation() {
+          event.stopped = true;
+        },
+        ...init,
+      };
+      for (const listener of windowListeners[type] ?? []) {
+        if (event.stopped) break;
+        listener(event);
+      }
+      return event;
+    },
     // The viewer element changes size (CSS pixels): every live observer is told.
     resizeViewport: (width, height) => {
       el("viewport").clientWidth = width;

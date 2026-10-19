@@ -216,6 +216,10 @@ Good to know:
   takes no argument and no environment variable, and it is signed with the hardened
   runtime. Anyone who controls the gateway server can therefore control the Mac's screen
   and input (as before, when the server held the Mac account password).
+  With the desktop app (bridge version 4) whoever controls the gateway can also read the
+  client's clipboard text while the app window is focused, and receives the text that
+  clipboard sync sends from the Mac. This is the same trust placed in the gateway for the
+  screen and input.
 - **The 30-day reconfirmation.** macOS 27 asks the owner every 30 days to confirm that a
   program may record the screen. If the screen goes blank or the tile says 권한 필요 (or
   권한 필요(의심)) around then, open Mac (VNC) and click the confirmation window.
@@ -233,7 +237,14 @@ Good to know:
 - **Logs.** `~/Library/Logs/gome-remote-agent.log` holds start-up, permission and
   session lines, one statistics line every ten seconds while someone watches, and is
   emptied when it passes 5 MiB.
-- **Scope.** The main display only, no sound, no clipboard sync, no lock-screen automation.
+- **Scope.** The main display only, no sound. Text clipboard sync with the desktop app or a
+  browser (see "Using it"), and a typed paste at the lock screen (the held text is typed
+  with key codes; nothing else is automated there). No key remapping: Ctrl stays Control,
+  Alt stays Option, the Windows key stays Command. Agent 0.2.0 is the first with clipboard
+  sync; installing it needs the owner's `./install.sh` (administrator password), and an older
+  agent simply ignores the clipboard messages. With the older agent (0.1.0) the page's paste
+  therefore gives no signal at all (no text arrives and no notice appears) until the agent is
+  updated.
 
 ### Notes
 
@@ -278,8 +289,9 @@ Open the same address in a browser for the identical screen.
 
 - Click a tile. While connecting, the window shows a spinner and "<name>에 연결하는 중".
 - In the app, use the native **원격** menu: 서버 목록, 해상도 (RDP and the Mac agent; 자동 by default; apps older than bridge version 2 offer fixed sizes only), 텍스트 입력,
-  다시 연결, 연결 종료. F11 and **View → 전체 화면** toggle full screen locally; Escape
-  stays a remote key.
+  클립보드 붙여넣기 (bridge version 4 or later), 다시 연결, 연결 종료. F11 and
+  **View → 전체 화면** toggle full screen locally (on Windows also while the keyboard is
+  captured); Escape stays a remote key on a tap.
 - In a browser the same controls sit in a bar above the picture, never over it.
 - One pointer is drawn over a connected desktop: the remote cursor on the Guacamole paths (RDP
   and VNC), and your own device's pointer in a Mac (agent) session, whose picture has no cursor in it.
@@ -290,9 +302,51 @@ Open the same address in a browser for the identical screen.
   cursor follows it (so hover effects work); the Mac's pointer shapes, such as the text
   cursor, are not shown. Ctrl is Control, Alt is Option and the Windows key is Command.
   The text input window types the characters directly and does not touch the Mac's
-  clipboard. Opening `#measure` after the address (for example
+  clipboard (it is separate from clipboard sync). Opening `#measure` after the address (for example
   `https://your-server.your-tailnet.ts.net:8450/#measure`) shows a small panel that times
   click-to-picture for whichever Mac session is open; without it the page is unchanged.
+- Clipboard (text only, at most 64 KiB of UTF-8; larger text is not sent or cut, and a short
+  notice says so). Nothing is pushed when a session starts. Client to remote: the text is
+  sent when the remote view gains focus and right before a paste, that is a paste key
+  (Cmd+V on a Mac target; Ctrl+V, Ctrl+Shift+V or Shift+Insert elsewhere) or the
+  **클립보드 붙여넣기** menu item or bar button. The paste key and every input after it wait up to
+  500 ms for the clipboard to be read, so the new text is in place before the V. The menu item
+  reads the clipboard even though the native menu took focus from the page, and retries once.
+  Remote to client: only while the remote view is focused; a change made while another window
+  is in front is dropped. Known limit: a Mac copy made in the last few hundred milliseconds
+  before the view loses focus may not arrive; copy again with the view focused. Line endings
+  are LF on Mac and Ubuntu and CRLF on Windows. Empty or non-text clipboards are ignored.
+  Short notices (4 seconds) appear when text exists but was not sent: too large, the Mac
+  refused the read, the bridge refused, or the read timed out. A browser works at best effort
+  with the browser's own clipboard permission; a refused permission is silent. An app older
+  than bridge version 4 (0.3.2 and earlier) has no clipboard sync and no menu item; the
+  update arrives with the next desktop release tag.
+  During a rollout, while the new app still loads an old gateway page, or after the gateway
+  is rolled back to an older page, the **클립보드 붙여넣기** menu item is shown but does nothing:
+  the page has no clipboard sync to answer it. Update the gateway to bring it back.
+- Mac (agent) clipboard writes are current-host-only (Universal Clipboard does not carry
+  them to other Apple devices). Text the Mac marks as concealed (password managers) is passed on
+  with the matching mark where the system allows it. If Windows Clipboard History still keeps
+  Mac-copied text, that is a residual risk: writing the mark on Windows is not yet tested there.
+  No clipboard text is logged anywhere; only the reason and the byte length.
+- Lock screen (Mac agent): when the Mac is really locked (the console lock, not just a sleeping
+  display), Cmd+V or **클립보드 붙여넣기** types the client's text into the password field with key
+  codes (characters outside the US layout fall back to Unicode typing). The text is held in the
+  agent's memory only and is never written to the Mac pasteboard; it is dropped on unlock and
+  at session end. One trailing line break is dropped; text with a line break inside is refused
+  with a notice. VNC sessions have no such special case.
+- Windows key (desktop app on Windows): while a remote view is shown and the app window has the
+  focus, the app captures the keyboard, windowed or full screen, so Win+V, Win+C and the bare
+  Windows key go to the Mac as Command (Alt+Tab, Win+D and the like go to the Mac too). A short
+  notice says so when it starts. Leave with the mouse (clicking another window or switching
+  away releases it) or hold Escape for about 1.5 seconds, which releases it with a notice;
+  click the remote view to take it again (a tap on Escape stays a remote key). F11 still
+  toggles full screen while it is held. Win+L and Ctrl+Alt+Del stay with Windows. If the
+  keyboard capture is refused, the session works without it. The Mac and Linux apps and
+  browsers are unchanged: no capture, F11 and **View → 전체 화면** are plain full screen.
+- Korean text over Mac (VNC): whether macOS Screen Sharing carries Korean and emoji in the
+  clipboard is not yet measured (see `docs/verification.md`); until it is, assume Latin-1 text
+  only on that path. The Mac agent carries Unicode; Ubuntu (RDP) with Korean is also still to be checked.
 - Lost connection: the window says **연결이 끊겼습니다 / 작업은 그대로 남아 있습니다**.
   Choose 다시 연결 or 목록으로. A Mac (agent) session also ends this way once its
   connection has been down for 3 seconds. If another device opens the same Mac (agent), the

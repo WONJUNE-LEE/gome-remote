@@ -1,5 +1,5 @@
 //! The `input` data channel (spec D4): one JSON message per data channel message,
-//! at most 512 bytes (`text`: 8 KiB). Anything out of range, malformed or unknown is
+//! at most 512 bytes (`text`: 8 KiB, `clipboard`: 256 KiB). Anything out of range, malformed or unknown is
 //! dropped, never clamped or guessed at.
 use crate::keymap::{self, KeyAction};
 use crate::size::{self, Size};
@@ -7,6 +7,11 @@ use serde_json::Value;
 
 pub const MAX_MESSAGE: usize = 512;
 pub const MAX_TEXT_MESSAGE: usize = 8 * 1024;
+/// The clipboard text itself, in UTF-8 bytes (not characters); larger text is never sent, never cut.
+pub const MAX_CLIPBOARD_TEXT: usize = 64 * 1024;
+/// The whole `clipboard` message: JSON escaping can inflate 64 KiB of control characters, and the
+/// data channel carries at most this much in one message.
+pub const MAX_CLIPBOARD_MESSAGE: usize = 256 * 1024;
 /// What the agent sends over the data channel to a session that another device replaced,
 /// just before it closes that peer (spec D5). The page ends its session on it.
 pub const NOTICE_REPLACED: &str = r#"{"type":"replaced"}"#;
@@ -44,6 +49,51 @@ pub enum InputMsg {
     Text(String),
     Release,
     Size(Size),
+    /// The client's clipboard text (non-empty, at most `MAX_CLIPBOARD_TEXT` bytes).
+    Clipboard {
+        text: String,
+        concealed: bool,
+    },
+    /// The page asks the agent to start or stop reporting Mac pasteboard changes.
+    ClipboardWatch(bool),
+}
+
+/// Why the agent did not forward or apply a clipboard (the `reason` of a `clipboard-skipped` notice).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SkipReason {
+    TooLarge,
+    ReadDenied,
+    LockedMultiline,
+    LockedEmpty,
+}
+
+impl SkipReason {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            SkipReason::TooLarge => "too-large",
+            SkipReason::ReadDenied => "read-denied",
+            SkipReason::LockedMultiline => "locked-multiline",
+            SkipReason::LockedEmpty => "locked-empty",
+        }
+    }
+}
+
+// The notices are written by hand so that `type` comes first (serde_json's map sorts keys);
+// every string that is not a constant goes through serde_json for its escaping.
+
+/// The Mac pasteboard text for the page (a text frame).
+pub fn clipboard_notice(text: &str, concealed: bool) -> String {
+    let text = Value::from(text);
+    format!(r#"{{"type":"clipboard","text":{text},"concealed":{concealed}}}"#)
+}
+
+pub fn skipped_notice(reason: SkipReason) -> String {
+    format!(r#"{{"type":"clipboard-skipped","reason":"{}"}}"#, reason.as_str())
+}
+
+/// Whether the Mac is at its lock screen, as far as pasting is concerned.
+pub fn lock_notice(locked: bool) -> String {
+    format!(r#"{{"type":"lock","locked":{locked}}}"#)
 }
 
 fn unit(v: &Value) -> Option<f64> {
@@ -54,13 +104,18 @@ fn flag(v: &Value) -> Option<bool> {
 }
 
 pub fn parse(data: &[u8]) -> Option<InputMsg> {
-    if data.len() > MAX_TEXT_MESSAGE {
+    if data.len() > MAX_CLIPBOARD_MESSAGE {
         return None;
     }
     let value: Value = serde_json::from_slice(data).ok()?;
     let object = value.as_object()?;
     let kind = object.get("type")?.as_str()?;
-    if kind != "text" && data.len() > MAX_MESSAGE {
+    let limit = match kind {
+        "clipboard" => MAX_CLIPBOARD_MESSAGE,
+        "text" => MAX_TEXT_MESSAGE,
+        _ => MAX_MESSAGE,
+    };
+    if data.len() > limit {
         return None;
     }
     match kind {
@@ -94,6 +149,15 @@ pub fn parse(data: &[u8]) -> Option<InputMsg> {
             let s = object.get("s")?.as_str()?;
             Some(InputMsg::Text(s.to_string()))
         }
+        "clipboard" => {
+            let text = object.get("text")?.as_str().filter(|t| !t.is_empty() && t.len() <= MAX_CLIPBOARD_TEXT)?;
+            let concealed = match object.get("concealed") {
+                None => false,
+                Some(v) => flag(v)?,
+            };
+            Some(InputMsg::Clipboard { text: text.to_string(), concealed })
+        }
+        "clipboard-watch" => Some(InputMsg::ClipboardWatch(flag(object.get("on")?)?)),
         "release" => Some(InputMsg::Release),
         "size" => {
             let w = object.get("w")?.as_i64()?;
@@ -200,7 +264,7 @@ mod tests {
     }
 
     #[test]
-    fn only_text_may_exceed_512_bytes_and_nothing_exceeds_8_kib() {
+    fn only_text_and_clipboard_exceed_512_bytes() {
         let pad = " ".repeat(600);
         assert_eq!(p(&format!(r#"{{"type":"pointer","x":0.5,"y":0.5,"pad":"{pad}"}}"#)), None);
         let text = "a".repeat(4000);
@@ -234,5 +298,78 @@ mod tests {
         assert!(p(&exact).is_some());
         let over = format!(r#"{{"type":"pointer","x":0.5,"y":0.5,"pad":"{}"}}"#, "x".repeat(MAX_MESSAGE - base + 1));
         assert_eq!(p(&over), None);
+    }
+
+    #[test]
+    fn clipboard_messages_parse_with_and_without_concealed() {
+        assert_eq!(
+            p(r#"{"type":"clipboard","text":"안녕\n😀"}"#),
+            Some(InputMsg::Clipboard { text: "안녕\n😀".into(), concealed: false })
+        );
+        assert_eq!(
+            p(r#"{"type":"clipboard","text":"x","concealed":true}"#),
+            Some(InputMsg::Clipboard { text: "x".into(), concealed: true })
+        );
+        assert_eq!(p(r#"{"type":"clipboard-watch","on":true}"#), Some(InputMsg::ClipboardWatch(true)));
+        for bad in [
+            r#"{"type":"clipboard","text":""}"#,
+            r#"{"type":"clipboard","text":5}"#,
+            r#"{"type":"clipboard","text":"x","concealed":"yes"}"#,
+            r#"{"type":"clipboard-watch","on":1}"#,
+            r#"{"type":"clipboard-watch"}"#,
+        ] {
+            assert_eq!(p(bad), None, "{bad}");
+        }
+    }
+
+    // Review Focus 3
+    #[test]
+    fn clipboard_text_is_capped_at_64_kib_of_utf8_not_characters() {
+        let fits = "가".repeat(21_845); // 65 535 bytes
+        assert!(p(&format!(r#"{{"type":"clipboard","text":"{fits}"}}"#)).is_some());
+        assert_eq!(p(&format!(r#"{{"type":"clipboard","text":"{}"}}"#, "가".repeat(21_846))), None);
+        let exact = "a".repeat(MAX_CLIPBOARD_TEXT);
+        assert!(p(&format!(r#"{{"type":"clipboard","text":"{exact}"}}"#)).is_some());
+        assert_eq!(p(&format!(r#"{{"type":"clipboard","text":"{exact}a"}}"#)), None);
+    }
+
+    #[test]
+    fn only_clipboard_may_exceed_8_kib_and_its_message_stops_at_256_kib() {
+        let big = format!(r#"{{"type":"text","s":"{}"}}"#, "a".repeat(MAX_TEXT_MESSAGE));
+        assert_eq!(p(&big), None);
+        let pad = " ".repeat(MAX_CLIPBOARD_MESSAGE);
+        assert_eq!(p(&format!(r#"{{"type":"clipboard","text":"a","pad":"{pad}"}}"#)), None);
+        assert_eq!(p(&format!(r#"{{"type":"pointer","x":0.5,"y":0.5,"pad":"{}"}}"#, " ".repeat(600))), None);
+        let watch = format!(r#"{{"type":"clipboard-watch","on":true,"pad":"{}"}}"#, " ".repeat(600));
+        assert_eq!(p(&watch), None);
+    }
+
+    #[test]
+    fn notices_are_valid_json_and_only_the_clipboard_one_has_an_input_twin() {
+        assert_eq!(lock_notice(true), r#"{"type":"lock","locked":true}"#);
+        assert_eq!(
+            skipped_notice(SkipReason::LockedMultiline),
+            r#"{"type":"clipboard-skipped","reason":"locked-multiline"}"#
+        );
+        let n = clipboard_notice("a\"\n한", true);
+        assert_eq!(serde_json::from_str::<Value>(&n).unwrap()["text"], "a\"\n한");
+        for m in [lock_notice(false), skipped_notice(SkipReason::TooLarge)] {
+            assert!(parse(m.as_bytes()).is_none());
+        }
+        // `clipboard` has the same shape in both directions on purpose: the page's message and the
+        // agent's notice differ only in who sends them (the agent never reads its own notices).
+        assert_eq!(parse(n.as_bytes()), Some(InputMsg::Clipboard { text: "a\"\n한".into(), concealed: true }));
+    }
+
+    #[test]
+    fn skip_reasons_use_the_wire_names() {
+        for (reason, name) in [
+            (SkipReason::TooLarge, "too-large"),
+            (SkipReason::ReadDenied, "read-denied"),
+            (SkipReason::LockedMultiline, "locked-multiline"),
+            (SkipReason::LockedEmpty, "locked-empty"),
+        ] {
+            assert_eq!(reason.as_str(), name);
+        }
     }
 }

@@ -9,9 +9,22 @@
     { "type": "key", "code": "Lang1", "down": false },
     { "type": "text", "s": "안녕 😀" },
     { "type": "release" },
-    { "type": "size", "w": 1920, "h": 1080 }
+    { "type": "size", "w": 1920, "h": 1080 },
+    { "type": "clipboard", "text": "안녕 😀\n둘째 줄", "concealed": false },
+    { "type": "clipboard", "text": "비밀", "concealed": true },
+    { "type": "clipboard-watch", "on": true }
   ],
-  "notice": [{ "type": "replaced" }],
+  "notice": [
+    { "type": "replaced" },
+    { "type": "lock", "locked": true },
+    { "type": "lock", "locked": false },
+    { "type": "clipboard", "text": "복사 \"됨\"\n", "concealed": false },
+    { "type": "clipboard", "text": "x", "concealed": true },
+    { "type": "clipboard-skipped", "reason": "too-large" },
+    { "type": "clipboard-skipped", "reason": "read-denied" },
+    { "type": "clipboard-skipped", "reason": "locked-multiline" },
+    { "type": "clipboard-skipped", "reason": "locked-empty" }
+  ],
   "noticeFrame": "text",
   "status": [
     {

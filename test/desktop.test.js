@@ -72,10 +72,14 @@ async function desktop(
     platform = "win32",
     argv = [],
     page, // what executeJavaScript answers in the smoke test; "hang" never answers
+    html = "granted", // how the page answers key lock scripts: "granted", "refused", "dead", "hang" or "late"
     packaged = false,
     version = "0.3.0",
     updater, // the stand-in electron-updater autoUpdater; one is made when packaged
     updaterModule, // replaces require("electron-updater") entirely (it may throw)
+    clipboardText = "", // what the stand-in clipboard's readText answers
+    clipboardFormats = {}, // raw formats on the stand-in clipboard: type -> Blob
+    clipboardFail = {}, // { readText, write, writeText }: make that call reject
   } = {},
   t,
 ) {
@@ -96,19 +100,64 @@ async function desktop(
   const handlers = new Map();
   const loads = [];
   const external = [];
-  const fullscreenRequests = [];
+  const fullscreenRequests = []; // native win.setFullScreen calls only
+  const keyLockCalls = []; // key lock scripts the page was asked to run: true = enter, false = exit
   const notifications = [];
   const lifecycle = [];
   const scripts = [];
+  const scriptCalls = [];
   const timers = new Map();
   const intervals = new Map();
   const dialogs = [];
   let fullscreen = false;
+  let htmlMode = html;
+  const lateAnswers = [];
   let window;
   let menu;
   let openHandler;
   let windowOptions;
   const permissions = {};
+  let focused = false;
+  const clipboardWrites = [];
+  // The parts of Electron's async clipboard the app uses. A write is recorded as what a
+  // reader would see: its types, the plain text and the size of every other format.
+  class ClipboardItem {
+    constructor(items) {
+      this.items = items;
+      this.types = Object.keys(items);
+    }
+    async getType(type) {
+      if (!(type in this.items)) throw new Error(`no ${type}`);
+      const value = this.items[type];
+      return typeof value === "string" ? new Blob([value]) : value;
+    }
+  }
+  const clipboard = {
+    readText: async () => {
+      if (clipboardFail.readText) throw new Error("readText failed");
+      return clipboardText;
+    },
+    has: async (type) => type in clipboardFormats,
+    read: async () => [new ClipboardItem(clipboardFormats)],
+    writeText: async (text) => {
+      if (clipboardFail.writeText) throw new Error("writeText failed");
+      clipboardWrites.push({ text });
+    },
+    write: async (items) => {
+      if (clipboardFail.write) throw new Error("write failed");
+      for (const item of items) {
+        const extra = {};
+        for (const type of item.types)
+          if (type !== "text/plain")
+            extra[type] = (await item.getType(type)).size;
+        clipboardWrites.push({
+          text: item.items["text/plain"],
+          types: item.types,
+          extra,
+        });
+      }
+    },
+  };
   class BrowserWindow extends EventEmitter {
     constructor(options) {
       super();
@@ -117,7 +166,26 @@ async function desktop(
       this.webContents = Object.assign(new EventEmitter(), {
         mainFrame: { url: "about:blank" },
         send: (...args) => notifications.push(args),
-        executeJavaScript: async (script) => {
+        executeJavaScript: async (script, userGesture) => {
+          scriptCalls.push([script, userGesture]);
+          // Key lock scripts are answered by the stand-in page and recorded as the boolean
+          // they ask for.
+          const enter = /requestFullscreen/.test(script);
+          if (enter || /exitFullscreen/.test(script)) {
+            keyLockCalls.push(enter);
+            if (htmlMode === "hang") return new Promise(() => {});
+            if (htmlMode === "late")
+              return new Promise((resolve) => lateAnswers.push(resolve));
+            // (Real Electron 44 never settles a denied requestFullscreen; "hang" is
+            // the realistic refusal, "refused" is the rejecting variant.)
+            if (htmlMode === "refused" || htmlMode === "dead")
+              throw new Error(
+                htmlMode === "dead"
+                  ? "page is gone"
+                  : "Permissions check failed",
+              );
+            return true;
+          }
           scripts.push(script);
           if (page === "hang") return new Promise(() => {});
           if (page instanceof Error) throw page;
@@ -138,6 +206,9 @@ async function desktop(
     }
     isFullScreen() {
       return fullscreen;
+    }
+    isFocused() {
+      return focused;
     }
     isDestroyed() {
       return this.destroyed === true;
@@ -162,6 +233,8 @@ async function desktop(
       exit: (code) => lifecycle.push(["exit", code]),
     },
     BrowserWindow,
+    clipboard,
+    ClipboardItem,
     ipcMain: { handle: (name, callback) => handlers.set(name, callback) },
     nativeTheme: { shouldUseDarkColors: false },
     shell: { openExternal: async (url) => external.push(url) },
@@ -242,6 +315,14 @@ async function desktop(
     loads,
     lifecycle,
     scripts,
+    scriptCalls,
+    // Answers every script a "late" page was holding back.
+    answerLate(value) {
+      for (const resolve of lateAnswers.splice(0)) resolve(value);
+    },
+    setHtml(mode) {
+      htmlMode = mode;
+    },
     timers,
     intervals,
     dialogs,
@@ -260,6 +341,13 @@ async function desktop(
     },
     call,
     invoke: (name, input, event) => call(`remote:${name}`, input, event),
+    // clipboard-write takes two arguments, which `invoke` cannot pass.
+    writeClipboard: (text, opts) =>
+      handlers.get("remote:clipboard-write")(
+        { sender: window.webContents, senderFrame: frame() },
+        text,
+        opts,
+      ),
     // Pretend the window now shows `url` (without a main-process load).
     show(url) {
       frame().url = url;
@@ -268,7 +356,12 @@ async function desktop(
       return menu;
     },
     fullscreenRequests,
+    keyLockCalls,
     notifications,
+    clipboardWrites,
+    setFocused(value) {
+      focused = value;
+    },
     finishFullscreen(value) {
       fullscreen = value;
       window.emit(value ? "enter-full-screen" : "leave-full-screen");
@@ -402,6 +495,10 @@ test("bridge calls work only from the gateway origin in the window's top frame",
         },
       ],
       ["open-setup"],
+      ["clipboard-read"],
+      ["clipboard-write", "x"],
+      ["key-lock", true],
+      ["key-lock", false],
     ])
       await assert.rejects(
         f.invoke(name, input),
@@ -434,6 +531,218 @@ test("bridge calls work only from the gateway origin in the window's top frame",
   assert.equal(f.loads.length, loadsBefore);
   await f.invoke("open-setup");
   assert.deepEqual(f.loads.at(-1), SETUP);
+});
+
+test("clipboard channels answer only while the window is focused, from the gateway origin in the top frame", async (t) => {
+  const f = await desktop({ clipboardText: "복사" }, t);
+  f.setFocused(true);
+  assert.deepEqual(await f.invoke("clipboard-read"), {
+    ok: true,
+    text: "복사",
+    concealed: false,
+  });
+  f.setFocused(false);
+  assert.deepEqual(await f.invoke("clipboard-read"), {
+    ok: false,
+    reason: "unfocused",
+  });
+  assert.deepEqual(await f.writeClipboard("x"), {
+    ok: false,
+    reason: "unfocused",
+  });
+  assert.deepEqual(f.clipboardWrites, []);
+  f.setFocused(true);
+  for (const url of ["https://evil.example/", SETUP, "about:blank"]) {
+    f.show(url);
+    for (const name of ["clipboard-read", "clipboard-write"])
+      await assert.rejects(f.invoke(name, "x"), /Untrusted origin/);
+  }
+  f.show(`${GATEWAY}/`);
+  const subframe = { url: `${GATEWAY}/` };
+  for (const name of ["clipboard-read", "clipboard-write"]) {
+    await assert.rejects(
+      f.invoke(name, "x", {
+        sender: f.window.webContents,
+        senderFrame: subframe,
+      }),
+      /Untrusted sender/,
+    );
+    await assert.rejects(
+      f.invoke(name, "x", {
+        sender: {},
+        senderFrame: f.window.webContents.mainFrame,
+      }),
+      /Untrusted sender/,
+    );
+  }
+  assert.deepEqual(f.clipboardWrites, []);
+  f.window.destroyed = true;
+  assert.deepEqual(await f.invoke("clipboard-read"), {
+    ok: false,
+    reason: "unfocused",
+  });
+});
+
+test("write validates its arguments, caps at 64 KiB of UTF-8 and never logs the text", async (t) => {
+  const logs = [];
+  const f = await desktop({ logs }, t);
+  f.setFocused(true);
+  for (const [text, opts] of [
+    [undefined],
+    [null],
+    [5],
+    [["a"]],
+    [{ toString: () => "a" }],
+    ["a", null],
+    ["a", "yes"],
+    ["a", []],
+    ["a", { concealed: "yes" }],
+    ["a", { concealed: 1 }],
+    ["a", { concealed: true, extra: 1 }],
+    ["a", Object.create({ concealed: true })],
+  ])
+    await assert.rejects(
+      f.writeClipboard(text, opts),
+      /Invalid clipboard text\./,
+      JSON.stringify([text, opts]),
+    );
+  assert.deepEqual(f.clipboardWrites, []);
+  // 21 845 Korean characters are 65 535 bytes; one more is 65 538.
+  assert.deepEqual(await f.writeClipboard("가".repeat(21845)), {
+    ok: true,
+    concealed: false,
+  });
+  assert.equal(f.clipboardWrites.length, 1);
+  assert.deepEqual(await f.writeClipboard("가".repeat(21846)), {
+    ok: false,
+    reason: "too-large",
+  });
+  assert.equal(f.clipboardWrites.length, 1, "the clipboard is untouched");
+  assert.deepEqual(
+    await f.writeClipboard("a".repeat(65536), { concealed: false }),
+    { ok: true, concealed: false },
+  );
+  assert.deepEqual(await f.writeClipboard("a".repeat(65537)), {
+    ok: false,
+    reason: "too-large",
+  });
+  assert.ok(logs.some((line) => /too-large/.test(line) && /bytes/.test(line)));
+  assert.ok(logs.every((line) => !/[가a]{3}/.test(line)));
+});
+
+test("on win32 LF is written as CRLF and a concealed write adds the exclusion format; elsewhere nothing is added", async (t) => {
+  const mark =
+    'electron application/osclipboard;format="ExcludeClipboardContentFromMonitorProcessing"';
+  const win = await desktop({}, t);
+  win.setFocused(true);
+  assert.deepEqual(await win.writeClipboard("a\nb\r\nc\rd"), {
+    ok: true,
+    concealed: false,
+  });
+  assert.deepEqual(win.clipboardWrites.pop(), { text: "a\r\nb\r\nc\r\nd" });
+  assert.deepEqual(await win.writeClipboard("a\nb", { concealed: true }), {
+    ok: true,
+    concealed: true,
+  });
+  assert.deepEqual(win.clipboardWrites.pop(), {
+    text: "a\r\nb",
+    types: ["text/plain", mark],
+    extra: { [mark]: 4 },
+  });
+  for (const platform of ["darwin", "linux"]) {
+    const other = await desktop({ platform }, t);
+    other.setFocused(true);
+    assert.deepEqual(
+      await other.writeClipboard("a\nb", { concealed: true }),
+      { ok: true, concealed: false },
+      platform,
+    );
+    assert.deepEqual(other.clipboardWrites, [{ text: "a\nb" }], platform);
+  }
+});
+
+test("a failing concealed write falls back to plain text and says so", async (t) => {
+  const logs = [];
+  const f = await desktop({ logs, clipboardFail: { write: true } }, t);
+  f.setFocused(true);
+  assert.deepEqual(await f.writeClipboard("비밀\n번호", { concealed: true }), {
+    ok: true,
+    concealed: false,
+  });
+  assert.deepEqual(f.clipboardWrites, [{ text: "비밀\r\n번호" }]);
+  assert.deepEqual(
+    logs.filter((line) => line.includes("[clipboard]")),
+    ["[clipboard] concealed mark dropped"],
+  );
+  const broken = await desktop(
+    { logs, clipboardFail: { write: true, writeText: true } },
+    t,
+  );
+  broken.setFocused(true);
+  assert.deepEqual(await broken.writeClipboard("비밀", { concealed: true }), {
+    ok: false,
+    reason: "failed",
+  });
+  assert.ok(logs.every((line) => !line.includes("비밀")));
+});
+
+test("read reports concealed when the exclusion format or CanIncludeInClipboardHistory=0 is present", async (t) => {
+  const exclude =
+    'electron application/osclipboard;format="ExcludeClipboardContentFromMonitorProcessing"';
+  const history =
+    'electron application/osclipboard;format="CanIncludeInClipboardHistory"';
+  const dword = (value) => {
+    const bytes = new Uint8Array(4);
+    new DataView(bytes.buffer).setUint32(0, value, true);
+    return new Blob([bytes]);
+  };
+  for (const [formats, concealed] of [
+    [{}, false],
+    [{ [exclude]: new Blob([new Uint8Array(4)]) }, true],
+    [{ [history]: dword(0) }, true],
+    [{ [history]: dword(1) }, false],
+    [{ [history]: new Blob([new Uint8Array(2)]) }, false],
+  ]) {
+    const f = await desktop(
+      { clipboardText: "pw", clipboardFormats: formats },
+      t,
+    );
+    f.setFocused(true);
+    assert.deepEqual(
+      await f.invoke("clipboard-read"),
+      { ok: true, text: "pw", concealed },
+      Object.keys(formats).join(),
+    );
+  }
+  // A format that cannot be read at all counts as not concealed.
+  const odd = await desktop(
+    { clipboardText: "pw", clipboardFormats: { [history]: "not a blob" } },
+    t,
+  );
+  odd.setFocused(true);
+  assert.deepEqual(await odd.invoke("clipboard-read"), {
+    ok: true,
+    text: "pw",
+    concealed: false,
+  });
+});
+
+test("an empty or non-text clipboard reads as empty text", async (t) => {
+  const f = await desktop({ clipboardText: "" }, t);
+  f.setFocused(true);
+  assert.deepEqual(await f.invoke("clipboard-read"), {
+    ok: true,
+    text: "",
+    concealed: false,
+  });
+  const logs = [];
+  const failing = await desktop({ logs, clipboardFail: { readText: true } }, t);
+  failing.setFocused(true);
+  assert.deepEqual(await failing.invoke("clipboard-read"), {
+    ok: false,
+    reason: "failed",
+  });
+  assert.ok(logs.some((line) => line === "[clipboard] read failed"));
 });
 
 test("without a configured address no bridge call is accepted from any page", async (t) => {
@@ -713,6 +1022,7 @@ test("native remote menu enables valid commands and forwards exact actions", asy
     "back",
     "disconnect",
     "text-input",
+    "paste-clipboard",
     "reconnect",
     "resolution",
   ])
@@ -727,6 +1037,8 @@ test("native remote menu enables valid commands and forwards exact actions", asy
   assert.equal(item("disconnect").enabled, true);
   assert.equal(item("reconnect").enabled, true);
   assert.equal(item("text-input").enabled, false);
+  assert.equal(item("paste-clipboard").enabled, false);
+  assert.equal(item("paste-clipboard").label, "클립보드 붙여넣기");
   assert.equal(item("resolution").enabled, false);
   await f.invoke("viewer-state", {
     open: true,
@@ -736,6 +1048,7 @@ test("native remote menu enables valid commands and forwards exact actions", asy
   });
   assert.equal(item("reconnect").enabled, false);
   assert.equal(item("text-input").enabled, true);
+  assert.equal(item("paste-clipboard").enabled, true);
   assert.equal(item("resolution").enabled, true);
   assert.equal(item("resolution:1920x1080").checked, true);
   assert.equal(item("resolution:1440x900").checked, false);
@@ -743,6 +1056,7 @@ test("native remote menu enables valid commands and forwards exact actions", asy
     "back",
     "disconnect",
     "text-input",
+    "paste-clipboard",
     "reconnect",
     "resolution:2560x1440",
     "resolution:auto",
@@ -761,6 +1075,22 @@ test("native remote menu enables valid commands and forwards exact actions", asy
   });
   assert.equal(item("resolution").enabled, false);
   assert.equal(item("text-input").enabled, true);
+  for (const protocol of ["vnc", "rdp", "agent"]) {
+    await f.invoke("viewer-state", {
+      open: true,
+      connected: true,
+      protocol,
+      resolution: "1920x1080",
+    });
+    assert.equal(item("paste-clipboard").enabled, true, protocol);
+  }
+  await f.invoke("viewer-state", {
+    open: true,
+    connected: false,
+    protocol: "agent",
+    resolution: "1920x1080",
+  });
+  assert.equal(item("paste-clipboard").enabled, false, "not connected");
   await f.invoke("viewer-state", {
     open: false,
     connected: false,
@@ -771,6 +1101,7 @@ test("native remote menu enables valid commands and forwards exact actions", asy
     "back",
     "disconnect",
     "text-input",
+    "paste-clipboard",
     "reconnect",
     "resolution",
   ])
@@ -1011,6 +1342,7 @@ test("showing the address page closes the Remote menu entries and leaves fullscr
       "disconnect",
       "reconnect",
       "text-input",
+      "paste-clipboard",
       "resolution",
     ])
       assert.equal(item(id).enabled, false, `${how}: ${id}`);
@@ -1021,7 +1353,223 @@ test("showing the address page closes the Remote menu entries and leaves fullscr
       [true, false],
       `${how}: leaves fullscreen`,
     );
+    assert.deepEqual(
+      f.keyLockCalls,
+      [false],
+      `${how}: the page lock is released`,
+    );
+    assert.equal(f.scriptCalls.at(-1)[1], true, how);
   }
+});
+
+// ---- the Windows key lock (remote:key-lock) ----
+
+const ENTER_LOCK =
+  /^document\.documentElement\.requestFullscreen\(\)\.then\(\(\) => true\)$/;
+const EXIT_LOCK =
+  /^document\.fullscreenElement \? document\.exitFullscreen\(\)\.then\(\(\) => true\) : true$/;
+
+test("the window keeps its size in HTML full screen: disableHtmlFullscreenWindowResize is set", async (t) => {
+  const f = await desktop({}, t);
+  assert.equal(
+    f.windowOptions.webPreferences.disableHtmlFullscreenWindowResize,
+    true,
+  );
+});
+
+test("remote:key-lock on runs requestFullscreen with a user gesture and answers true; off runs the exit script", async (t) => {
+  const f = await desktop({}, t);
+  f.setFocused(true);
+  assert.equal(await f.invoke("key-lock", true), true);
+  assert.match(f.scriptCalls.at(-1)[0], ENTER_LOCK);
+  assert.equal(f.scriptCalls.at(-1)[1], true);
+  assert.equal(await f.invoke("key-lock", false), true);
+  assert.match(f.scriptCalls.at(-1)[0], EXIT_LOCK);
+  assert.equal(f.scriptCalls.at(-1)[1], true);
+  assert.deepEqual(f.keyLockCalls, [true, false]);
+});
+
+test("remote:key-lock never touches native full screen, in either direction", async (t) => {
+  const f = await desktop({}, t);
+  f.setFocused(true);
+  await f.invoke("key-lock", true);
+  f.finishFullscreen(true); // the user is in native full screen as well
+  await f.invoke("key-lock", false);
+  await f.invoke("key-lock", true);
+  assert.deepEqual(f.fullscreenRequests, []);
+  assert.deepEqual(f.notifications, [["remote:fullscreen-state", true]]);
+});
+
+test("remote:key-lock is refused (false) off Windows, with no script run", async (t) => {
+  for (const platform of ["darwin", "linux"]) {
+    const f = await desktop({ platform }, t);
+    f.setFocused(true);
+    assert.equal(await f.invoke("key-lock", true), false, platform);
+    assert.equal(await f.invoke("key-lock", false), false, platform);
+    assert.deepEqual(f.keyLockCalls, [], platform);
+  }
+});
+
+test("remote:key-lock on needs a focused window; off works while unfocused", async (t) => {
+  const f = await desktop({}, t);
+  f.setFocused(false);
+  assert.equal(await f.invoke("key-lock", true), false);
+  assert.deepEqual(f.keyLockCalls, []);
+  assert.equal(await f.invoke("key-lock", false), true);
+  assert.deepEqual(f.keyLockCalls, [false]);
+});
+
+test("remote:key-lock takes only a boolean and only from the gateway page's top frame", async (t) => {
+  const f = await desktop({}, t);
+  f.setFocused(true);
+  for (const bad of ["true", 1, undefined, null])
+    await assert.rejects(f.invoke("key-lock", bad), /Invalid key lock state/);
+  for (const url of ["https://evil.example/", SETUP, "about:blank", ""]) {
+    f.show(url);
+    await assert.rejects(f.invoke("key-lock", true), /Untrusted origin/, url);
+  }
+  f.show(`${GATEWAY}/`);
+  await assert.rejects(
+    f.invoke("key-lock", true, {
+      sender: f.window.webContents,
+      senderFrame: { url: `${GATEWAY}/` },
+    }),
+    /Untrusted sender/,
+  );
+  assert.deepEqual(f.keyLockCalls, []);
+});
+
+test("a refused, failing or silent page answers false; silence is cut off after 2 s and a late answer changes nothing", async (t) => {
+  for (const html of ["refused", "dead"]) {
+    const f = await desktop({ html }, t);
+    f.setFocused(true);
+    assert.equal(await f.invoke("key-lock", true), false, html);
+    assert.equal(await f.invoke("key-lock", false), false, html);
+    assert.deepEqual(f.dialogs, [], html);
+  }
+  for (const html of ["hang", "late"]) {
+    const f = await desktop({ html }, t);
+    f.setFocused(true);
+    const before = f.timers.size;
+    const answer = f.invoke("key-lock", true);
+    const guard = [...f.timers.values()].at(-1);
+    assert.equal(f.timers.size, before + 1, html);
+    assert.equal(guard.ms, 2000, html);
+    guard.callback();
+    assert.equal(await answer, false, html);
+    f.answerLate(true);
+    await settle();
+    assert.equal(guard.cleared, true, html);
+    assert.deepEqual(f.fullscreenRequests, [], html);
+  }
+});
+
+test("a granted answer clears the 2 s guard", async (t) => {
+  const f = await desktop({}, t);
+  f.setFocused(true);
+  const before = f.timers.size;
+  await f.invoke("key-lock", true);
+  assert.equal(f.timers.size, before + 1);
+  assert.equal([...f.timers.values()].at(-1).cleared, true);
+});
+
+test("showing the address page releases the page lock only on Windows and only from the gateway page", async (t) => {
+  const f = await desktop({}, t);
+  f.menu.getMenuItemById("change-server").click();
+  await settle();
+  assert.deepEqual(f.keyLockCalls, [false]);
+  // The address page itself is showing now: a second visit has nothing to release.
+  f.menu.getMenuItemById("change-server").click();
+  await settle();
+  assert.deepEqual(f.keyLockCalls, [false]);
+  const mac = await desktop({ platform: "darwin" }, t);
+  mac.menu.getMenuItemById("change-server").click();
+  await settle();
+  assert.deepEqual(mac.keyLockCalls, []);
+});
+
+test("a dead page does not keep the address page from showing", async (t) => {
+  const f = await desktop({ html: "dead" }, t);
+  f.menu.getMenuItemById("change-server").click();
+  await settle();
+  assert.ok(f.loads.at(-1).startsWith(SETUP));
+});
+
+test("F11 and the View menu stay native full screen: no page script, whatever the lock does", async (t) => {
+  const f = await desktop({}, t);
+  f.setFocused(true);
+  await f.invoke("key-lock", true);
+  const calls = f.scriptCalls.length;
+  assert.equal(
+    f.input({ key: "F11", type: "keyDown", isAutoRepeat: false }),
+    true,
+  );
+  assert.deepEqual(f.fullscreenRequests, [true]);
+  f.finishFullscreen(true);
+  f.menu.getMenuItemById("back"); // (menu exists)
+  const view = f.menu.template.find((m) => m.label === "View");
+  view.submenu[0].click();
+  assert.deepEqual(f.fullscreenRequests, [true, false]);
+  assert.equal(f.scriptCalls.length, calls, "F11 runs no page script");
+});
+
+test("the permission handler grants fullscreen and keyboardLock only for the gateway origin's requestingUrl", async (t) => {
+  const f = await desktop({}, t);
+  const ask = (permission, requestingUrl) =>
+    new Promise((r) =>
+      f.permissions.request({}, permission, r, { requestingUrl }),
+    );
+  for (const p of ["fullscreen", "keyboardLock"]) {
+    assert.equal(await ask(p, `${GATEWAY}/`), true, p);
+    for (const u of [
+      "https://evil.example/",
+      "https://gateway.tail123.ts.net:8451/",
+      SETUP,
+      "",
+      undefined,
+    ])
+      assert.equal(await ask(p, u), false, `${p} ${u}`);
+  }
+  for (const p of [
+    "media",
+    "clipboard-read",
+    "notifications",
+    "geolocation",
+    "pointerLock",
+  ])
+    assert.equal(await ask(p, `${GATEWAY}/`), false, p);
+  assert.equal(f.permissions.check({}, "fullscreen", GATEWAY), false);
+  assert.equal(f.permissions.check({}, "automatic-fullscreen", GATEWAY), false);
+});
+
+test("on Mac and Linux the permission handler grants nothing, not even fullscreen or keyboardLock to the gateway", async (t) => {
+  for (const platform of ["darwin", "linux"]) {
+    const f = await desktop({ platform }, t);
+    for (const p of ["fullscreen", "keyboardLock", "media", "clipboard-read"])
+      assert.equal(
+        await new Promise((r) =>
+          f.permissions.request({}, p, r, { requestingUrl: `${GATEWAY}/` }),
+        ),
+        false,
+        `${platform} ${p}`,
+      );
+  }
+});
+
+test("with no gateway configured the permission handler grants nothing, not even to an empty requestingUrl", async (t) => {
+  const f = await desktop({ stored: "" }, t);
+  const ask = (permission, requestingUrl) =>
+    new Promise((r) =>
+      f.permissions.request({}, permission, r, { requestingUrl }),
+    );
+  for (const p of ["fullscreen", "keyboardLock"])
+    for (const u of ["", undefined, SETUP, `${GATEWAY}/`])
+      assert.equal(await ask(p, u), false, `${p} ${u}`);
+  assert.equal(
+    await new Promise((r) => f.permissions.request({}, "fullscreen", r)),
+    false,
+    "and no details at all",
+  );
 });
 
 test("showing the address page while windowed does not touch fullscreen", async (t) => {
@@ -1036,7 +1584,9 @@ test("showing the address page while windowed does not touch fullscreen", async 
 const goodPage = {
   page: SETUP,
   title: "Gome Remote",
-  bridgeVersion: 3,
+  bridgeVersion: 4,
+  read: "function",
+  keyLock: "function",
   setup: "function",
 };
 test("--smoke-test shows only the address page, never the saved gateway, and quits with success", async (t) => {
@@ -1056,7 +1606,9 @@ test("--smoke-test exits 1 when the page or the bridge is not what the app promi
   for (const page of [
     { ...goodPage, bridgeVersion: 1 },
     { ...goodPage, bridgeVersion: 2 },
-    { ...goodPage, bridgeVersion: 4 },
+    { ...goodPage, bridgeVersion: 3 },
+    { ...goodPage, read: "undefined" },
+    { ...goodPage, keyLock: "undefined" },
     { ...goodPage, bridgeVersion: undefined },
     { ...goodPage, setup: "undefined" },
     { ...goodPage, title: "" },
@@ -1420,7 +1972,13 @@ test("rebuilding the menu for an update keeps the viewer state and the other ent
   });
   f.autoUpdater.emit("update-downloaded", { version: "0.3.1" });
   const menu = f.menu;
-  for (const id of ["back", "disconnect", "text-input", "resolution"])
+  for (const id of [
+    "back",
+    "disconnect",
+    "text-input",
+    "paste-clipboard",
+    "resolution",
+  ])
     assert.equal(menu.getMenuItemById(id).enabled, true, id);
   assert.equal(menu.getMenuItemById("reconnect").enabled, false);
   assert.equal(menu.getMenuItemById("resolution:1920x1080").checked, true);

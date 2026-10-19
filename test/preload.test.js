@@ -9,7 +9,7 @@ const source = await readFile(
   "utf8",
 );
 
-function load(protocol = "https:") {
+function load(protocol = "https:", platform = "win32") {
   const ipc = new EventEmitter();
   const calls = [];
   const exposed = {};
@@ -18,6 +18,7 @@ function load(protocol = "https:") {
   };
   vm.runInNewContext(source, {
     location: { protocol },
+    process: { platform },
     require: () => ({
       ipcRenderer: ipc,
       contextBridge: {
@@ -31,18 +32,22 @@ function load(protocol = "https:") {
   return { ipc, calls, exposed };
 }
 
-test("the bridge announces version 3 and exposes only the viewer, fullscreen and address-page functions", () => {
+test("the bridge announces version 4 and exposes only the viewer, fullscreen, clipboard and address-page functions", () => {
   const { exposed } = load();
   assert.deepEqual([...Object.keys(exposed)], ["desktop"]);
-  assert.equal(exposed.desktop.bridgeVersion, 3);
+  assert.equal(exposed.desktop.bridgeVersion, 4);
   assert.deepEqual([...Object.keys(exposed.desktop)].sort(), [
     "bridgeVersion",
     "fullscreen",
     "fullscreenState",
+    "keyLock",
+    "keyLockSupported",
     "onFullscreenChange",
     "onViewerAction",
     "openSetup",
+    "readClipboard",
     "viewerState",
+    "writeClipboard",
   ]);
   for (const removed of [
     "settings",
@@ -53,6 +58,19 @@ test("the bridge announces version 3 and exposes only the viewer, fullscreen and
   ])
     assert.equal(exposed.desktop[removed], undefined, removed);
   assert.ok(Object.isFrozen(exposed.desktop));
+});
+
+test("keyLockSupported is true on Windows only, and the bridge stays version 4", () => {
+  for (const [platform, expected] of [
+    ["win32", true],
+    ["darwin", false],
+    ["linux", false],
+  ]) {
+    const { exposed } = load("https:", platform);
+    assert.strictEqual(exposed.desktop.keyLockSupported, expected, platform);
+    assert.equal(exposed.desktop.bridgeVersion, 4, platform);
+    assert.equal(typeof exposed.desktop.keyLock, "function", platform);
+  }
 });
 
 test("preload forwards native menu actions without exposing Electron events", async () => {
@@ -73,11 +91,19 @@ test("preload forwards native menu actions without exposing Electron events", as
   await desktop.fullscreen(true);
   await desktop.fullscreenState();
   await desktop.openSetup();
+  await desktop.readClipboard();
+  await desktop.writeClipboard("a", { concealed: true });
+  await desktop.keyLock(true);
+  await desktop.keyLock(false);
   assert.deepEqual(calls, [
     ["remote:viewer-state", state],
     ["remote:fullscreen", true],
     ["remote:fullscreen-state"],
     ["remote:open-setup"],
+    ["remote:clipboard-read"],
+    ["remote:clipboard-write", "a", { concealed: true }],
+    ["remote:key-lock", true],
+    ["remote:key-lock", false],
   ]);
   const fullscreen = [];
   const removeFullscreen = desktop.onFullscreenChange((...args) =>

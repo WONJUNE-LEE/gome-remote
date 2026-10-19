@@ -98,7 +98,7 @@ const TEXT_OVERHEAD_BYTES = 22;
 
 // A lone surrogate cannot be sent: JSON.stringify writes it as a `\udXXX` escape, which the
 // agent's JSON parser rejects, and the whole piece would be lost. U+FFFD stands in.
-function wellFormed(text: string): string {
+export function wellFormed(text: string): string {
   let out = "";
   for (let i = 0; i < text.length; i++) {
     const unit = text.charCodeAt(i);
@@ -112,6 +112,24 @@ function wellFormed(text: string): string {
     else out += text[i];
   }
   return out;
+}
+
+// UTF-8 length without TextEncoder; a lone surrogate counts as the 3 bytes of U+FFFD.
+export function utf8Length(text: string): number {
+  let bytes = 0;
+  for (let i = 0; i < text.length; i++) {
+    const unit = text.charCodeAt(i);
+    if (unit < 0x80) bytes += 1;
+    else if (unit < 0x800) bytes += 2;
+    else if (unit >= 0xd800 && unit <= 0xdbff) {
+      const next = text.charCodeAt(i + 1);
+      if (next >= 0xdc00 && next <= 0xdfff) {
+        bytes += 4;
+        i++;
+      } else bytes += 3;
+    } else bytes += 3;
+  }
+  return bytes;
 }
 
 // UTF-8 bytes of one code point once JSON.stringify has escaped it.
@@ -172,7 +190,17 @@ export const message = {
   text: (s: string) => JSON.stringify({ type: "text", s }),
   release: () => JSON.stringify({ type: "release" }),
   size: (w: number, h: number) => JSON.stringify({ type: "size", w, h }),
+  clipboard: (text: string, concealed: boolean) =>
+    JSON.stringify({ type: "clipboard", text, concealed }),
+  clipboardWatch: (on: boolean) =>
+    JSON.stringify({ type: "clipboard-watch", on }),
 };
+
+// Clipboard limits, the same as agent/mac/src/protocol.rs: 64 KiB of UTF-8 text, and the
+// whole encoded message at most 256 KiB (the data channel's limit; JSON escaping can make
+// control characters take up to six times their size).
+export const MAX_CLIPBOARD_TEXT_BYTES = 64 * 1024;
+export const MAX_CLIPBOARD_MESSAGE_BYTES = 256 * 1024;
 
 // What the agent may send back over the same channel. Only `replaced`: another device took
 // the session over and the agent is about to close this connection. Anything else (other
@@ -187,6 +215,53 @@ export function parseNotice(data: unknown): Notice | undefined {
   } catch {
     return undefined;
   }
+}
+
+// Every message the agent may send back, text frames only. A message that is malformed,
+// unknown, binary or too long is `undefined`: dropped, never guessed at.
+export type SkipReason =
+  "too-large" | "read-denied" | "locked-multiline" | "locked-empty";
+export type AgentMessage =
+  | { type: "replaced" }
+  | { type: "lock"; locked: boolean }
+  | { type: "clipboard"; text: string; concealed: boolean }
+  | { type: "clipboard-skipped"; reason: SkipReason };
+const SKIP_REASONS: readonly string[] = [
+  "too-large",
+  "read-denied",
+  "locked-multiline",
+  "locked-empty",
+];
+export function parseAgentMessage(data: unknown): AgentMessage | undefined {
+  // `length` counts UTF-16 units: a cheap lower bound on the UTF-8 bytes, so a string over
+  // the limit here is over it in bytes too. Checked before parsing.
+  if (typeof data !== "string" || data.length > MAX_CLIPBOARD_MESSAGE_BYTES)
+    return undefined;
+  let value: unknown;
+  try {
+    value = JSON.parse(data);
+  } catch {
+    return undefined;
+  }
+  if (typeof value !== "object" || value === null || Array.isArray(value))
+    return undefined;
+  const m = value as Record<string, unknown>;
+  if (m.type === "clipboard") {
+    if (typeof m.text !== "string" || typeof m.concealed !== "boolean")
+      return undefined;
+    return { type: "clipboard", text: m.text, concealed: m.concealed };
+  }
+  if (data.length > 256) return undefined;
+  if (m.type === "replaced") return { type: "replaced" };
+  if (m.type === "lock")
+    return typeof m.locked === "boolean"
+      ? { type: "lock", locked: m.locked }
+      : undefined;
+  if (m.type === "clipboard-skipped")
+    return typeof m.reason === "string" && SKIP_REASONS.includes(m.reason)
+      ? { type: "clipboard-skipped", reason: m.reason as SkipReason }
+      : undefined;
+  return undefined;
 }
 
 // The codecs the page offers, in order: H.264 only (the Mac encodes in hardware), with

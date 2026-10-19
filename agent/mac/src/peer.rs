@@ -56,6 +56,9 @@ pub trait PeerHooks: Send + Sync + 'static {
     /// The `input` data channel closed while the peer lives on: whatever the page still
     /// held down must be released (spec D4).
     fn input_closed(&self) {}
+    /// The `input` data channel opened (the peer can now carry text to the page). Called on
+    /// the peer thread, once per opening.
+    fn channel_open(&self) {}
     /// Nothing at all has arrived from the page for `RELEASE_AFTER`: whatever it held down
     /// is released, the session stays (the idle close decides whether it ends).
     fn silent(&self) {}
@@ -75,6 +78,9 @@ pub struct PeerParams {
 pub struct PeerHandle {
     alive: Arc<AtomicBool>,
     frames: SyncSender<Msg>,
+    /// Text for the page's data channel. Its own queue, not the frame queue: frames under load
+    /// must never crowd out a clipboard or lock message (`send_text`).
+    texts: SyncSender<String>,
     /// Set when a frame was dropped for want of room: the picture is broken until the next
     /// keyframe, so the peer thread asks the encoder for one.
     repair: Arc<AtomicBool>,
@@ -95,6 +101,13 @@ impl PeerHandle {
         self.replaced.store(true, Release);
         self.alive.store(false, Release);
     }
+    /// Queues a text message for the page's data channel; the peer thread sends it before the
+    /// next frame. False when the peer is gone or the control queue is full (the text is then
+    /// dropped). Never blocks.
+    pub fn send_text(&self, text: String) -> bool {
+        self.is_alive()
+            && !matches!(self.texts.try_send(text), Err(TrySendError::Full(_) | TrySendError::Disconnected(_)))
+    }
     /// Whether the peer was closed by a take-over.
     #[cfg(test)]
     pub(crate) fn is_replaced(&self) -> bool {
@@ -106,35 +119,48 @@ impl PeerHandle {
         PeerHandle {
             alive: Arc::new(AtomicBool::new(true)),
             frames: sync_channel(1).0,
+            texts: sync_channel(CONTROL_CAPACITY).0,
             repair: Arc::default(),
             replaced: Arc::default(),
         }
     }
     /// Like `detached`, but the queue's other end is returned so a test can look into it.
     #[cfg(test)]
-    fn detached_with_queue(capacity: usize) -> (PeerHandle, std::sync::mpsc::Receiver<Msg>) {
-        let (frames, rx) = sync_channel(capacity);
+    fn detached_with_queues(
+        frame_capacity: usize,
+        text_capacity: usize,
+    ) -> (PeerHandle, Receiver<Msg>, Receiver<String>) {
+        let (frames, rx) = sync_channel(frame_capacity);
+        let (texts, text_rx) = sync_channel(text_capacity);
         (
             PeerHandle {
                 alive: Arc::new(AtomicBool::new(true)),
                 frames,
+                texts,
                 repair: Arc::default(),
                 replaced: Arc::default(),
             },
             rx,
+            text_rx,
         )
     }
-    /// A handle whose frame queue a test (of whatever holds handles) can look into.
+    /// A handle whose queues (both of this capacity) a test (of whatever holds handles) can
+    /// look into.
     #[cfg(test)]
     pub(crate) fn observed(capacity: usize) -> (PeerHandle, QueueProbe) {
-        let (handle, rx) = PeerHandle::detached_with_queue(capacity);
-        (handle, QueueProbe(rx))
+        PeerHandle::observed_with(capacity, capacity)
+    }
+    /// Like `observed`, with a capacity of its own for the frame queue and for the text queue.
+    #[cfg(test)]
+    pub(crate) fn observed_with(frame_capacity: usize, text_capacity: usize) -> (PeerHandle, QueueProbe) {
+        let (handle, rx, text_rx) = PeerHandle::detached_with_queues(frame_capacity, text_capacity);
+        (handle, QueueProbe(rx, text_rx))
     }
 }
 
 /// What a test sees of the frames that reached one peer's queue.
 #[cfg(test)]
-pub(crate) struct QueueProbe(Receiver<Msg>);
+pub(crate) struct QueueProbe(Receiver<Msg>, Receiver<String>);
 #[cfg(test)]
 impl QueueProbe {
     /// The payload of every frame that arrived since the last call.
@@ -146,6 +172,10 @@ impl QueueProbe {
                 Msg::Udp(..) => None,
             })
             .collect()
+    }
+    /// Every text queued for the page since the last call.
+    pub(crate) fn texts(&self) -> Vec<String> {
+        self.1.try_iter().collect()
     }
 }
 impl FrameTarget for PeerHandle {
@@ -178,6 +208,10 @@ enum Msg {
 /// every few milliseconds, so this is a burst allowance, not a backlog; what does not fit is
 /// dropped, which keeps a stalled peer from growing memory without bound.
 const QUEUE_CAPACITY: usize = 256;
+
+/// Texts for the page waiting for the peer thread (`PeerHandle::send_text`). The session sends a
+/// few a second at most; a full queue means the peer is stuck, and the text is dropped.
+const CONTROL_CAPACITY: usize = 64;
 
 /// What the socket read thread does with one datagram: it reaches ICE only from a tailnet
 /// source (this is what keeps a peer-reflexive candidate from any other address out), and
@@ -285,6 +319,7 @@ pub fn accept(offer_sdp: &str, params: PeerParams, hooks: Arc<dyn PeerHooks>) ->
     let answer_sdp = answer.to_sdp_string();
 
     let (tx, rx) = sync_channel::<Msg>(QUEUE_CAPACITY);
+    let (text_tx, text_rx) = sync_channel::<String>(CONTROL_CAPACITY);
     let alive = Arc::new(AtomicBool::new(true));
     {
         let socket = socket.try_clone()?;
@@ -304,14 +339,20 @@ pub fn accept(offer_sdp: &str, params: PeerParams, hooks: Arc<dyn PeerHooks>) ->
     }
     let repair = Arc::new(AtomicBool::new(false));
     let replaced = Arc::new(AtomicBool::new(false));
-    let handle = PeerHandle { alive: alive.clone(), frames: tx, repair: repair.clone(), replaced: replaced.clone() };
+    let handle = PeerHandle {
+        alive: alive.clone(),
+        frames: tx,
+        texts: text_tx,
+        repair: repair.clone(),
+        replaced: replaced.clone(),
+    };
     let thread_alive = alive.clone();
     let thread_replaced = replaced;
     std::thread::spawn(move || {
         // The guard runs `closed` on every way out, a panic included, exactly once.
         let _released = ReleaseOnDrop { alive: thread_alive.clone(), hooks: hooks.clone() };
         let signals = Signals::production(&thread_alive, &repair, &thread_replaced);
-        if let Err(e) = run(rtc, socket, local, rx, signals, hooks.as_ref()) {
+        if let Err(e) = run(rtc, socket, local, rx, text_rx, signals, hooks.as_ref()) {
             eprintln!("[peer] ended with error: {e:?}");
         }
     });
@@ -404,11 +445,25 @@ fn dismiss(rtc: &mut Rtc, channel: Option<ChannelId>, socket: &UdpSocket) {
     rtc.disconnect();
 }
 
+/// Writes one text message to the page's data channel. A write the channel refuses (no channel
+/// yet, or a message it cannot carry) drops the text; the peer lives on. Only the length is
+/// logged, never the text.
+fn send_to_page(rtc: &mut Rtc, channel: Option<ChannelId>, text: &str, write_log: &mut LogLimiter) {
+    let written = channel.and_then(|id| rtc.channel(id)).map(|mut c| c.write(false, text.as_bytes()));
+    if !matches!(written, Some(Ok(true))) {
+        let note = format!("[peer] data channel write failed ({} bytes)", text.len());
+        if let Some(line) = limited(write_log, Instant::now(), &note) {
+            eprintln!("{line}");
+        }
+    }
+}
+
 fn run(
     mut rtc: Rtc,
     socket: UdpSocket,
     local: SocketAddr,
     rx: Receiver<Msg>,
+    texts: Receiver<String>,
     signals: Signals<'_>,
     hooks: &dyn PeerHooks,
 ) -> Result<()> {
@@ -428,6 +483,10 @@ fn run(
     loop {
         if repair_due(repair) {
             hooks.request_keyframe();
+        }
+        // Every queued text goes out before the next frame is taken from the queue.
+        while let Ok(text) = texts.try_recv() {
+            send_to_page(&mut rtc, channel, &text, &mut write_log);
         }
         let timeout = loop {
             match rtc.poll_output()? {
@@ -462,7 +521,10 @@ fn run(
                     Event::EgressBitrateEstimate(BweKind::Twcc { estimate, .. }) => {
                         handle_estimate(&mut rtc, hooks, &mut restart_log, estimate.as_u64());
                     }
-                    Event::ChannelOpen(id, _) => channel = Some(id),
+                    Event::ChannelOpen(id, _) => {
+                        channel = Some(id);
+                        hooks.channel_open();
+                    }
                     Event::ChannelData(data) => hooks.input(&data.data),
                     Event::ChannelClose(_) => hooks.input_closed(),
                     Event::Closed => return Ok(()),
@@ -629,7 +691,7 @@ mod tests {
             assert!(forward(&tx, now, source, b"x"), "a full queue is not a failure");
         }
         assert_eq!(rx.try_iter().count(), 2);
-        let (handle, rx) = PeerHandle::detached_with_queue(3);
+        let (handle, rx, _texts) = PeerHandle::detached_with_queues(3, 3);
         for _ in 0..10 {
             let frame = EncodedFrame { data: vec![0], key: false, submitted: now };
             assert!(handle.send_frame(frame), "a frame dropped for want of room is not a dead peer");
@@ -638,7 +700,7 @@ mod tests {
         // A dropped frame breaks the picture until a keyframe: the peer thread is told, once.
         assert!(repair_due(&handle.repair), "a dropped frame must lead to a keyframe request");
         assert!(!repair_due(&handle.repair), "one request per drop, not one per loop");
-        let (quiet, _rx) = PeerHandle::detached_with_queue(3);
+        let (quiet, _rx, _texts) = PeerHandle::detached_with_queues(3, 3);
         assert!(quiet.send_frame(EncodedFrame { data: vec![0], key: true, submitted: now }));
         assert!(!repair_due(&quiet.repair), "nothing was dropped, nothing to repair");
     }
@@ -742,6 +804,7 @@ mod tests {
         estimates: Mutex<Vec<u64>>,
         inputs: Mutex<Vec<Vec<u8>>>,
         input_closed: AtomicUsize,
+        channel_opens: AtomicUsize,
         silent: AtomicUsize,
         closed: AtomicUsize,
     }
@@ -757,6 +820,9 @@ mod tests {
         }
         fn input_closed(&self) {
             self.input_closed.fetch_add(1, SeqCst);
+        }
+        fn channel_open(&self) {
+            self.channel_opens.fetch_add(1, SeqCst);
         }
         fn silent(&self) {
             self.silent.fetch_add(1, SeqCst);
@@ -780,6 +846,29 @@ mod tests {
         notices: Vec<String>,
         /// Whether each of them arrived as a binary frame (`ChannelData::binary`); the page reads text only.
         notice_binary: Vec<bool>,
+    }
+
+    impl Browser {
+        /// Sends what the browser's str0m has queued and records its events.
+        fn drain(&mut self) {
+            let b = self;
+            loop {
+                match b.rtc.poll_output().expect("the browser's str0m") {
+                    Output::Timeout(_) => break,
+                    Output::Transmit(t) => {
+                        let _ = b.socket.send_to(&t.contents, t.destination);
+                    }
+                    Output::Event(Event::Connected) => b.connected = true,
+                    Output::Event(Event::ChannelOpen(..)) => b.channel_open = true,
+                    Output::Event(Event::MediaData(_)) => b.pictures += 1,
+                    Output::Event(Event::ChannelData(data)) => {
+                        b.notices.push(String::from_utf8_lossy(&data.data).into_owned());
+                        b.notice_binary.push(data.binary);
+                    }
+                    Output::Event(_) => {}
+                }
+            }
+        }
     }
 
     /// The agent's peer thread (`run`, exactly as production runs it, with a short idle limit)
@@ -825,11 +914,13 @@ mod tests {
             rtc.sdp_api().accept_answer(pending, answer).expect("the answer is accepted");
 
             let (queue, rx) = sync_channel::<Msg>(QUEUE_CAPACITY);
+            let (texts, text_rx) = sync_channel::<String>(CONTROL_CAPACITY);
             let (alive, repair) = (Arc::new(AtomicBool::new(true)), Arc::new(AtomicBool::new(false)));
             let replaced = Arc::new(AtomicBool::new(false));
             let handle = PeerHandle {
                 alive: alive.clone(),
                 frames: queue.clone(),
+                texts,
                 repair: repair.clone(),
                 replaced: replaced.clone(),
             };
@@ -841,7 +932,7 @@ mod tests {
                 std::thread::spawn(move || {
                     let signals =
                         Signals { alive: &alive, repair: &repair, replaced: &replaced, idle_limit, release_after };
-                    let result = run(agent, sender, local, rx, signals, hooks.as_ref());
+                    let result = run(agent, sender, local, rx, text_rx, signals, hooks.as_ref());
                     if let Err(e) = result {
                         eprintln!("[test peer] ended with error: {e:?}");
                     }
@@ -866,22 +957,7 @@ mod tests {
         /// One round: the browser's output and timers, then every datagram either side has waiting.
         fn step(&mut self) {
             let b = &mut self.browser;
-            loop {
-                match b.rtc.poll_output().expect("the browser's str0m") {
-                    Output::Timeout(_) => break,
-                    Output::Transmit(t) => {
-                        let _ = b.socket.send_to(&t.contents, t.destination);
-                    }
-                    Output::Event(Event::Connected) => b.connected = true,
-                    Output::Event(Event::ChannelOpen(..)) => b.channel_open = true,
-                    Output::Event(Event::MediaData(_)) => b.pictures += 1,
-                    Output::Event(Event::ChannelData(data)) => {
-                        b.notices.push(String::from_utf8_lossy(&data.data).into_owned());
-                        b.notice_binary.push(data.binary);
-                    }
-                    Output::Event(_) => {}
-                }
-            }
+            b.drain();
             let mut buf = vec![0u8; 2048];
             while let Ok((n, source)) = b.socket.recv_from(&mut buf) {
                 let contents = buf[..n].try_into().unwrap();
@@ -890,6 +966,8 @@ mod tests {
                     Receive { proto: Protocol::Udp, source, destination: b.addr, contents },
                 );
                 b.rtc.handle_input(input).unwrap();
+                // A message of tens of KiB is dozens of datagrams; str0m's receive queue is small.
+                b.drain();
             }
             b.rtc.handle_input(Input::Timeout(Instant::now())).unwrap();
             // The datagrams reach the peer thread as the read thread would hand them over, apart
@@ -968,6 +1046,72 @@ mod tests {
         assert!(call.until(Duration::from_secs(5), |c| c.hooks.input_closed.load(SeqCst) > 0));
         assert_eq!(call.hooks.input_closed.load(SeqCst), 1);
         assert!(!call.finished(), "the session outlives its input channel");
+    }
+
+    #[test]
+    fn send_text_on_a_dead_peer_is_false_and_on_a_live_one_true() {
+        let (handle, probe) = PeerHandle::observed(2);
+        assert!(handle.send_text("a".into()) && handle.send_text("b".into()));
+        assert!(!handle.send_text("dropped: queue full".into()));
+        assert_eq!(probe.texts(), vec!["a", "b"]);
+        handle.close();
+        assert!(!handle.send_text("x".into()));
+    }
+
+    #[test]
+    fn a_full_frame_queue_does_not_stop_a_text() {
+        let (handle, probe) = PeerHandle::observed_with(QUEUE_CAPACITY, CONTROL_CAPACITY);
+        for _ in 0..QUEUE_CAPACITY {
+            assert!(handle.send_frame(picture(false)));
+        }
+        assert_eq!(probe.frames().len(), QUEUE_CAPACITY);
+        for _ in 0..QUEUE_CAPACITY {
+            assert!(handle.send_frame(picture(false)));
+        }
+        assert!(handle.send_text("lock".into()), "frames must never crowd out a text");
+        assert_eq!(probe.texts(), vec!["lock"]);
+    }
+
+    #[test]
+    fn texts_reach_the_page_in_order_as_text_frames() {
+        let mut call = Call::start(IDLE_LIMIT);
+        call.connect();
+        assert!(call.handle.send_text("one".into()));
+        assert!(call.handle.send_text("zwei 한글".into()));
+        assert!(call.until(Duration::from_secs(5), |c| c.browser.notices == ["one", "zwei 한글"]));
+        assert_eq!(call.browser.notice_binary, [false, false], "the page reads text frames only");
+    }
+
+    #[test]
+    fn a_message_near_64_kib_arrives_whole() {
+        let mut call = Call::start(IDLE_LIMIT);
+        call.connect();
+        assert!(call.handle.send_text("é".repeat(32_500)));
+        assert!(call.until(Duration::from_secs(10), |c| !c.browser.notices.is_empty()));
+        assert_eq!(call.browser.notices[0].len(), 65_000);
+        assert_eq!(call.browser.notices[0], "é".repeat(32_500));
+    }
+
+    #[test]
+    fn a_write_the_channel_refuses_is_dropped_and_the_peer_lives_on() {
+        let mut call = Call::start(IDLE_LIMIT);
+        call.connect();
+        assert!(call.handle.send_text("x".repeat(400_000)));
+        assert!(call.handle.send_text("ok".into()));
+        assert!(call.until(Duration::from_secs(5), |c| !c.browser.notices.is_empty()));
+        call.until(Duration::from_millis(300), |_| false);
+        assert_eq!(call.browser.notices, ["ok"]);
+        assert!(call.handle.is_alive());
+        assert!(!call.finished());
+    }
+
+    #[test]
+    fn the_session_hears_the_channel_open_exactly_once() {
+        let mut call = Call::start(IDLE_LIMIT);
+        call.connect();
+        assert_eq!(call.hooks.channel_opens.load(SeqCst), 1);
+        call.until(Duration::from_millis(100), |_| false);
+        assert_eq!(call.hooks.channel_opens.load(SeqCst), 1);
     }
 
     #[test]

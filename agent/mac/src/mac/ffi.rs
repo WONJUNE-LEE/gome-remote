@@ -317,6 +317,10 @@ extern "C" {
     pub fn IOPMAssertionDeclareUserActivity(name: CFTypeRef, kind: u32, id: *mut u32) -> i32;
     pub fn IOPMAssertionCreateWithName(kind: CFTypeRef, level: u32, name: CFTypeRef, id: *mut u32) -> i32;
     pub fn IOPMAssertionRelease(id: u32) -> i32;
+    pub fn IORegistryGetRootEntry(main_port: u32) -> u32;
+    pub fn IORegistryEntryCreateCFProperty(entry: u32, key: CFTypeRef, allocator: CFTypeRef, options: u32)
+        -> CFTypeRef;
+    pub fn IOObjectRelease(object: u32) -> i32;
 }
 
 /// A CFString from a Rust string (the caller owns it through `Cf`).
