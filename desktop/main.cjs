@@ -52,27 +52,48 @@ function nativeFullscreen() {
   }
   window.setFullScreen(fullscreenTarget);
 }
+// How long the page may take to answer a full screen script. A renderer that never
+// answers must not leave the transition open for ever (it would swallow every later
+// F11 or menu request).
+const FULLSCREEN_SCRIPT_MS = 2000;
+// Runs a full screen script in the page. The script resolves false when it did nothing
+// (no full screen element to leave). Rejection, such an answer, or silence for
+// FULLSCREEN_SCRIPT_MS ends in the native path (`failed` first), so the transition always
+// ends; whatever the page says after that is ignored.
+function runFullscreenScript(script, failed) {
+  let settled = false;
+  const fallBack = () => {
+    if (settled) return;
+    settled = true;
+    clearTimeout(timer);
+    failed();
+    nativeFullscreen();
+  };
+  const timer = setTimeout(fallBack, FULLSCREEN_SCRIPT_MS);
+  window.webContents.executeJavaScript(script, true).then((result) => {
+    if (result === false) fallBack();
+    else if (!settled) {
+      settled = true;
+      clearTimeout(timer);
+    }
+  }, fallBack);
+}
 function enterFullscreen() {
   htmlFullscreen = true;
-  window.webContents
-    .executeJavaScript("document.documentElement.requestFullscreen()", true)
-    .catch(() => {
-      // Refused permission or a dead page: today's native full screen, no dialog.
-      htmlFullscreen = false;
-      nativeFullscreen();
-    });
+  // Refused permission, a dead or hung page: today's native full screen, no dialog.
+  runFullscreenScript("document.documentElement.requestFullscreen()", () => {
+    htmlFullscreen = false;
+  });
 }
 function leaveFullscreen() {
   if (!htmlFullscreen) {
     window.setFullScreen(false);
     return;
   }
-  window.webContents
-    .executeJavaScript(
-      "document.fullscreenElement ? document.exitFullscreen() : undefined",
-      true,
-    )
-    .catch(() => nativeFullscreen());
+  runFullscreenScript(
+    "document.fullscreenElement ? document.exitFullscreen().then(() => true) : false",
+    () => {},
+  );
 }
 function applyFullscreenTarget() {
   if (fullscreenTransition || window.isFullScreen() === fullscreenTarget)

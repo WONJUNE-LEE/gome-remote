@@ -72,7 +72,7 @@ async function desktop(
     platform = "win32",
     argv = [],
     page, // what executeJavaScript answers in the smoke test; "hang" never answers
-    html = "granted", // how the page answers full screen scripts: "granted", "refused" or "dead"
+    html = "granted", // how the page answers full screen scripts: "granted", "refused", "dead", "hang" or "no-element"
     packaged = false,
     version = "0.3.0",
     updater, // the stand-in electron-updater autoUpdater; one is made when packaged
@@ -111,6 +111,7 @@ async function desktop(
   const dialogs = [];
   let fullscreen = false;
   let htmlMode = html;
+  const lateAnswers = [];
   let window;
   let menu;
   let openHandler;
@@ -172,10 +173,17 @@ async function desktop(
           const enter = /requestFullscreen/.test(script);
           if (enter || /exitFullscreen/.test(script)) {
             fullscreenRequests.push(enter);
+            if (htmlMode === "hang") return new Promise(() => {});
+            if (htmlMode === "late")
+              return new Promise((resolve) => lateAnswers.push(resolve));
             if (htmlMode === "dead") throw new Error("page is gone");
+            // (Real Electron 44 never settles a denied requestFullscreen; "hang" is
+            // the realistic refusal, "refused" is the rejecting variant.)
             if (enter && htmlMode === "refused")
               throw new TypeError("Permissions check failed");
-            return undefined;
+            // The exit script answers what it did: false when nothing was full screen.
+            if (!enter && htmlMode === "no-element") return false;
+            return enter ? undefined : true;
           }
           scripts.push(script);
           if (page === "hang") return new Promise(() => {});
@@ -309,6 +317,10 @@ async function desktop(
     scripts,
     scriptCalls,
     nativeRequests,
+    // Answers every script a "late" page was holding back.
+    answerLate(value) {
+      for (const resolve of lateAnswers.splice(0)) resolve(value);
+    },
     setHtml(mode) {
       htmlMode = mode;
     },
@@ -1412,6 +1424,59 @@ test("the exit survives a dead page: executeJavaScript rejects -> setFullScreen(
   assert.deepEqual(f.nativeRequests, [false]);
   f.finishFullscreen(false);
   assert.deepEqual(f.notifications.at(-1), ["remote:fullscreen-state", false]);
+});
+
+test("an exit script that finds no full screen element ends in the native path and the transition ends", async (t) => {
+  const f = await desktop({ html: "granted" }, t);
+  await f.invoke("fullscreen", true);
+  f.finishFullscreen(true); // native full screen is on, the page has no element
+  f.setHtml("no-element");
+  await f.invoke("fullscreen", false);
+  await settle();
+  assert.deepEqual(f.nativeRequests, [false]);
+  f.finishFullscreen(false);
+  // Not swallowed: F11 enters again.
+  assert.equal(
+    f.input({ type: "keyDown", key: "F11", isAutoRepeat: false }),
+    true,
+  );
+  assert.match(f.scriptCalls.at(-1)[0], /requestFullscreen/);
+});
+
+test("a renderer that never answers falls back to native full screen after 2 s, and a late answer changes nothing", async (t) => {
+  for (const enter of [true, false]) {
+    const f = await desktop({ html: enter ? "late" : "granted" }, t);
+    if (!enter) {
+      await f.invoke("fullscreen", true);
+      f.finishFullscreen(true, { html: true });
+      f.setHtml("late");
+    }
+    const before = f.timers.size;
+    await f.invoke("fullscreen", enter);
+    const guard = [...f.timers.values()].at(-1);
+    assert.equal(f.timers.size, before + 1);
+    assert.equal(guard.ms, 2000);
+    assert.deepEqual(f.nativeRequests, [], "nothing before the guard fires");
+    guard.callback();
+    assert.deepEqual(f.nativeRequests, [enter]);
+    // The transition is over: the native event is published and F11 works again.
+    f.finishFullscreen(enter);
+    assert.deepEqual(f.notifications.at(-1), [
+      "remote:fullscreen-state",
+      enter,
+    ]);
+    // The page answers after the guard: no second toggle, whatever it says.
+    f.answerLate(false);
+    await settle();
+    guard.callback(); // firing again does nothing more
+    assert.deepEqual(f.nativeRequests, [enter]);
+    // And F11 is not swallowed: it toggles back.
+    assert.equal(
+      f.input({ type: "keyDown", key: "F11", isAutoRepeat: false }),
+      true,
+    );
+    assert.equal(f.fullscreenRequests.at(-1), !enter);
+  }
 });
 
 test("F11 from the menu or before-input-event toggles relative to the pending target (no re-entry after a page-requested exit)", async (t) => {
