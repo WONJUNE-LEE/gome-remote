@@ -3,6 +3,7 @@
 //! each session's hooks may touch (spec D3, D4, D5). `mac::agent` plugs the real capture,
 //! input and system calls into it.
 use crate::bitrate::BitrateController;
+use crate::clipboard::Board;
 use crate::frame::FrameTarget;
 use crate::http::{Backend, SessionFailure, SessionRequest};
 use crate::peer::{PeerHandle, PeerHooks, PeerParams};
@@ -39,8 +40,8 @@ pub trait Input: Send + Sync + 'static {
     fn release_all(&self);
 }
 
-/// What the system says (permissions, display, lock screen).
-pub trait Platform: Send + Sync + 'static {
+/// What the system says (permissions, display, lock screen), and the pasteboard (`Board`).
+pub trait Platform: Board + Send + Sync + 'static {
     fn screen_recording_granted(&self) -> bool;
     fn accessibility_granted(&self) -> bool;
     fn display_state(&self) -> DisplayState;
@@ -338,6 +339,7 @@ impl Backend for Sessions {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::clipboard::{Access, FakeBoard, PasteRead};
     use crate::frame::EncodedFrame;
     use crate::peer::QueueProbe;
     use crate::status::{Gate, Screen};
@@ -434,11 +436,29 @@ mod tests {
         accessibility: AtomicBool,
         locked: AtomicBool,
         wakes_held: Arc<AtomicUsize>,
+        board: FakeBoard,
     }
     struct WakeGuard(Arc<AtomicUsize>);
     impl Drop for WakeGuard {
         fn drop(&mut self) {
             self.0.fetch_sub(1, SeqCst);
+        }
+    }
+    impl Board for Arc<FakePlatform> {
+        fn change_count(&self) -> i64 {
+            self.board.change_count()
+        }
+        fn access(&self) -> Access {
+            self.board.access()
+        }
+        fn read(&self) -> PasteRead {
+            self.board.read()
+        }
+        fn write(&self, text: &str, concealed: bool) -> i64 {
+            self.board.write(text, concealed)
+        }
+        fn console_locked(&self) -> bool {
+            self.board.console_locked()
         }
     }
     impl Platform for Arc<FakePlatform> {
@@ -461,6 +481,24 @@ mod tests {
             self.wakes_held.fetch_add(1, SeqCst);
             Box::new(WakeGuard(self.wakes_held.clone()))
         }
+    }
+
+    #[test]
+    fn the_fake_platform_is_a_board_driven_through_its_fake_board() {
+        let platform = Arc::new(FakePlatform {
+            screen: AtomicBool::new(true),
+            accessibility: AtomicBool::new(true),
+            locked: AtomicBool::new(false),
+            wakes_held: Arc::new(AtomicUsize::new(0)),
+            board: FakeBoard::default(),
+        });
+        let as_platform: &dyn Platform = &platform;
+        let before = as_platform.change_count();
+        assert_eq!(as_platform.write("a", false), before + 1);
+        assert_eq!(platform.board.writes(), vec![("a".to_string(), false)]);
+        platform.board.set_locked(true);
+        assert!(as_platform.console_locked());
+        assert!(!as_platform.screen_locked(), "the console lock is a separate signal from the CGS one");
     }
 
     type Peers = Arc<Mutex<Vec<(Arc<dyn PeerHooks>, PeerHandle, String)>>>;
@@ -506,6 +544,7 @@ mod tests {
             accessibility: AtomicBool::new(true),
             locked: AtomicBool::new(false),
             wakes_held: Arc::new(AtomicUsize::new(0)),
+            board: FakeBoard::default(),
         });
         let peers: Peers = Arc::default();
         let queues: Arc<Mutex<Vec<QueueProbe>>> = Arc::default();
