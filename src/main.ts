@@ -200,6 +200,9 @@ function updateKeyboardLock() {
   );
 }
 if (lockAvailable) {
+  // Tells the app's main process this page takes the lock, so it may use HTML full
+  // screen (a page without the marker gets native full screen instead).
+  (window as unknown as { __gomeFsLock?: boolean }).__gomeFsLock = true;
   document.addEventListener("fullscreenchange", updateKeyboardLock);
   // Under the lock the page, not the app's main process, receives F11.
   const lockedF11 = (event: KeyboardEvent) => {

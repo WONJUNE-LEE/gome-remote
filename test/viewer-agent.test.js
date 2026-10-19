@@ -634,6 +634,21 @@ test("with bridge 3 the lock is never taken, and in a browser it never is either
   }
 });
 
+test("the page marks that it takes the keyboard lock only in the app with bridge 4 or later", async () => {
+  for (const [options, expected] of [
+    [{ appMode: true, bridgeVersion: 4 }, true],
+    [{ appMode: true, bridgeVersion: 3 }, false],
+    [{ appMode: false }, false],
+  ]) {
+    const v = await viewer({ targets: [mac, vnc, linux], ...options });
+    assert.equal(
+      v.window.__gomeFsLock === true,
+      expected,
+      JSON.stringify(options),
+    );
+  }
+});
+
 // ---- clipboard sync over the Mac session (the real src/agent.ts on a fake connection) ----
 
 const NOTICES = (

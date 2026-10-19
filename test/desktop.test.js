@@ -72,6 +72,7 @@ async function desktop(
     platform = "win32",
     argv = [],
     page, // what executeJavaScript answers in the smoke test; "hang" never answers
+    fsLock = true, // whether the page sets window.__gomeFsLock (a page that takes the keyboard lock)
     html = "granted", // how the page answers full screen scripts: "granted", "refused", "dead", "hang" or "no-element"
     packaged = false,
     version = "0.3.0",
@@ -170,20 +171,36 @@ async function desktop(
           scriptCalls.push([script, userGesture]);
           // Full screen scripts are answered by the stand-in page and recorded as the
           // boolean they ask for, so they read like setFullScreen in the assertions.
+          // The enter script runs for real against a stand-in window and document, so the
+          // marker check is the code's own.
           const enter = /requestFullscreen/.test(script);
-          if (enter || /exitFullscreen/.test(script)) {
-            fullscreenRequests.push(enter);
+          if (enter) {
+            const requestFullscreen = () => {
+              fullscreenRequests.push(true);
+              if (htmlMode === "hang") return new Promise(() => {});
+              if (htmlMode === "late")
+                return new Promise((resolve) => lateAnswers.push(resolve));
+              if (htmlMode === "dead") throw new Error("page is gone");
+              // (Real Electron 44 never settles a denied requestFullscreen; "hang" is
+              // the realistic refusal, "refused" is the rejecting variant.)
+              if (htmlMode === "refused")
+                throw new TypeError("Permissions check failed");
+              return Promise.resolve();
+            };
+            return vm.runInNewContext(script, {
+              window: fsLock ? { __gomeFsLock: true } : {},
+              document: { documentElement: { requestFullscreen } },
+            });
+          }
+          if (/exitFullscreen/.test(script)) {
+            fullscreenRequests.push(false);
             if (htmlMode === "hang") return new Promise(() => {});
             if (htmlMode === "late")
               return new Promise((resolve) => lateAnswers.push(resolve));
             if (htmlMode === "dead") throw new Error("page is gone");
-            // (Real Electron 44 never settles a denied requestFullscreen; "hang" is
-            // the realistic refusal, "refused" is the rejecting variant.)
-            if (enter && htmlMode === "refused")
-              throw new TypeError("Permissions check failed");
             // The exit script answers what it did: false when nothing was full screen.
-            if (!enter && htmlMode === "no-element") return false;
-            return enter ? undefined : true;
+            if (htmlMode === "no-element") return false;
+            return true;
           }
           scripts.push(script);
           if (page === "hang") return new Promise(() => {});
@@ -1366,11 +1383,26 @@ test("showing the address page closes the Remote menu entries and leaves fullscr
 test("entering full screen asks the page for HTML full screen with a user gesture; native full screen is not requested", async (t) => {
   const f = await desktop({ html: "granted" }, t);
   await f.invoke("fullscreen", true);
-  assert.deepEqual(f.scriptCalls.at(-1), [
-    "document.documentElement.requestFullscreen()",
-    true,
-  ]);
+  assert.equal(f.scriptCalls.at(-1)[1], true);
+  assert.match(
+    f.scriptCalls.at(-1)[0],
+    /^window\.__gomeFsLock \? document\.documentElement\.requestFullscreen\(\)/,
+  );
+  assert.deepEqual(f.fullscreenRequests, [true]);
   assert.deepEqual(f.nativeRequests, []);
+});
+
+test("a page without the full screen lock marker (an old gateway page) gets native full screen, never HTML full screen", async (t) => {
+  const f = await desktop({ html: "granted", fsLock: false }, t);
+  await f.invoke("fullscreen", true);
+  await settle();
+  assert.deepEqual(f.nativeRequests, [true]);
+  assert.deepEqual(f.fullscreenRequests, [true], "only the native request");
+  assert.deepEqual(f.dialogs, []);
+  // The fallback is plain native full screen: its exit is native too.
+  f.finishFullscreen(true);
+  await f.invoke("fullscreen", false);
+  assert.deepEqual(f.nativeRequests, [true, false]);
 });
 
 test("a refused or failing HTML full screen falls back to native full screen without any dialog", async (t) => {

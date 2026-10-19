@@ -595,6 +595,7 @@ export async function viewer({
     bridgeCalls,
     keyboardCalls,
     clipboard,
+    window,
     settle,
     // The window gains or loses the focus: document.hasFocus() answers, then the
     // window's own event fires.

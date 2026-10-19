@@ -80,10 +80,15 @@ function runFullscreenScript(script, failed) {
 }
 function enterFullscreen() {
   htmlFullscreen = true;
-  // Refused permission, a dead or hung page: today's native full screen, no dialog.
-  runFullscreenScript("document.documentElement.requestFullscreen()", () => {
-    htmlFullscreen = false;
-  });
+  // Refused permission, a dead or hung page, or a page that cannot take the keyboard
+  // lock (an old gateway page never sets the marker; HTML full screen without the lock
+  // would let an Escape tap leave it): today's native full screen, no dialog.
+  runFullscreenScript(
+    "window.__gomeFsLock ? document.documentElement.requestFullscreen().then(() => true) : false",
+    () => {
+      htmlFullscreen = false;
+    },
+  );
 }
 function leaveFullscreen() {
   if (!htmlFullscreen) {
