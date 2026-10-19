@@ -12,6 +12,7 @@ import {
   parseAgentMessage,
   preferredCodecs,
   splitText,
+  utf8Length,
   wellFormed,
   wheelDelta,
   type AgentMessage,
@@ -85,21 +86,6 @@ export const DISCONNECTED_LIMIT_MS = 3000;
 const MAX_BUFFERED = 64 * 1024;
 // The keys that hold a state of their own (they do get their keyup).
 const MODIFIER_CODE = /^(Shift|Control|Alt|Meta)(Left|Right)$/;
-
-// UTF-8 length of a well-formed string (what the data channel carries).
-function utf8Bytes(text: string): number {
-  let bytes = 0;
-  for (let i = 0; i < text.length; i++) {
-    const unit = text.charCodeAt(i);
-    if (unit < 0x80) bytes += 1;
-    else if (unit < 0x800) bytes += 2;
-    else if (unit >= 0xd800 && unit <= 0xdbff) {
-      bytes += 4;
-      i++;
-    } else bytes += 3;
-  }
-  return bytes;
-}
 
 export function createAgentSession(deps: AgentDeps): AgentSession {
   const surface = document.createElement("div");
@@ -409,7 +395,7 @@ export function createAgentSession(deps: AgentDeps): AgentSession {
     sendClipboard(text, concealed) {
       if (!open()) return "closed";
       const encoded = message.clipboard(wellFormed(text), concealed);
-      if (utf8Bytes(encoded) > MAX_CLIPBOARD_MESSAGE_BYTES) return "too-large";
+      if (utf8Length(encoded) > MAX_CLIPBOARD_MESSAGE_BYTES) return "too-large";
       sendNow(encoded);
       return "sent";
     },

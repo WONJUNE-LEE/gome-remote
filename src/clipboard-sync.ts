@@ -3,7 +3,9 @@
 // clipboard text goes to the remote computer (on focus gain and at a paste key), holds the
 // paste key and everything after it until that text is sent (the paste barrier), and
 // writes remote text to the local clipboard. Clipboard text is never logged.
-import type { SkipReason } from "./agent-input";
+import { utf8Length, type SkipReason } from "./agent-input";
+
+export { utf8Length };
 
 export const MAX_CLIPBOARD_BYTES = 64 * 1024;
 export const PASTE_BARRIER_MS = 500;
@@ -24,24 +26,6 @@ export const NOTICE_TEXT: Record<NoticeKey, string> = {
 
 export function normaliseNewlines(text: string): string {
   return text.replace(/\r\n?/g, "\n");
-}
-
-// UTF-8 length without TextEncoder; a lone surrogate counts as the 3 bytes of U+FFFD.
-export function utf8Length(text: string): number {
-  let bytes = 0;
-  for (let i = 0; i < text.length; i++) {
-    const unit = text.charCodeAt(i);
-    if (unit < 0x80) bytes += 1;
-    else if (unit < 0x800) bytes += 2;
-    else if (unit >= 0xd800 && unit <= 0xdbff) {
-      const next = text.charCodeAt(i + 1);
-      if (next >= 0xdc00 && next <= 0xdfff) {
-        bytes += 4;
-        i++;
-      } else bytes += 3;
-    } else bytes += 3;
-  }
-  return bytes;
 }
 
 export interface PasteKeyEvent {
@@ -93,7 +77,9 @@ export interface SyncDeps {
   latin1Only?: boolean;
 }
 export interface ClipboardSync {
-  setViewFocused(focused: boolean): void;
+  // `read: false` marks the view focused (and turns the watch on) without reading the
+  // local clipboard: the session start pushes nothing.
+  setViewFocused(focused: boolean, opts?: { read?: boolean }): void;
   setRemoteLocked(locked: boolean): void;
   remoteClipboard(text: string, concealed: boolean): void;
   remoteSkipped(reason: SkipReason): void;
@@ -247,11 +233,12 @@ export function createClipboardSync(deps: SyncDeps): ClipboardSync {
   };
 
   return {
-    setViewFocused(next) {
+    setViewFocused(next, opts) {
       if (next === focused) return;
       focused = next;
       remote.sendWatch?.(next);
       if (next) {
+        if (opts?.read === false) return;
         queue.push({ kind: "focus", retried: false });
         pump();
         return;

@@ -114,6 +114,24 @@ export function wellFormed(text: string): string {
   return out;
 }
 
+// UTF-8 length without TextEncoder; a lone surrogate counts as the 3 bytes of U+FFFD.
+export function utf8Length(text: string): number {
+  let bytes = 0;
+  for (let i = 0; i < text.length; i++) {
+    const unit = text.charCodeAt(i);
+    if (unit < 0x80) bytes += 1;
+    else if (unit < 0x800) bytes += 2;
+    else if (unit >= 0xd800 && unit <= 0xdbff) {
+      const next = text.charCodeAt(i + 1);
+      if (next >= 0xdc00 && next <= 0xdfff) {
+        bytes += 4;
+        i++;
+      } else bytes += 3;
+    } else bytes += 3;
+  }
+  return bytes;
+}
+
 // UTF-8 bytes of one code point once JSON.stringify has escaped it.
 function jsonBytes(code: number): number {
   if (code === 0x22 || code === 0x5c) return 2; // \" \\

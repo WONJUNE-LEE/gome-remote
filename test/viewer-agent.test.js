@@ -636,7 +636,13 @@ test("with bridge 3 the lock is never taken, and in a browser it never is either
 
 // ---- clipboard sync over the Mac session (the real src/agent.ts on a fake connection) ----
 
-const NOTICES = (await loadTs("clipboard-sync.ts")).NOTICE_TEXT;
+const NOTICES = (
+  await loadTs(
+    "clipboard-sync.ts",
+    {},
+    { "./agent-input": await loadTs("agent-input.ts") },
+  )
+).NOTICE_TEXT;
 const types = (channel) => channel.messages().map((m) => m.type);
 const keyEvent = (code, extra = {}) => ({
   code,
@@ -881,11 +887,16 @@ test("a browser uses navigator.clipboard, and a denied read is silent", async ()
   });
   assert.deepEqual(
     channel.messages().filter((m) => m.type.startsWith("clipboard")),
-    [
-      { type: "clipboard-watch", on: true },
-      { type: "clipboard", text: "브라우저 글", concealed: false },
-    ],
-    "the focus read pushes the browser's text",
+    [{ type: "clipboard-watch", on: true }],
+    "the session start pushes nothing",
+  );
+  assert.deepEqual(reads, [], "and does not even read");
+  cmdV(surface);
+  await v.settle();
+  assert.deepEqual(
+    channel.messages().filter((m) => m.type === "clipboard"),
+    [{ type: "clipboard", text: "브라우저 글", concealed: false }],
+    "the first paste reads the browser's text and sends it",
   );
   channel.receive(
     JSON.stringify({ type: "clipboard", text: "맥에서", concealed: false }),
@@ -939,13 +950,17 @@ test("a paste held at the end of the session is dropped, and the next session st
   await first.v.settle();
   assert.deepEqual(
     channel.messages().filter((m) => m.type.startsWith("clipboard")),
-    [
-      { type: "clipboard-watch", on: true },
-      { type: "clipboard", text: "붙일 글", concealed: false },
-    ],
-    "the new session turns the watch on and starts from a fresh baseline (the old session's text is sent again, only once)",
+    [{ type: "clipboard-watch", on: true }],
+    "the new session turns the watch on and pushes nothing by itself",
   );
   assert.deepEqual(keysOf(channel), []);
+  cmdV(surface);
+  await first.v.settle();
+  assert.deepEqual(
+    channel.messages().filter((m) => m.type === "clipboard"),
+    [{ type: "clipboard", text: "붙일 글", concealed: false }],
+    "a fresh baseline: the first paste sends the text the old session had",
+  );
 });
 
 test("leaving the viewer with a paste held sends no held key afterwards", async () => {
@@ -962,4 +977,19 @@ test("leaving the viewer with a paste held sends no held key afterwards", async 
   assert.deepEqual(keysOf(channel), ["MetaLeft:down"]);
   assert.equal(types(channel).at(-1), "release");
   assert.equal(types(channel).includes("clipboard"), false);
+});
+
+test("the session start does not read the clipboard, a later focus gain does", async () => {
+  const { v, channel } = await syncing({ clipboardText: "처음 글" });
+  assert.equal(v.clipboard.reads, 0, "no read at the first picture");
+  assert.equal(types(channel).includes("clipboard"), false);
+  v.setWindowFocus(false);
+  v.setWindowFocus(true);
+  await v.settle();
+  assert.equal(v.clipboard.reads, 1, "a genuine focus gain reads");
+  assert.deepEqual(channel.messages().at(-1), {
+    type: "clipboard",
+    text: "처음 글",
+    concealed: false,
+  });
 });

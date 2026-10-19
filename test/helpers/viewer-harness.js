@@ -428,7 +428,12 @@ export async function viewer({
   const flow = await loadTs("flow.ts");
   const keyboardLockModule = await loadTs("keyboard-lock.ts");
   const agentMessages = await loadTs("agent-messages.ts");
-  const clipboardSync = await loadTs("clipboard-sync.ts");
+  const agentInput = await loadTs("agent-input.ts");
+  const clipboardSync = await loadTs(
+    "clipboard-sync.ts",
+    {},
+    { "./agent-input": agentInput },
+  );
   const clipboardLocal = await loadTs(
     "clipboard-local.ts",
     { window, navigator },

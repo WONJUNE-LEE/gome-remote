@@ -2,7 +2,8 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { loadTs } from "./helpers/load-ts.js";
 
-const sync = await loadTs("clipboard-sync.ts");
+const input = await loadTs("agent-input.ts");
+const sync = await loadTs("clipboard-sync.ts", {}, { "./agent-input": input });
 const {
   createClipboardSync,
   isPasteShortcut,
@@ -129,6 +130,26 @@ test("focus_gain_sends_changed_text_once_and_starts_the_watch", async () => {
   r.s.setViewFocused(true);
   await r.answer(ok("secret", true));
   assert.deepEqual(r.sent[1], ["secret", true]);
+});
+
+test("focus_without_a_read_starts_the_watch_and_reads_nothing", async () => {
+  const r = rig();
+  r.s.setViewFocused(true, { read: false });
+  await tick();
+  assert.deepEqual(r.watch, [true]);
+  assert.equal(r.reads.length, 0, "no read at the session start");
+  assert.deepEqual(r.sent, []);
+  // The view counts as focused: remote text is written, and the first paste still sends.
+  r.s.setViewFocused(true);
+  assert.equal(r.reads.length, 0, "already focused: still nothing");
+  r.s.pasteShortcut(key({ ctrlKey: true }));
+  await r.answer("first paste");
+  assert.deepEqual(r.sent, [["first paste", false]]);
+  // A genuine focus gain after a loss reads as usual.
+  r.s.setViewFocused(false);
+  r.s.setViewFocused(true);
+  await r.answer("changed");
+  assert.deepEqual(r.sent.at(-1), ["changed", false]);
 });
 
 test("unchanged_text_after_crlf_normalisation_is_not_resent", async () => {

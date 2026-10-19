@@ -281,9 +281,9 @@ function showNotice(key: NoticeKey) {
   noticeTimer = setTimeout(hideNotice, NOTICE_MS);
 }
 // The remote view is focused while this window has the focus and the session shows a picture.
-function updateSyncFocus() {
+function updateSyncFocus(opts?: { read?: boolean }) {
   syncFocused = !!sync && document.hasFocus() && flow.active;
-  sync?.setViewFocused(syncFocused);
+  sync?.setViewFocused(syncFocused, opts);
 }
 function releaseInput() {
   agent?.release();
@@ -339,6 +339,7 @@ function sessionEnded(reason?: string) {
   releaseInput();
   flow.stopped();
   sync?.end();
+  sync = undefined;
   syncFocused = false;
   updateKeyboardLock();
   resolution.stopped();
@@ -505,7 +506,8 @@ async function connectAgent(
       el("overlay").hidden = true;
       el<HTMLButtonElement>("text-input").disabled = false;
       session.focus();
-      updateSyncFocus();
+      // Session start pushes nothing: the watch goes on, the clipboard is not read.
+      updateSyncFocus({ read: false });
     },
     onEnded: (reason) => {
       if (current === generation) flow.ended(reason);
@@ -659,8 +661,8 @@ api.onViewerAction((action) => {
   else if (action === "text-input") openTextDialog();
 });
 window.addEventListener("blur", releaseInput);
-window.addEventListener("focus", updateSyncFocus);
-window.addEventListener("blur", updateSyncFocus);
+window.addEventListener("focus", () => updateSyncFocus());
+window.addEventListener("blur", () => updateSyncFocus());
 window.addEventListener("beforeunload", stop);
 // Measurement mode: does nothing unless the address has #measure (src/measure.ts).
 initMeasure({
