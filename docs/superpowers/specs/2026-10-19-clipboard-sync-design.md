@@ -1,8 +1,8 @@
 # Clipboard sync and Command key capture — design
 
 Status: owner approved the direction in chat on 2026-10-19 (grade F); owner decisions from the
-design review are recorded in §4 (marked "owner, 2026-10-19"). Revision 2 after design review
-round 1.
+design review are recorded in §4 (marked "owner, 2026-10-19"). Revision 3: D4/G4 changed to
+capture the Windows key in windowed mode too (owner, 2026-10-19), after implementation.
 Implemented on branch `feat/clipboard-sync` (not merged, not released); rehearsal pending
 (device checks in `docs/verification.md`).
 
@@ -32,11 +32,12 @@ Mac with Cmd+C, paste on Windows with Ctrl+V.
   becomes the client's clipboard content.
 - G3. Paste at the Mac lock screen: while the Mac is locked, a remote paste types the client's
   clipboard text into the focused field (the lock-screen field refuses a real paste).
-- G4. The Windows key reaches the Mac as Command, including Win+V / Win+C / Win+A, in the
-  desktop app's full-screen mode.
+- G4. The Windows key reaches the Mac as Command, including Win+V / Win+C / Win+A, whenever the
+  remote view is focused in the desktop app — windowed or full screen (owner, 2026-10-19,
+  revision 3).
 - G5. A paste path that needs no Command key: a 원격 menu item 클립보드 붙여넣기 (and a button in
-  the browser bar) that sends the client clipboard and pastes it. This is the windowed-mode path
-  and the fallback if G4 fails on Windows.
+  the browser bar) that sends the client clipboard and pastes it. This is the fallback if G4
+  fails on Windows or the key lock was released (hold-Escape).
 - G6. Same behaviour for every client OS of the desktop app (Windows, Mac, Linux); browsers get
   it where the browser allows clipboard access.
 
@@ -53,7 +54,7 @@ Mac with Cmd+C, paste on Windows with Ctrl+V.
 - Anti-goal: breaking a session, input or full screen when the other side is an old version or
   a new mechanism is refused (old agent, old desktop app, old page, denied permission).
 - Win+L and Ctrl+Alt+Del cannot be captured on Windows by any user-mode app; out of scope.
-- Windowed-mode Windows key capture (a native low-level hook) is out of scope (D4).
+- No native keyboard hook of our own: G4 uses Chromium's keyboard lock (D4).
 
 ## 4. Decisions
 
@@ -123,23 +124,38 @@ Measured 2026-10-19 on Linux/Xvfb with Electron 44.5.1 (a throwaway spike, not i
 - Not measurable there: whether Chromium's Windows low-level hook captures the Win key and
   Win+V. That is the rehearsal gate in §5.
 
-Decisions:
+Measured 2026-10-19 (second spike, same setup) with `webPreferences.disableHtmlFullscreenWindowResize:
+true`: HTML full screen no longer resizes the window (`isFullScreen()` false, size unchanged,
+`document.fullscreenElement` set), and `keyboard.lock()` is effective in that normal window
+(main's `before-input-event` sees only Escape; Meta, V, Tab, F11 go to the page). The lock
+survives a window blur and refocus; native full screen (`win.setFullScreen`) toggles
+independently and the lock survives it; `document.exitFullscreen()` releases the lock without
+touching the window; holding Escape about 1.5 s exits HTML full screen and releases the lock; an
+Escape tap reaches the page and keeps the lock. Chromium's KeyboardLockController only locks
+when `web_contents->IsFullscreen()`, which is the HTML full-screen state, hence this design.
 
-- In the desktop app, entering full screen (F11 / View → 전체 화면) means: main asks the page to
-  enter HTML full screen (`executeJavaScript` with user gesture); while a session is open the
-  page calls `keyboard.lock()`; when the session ends it calls `keyboard.unlock()`.
-- Leaving full screen always goes through `document.exitFullscreen()`. Because the lock hides F11
-  from main, the page handles F11 itself while locked and asks to leave full screen; the menu
-  path has main run `document.exitFullscreen()` in the page. The native and HTML states are kept
-  in step by listening to `leave-html-full-screen` / `fullscreenchange`; the existing
-  `remote:fullscreen-state` IPC keeps telling the page the state.
-- Permission handler: grant `fullscreen` and `keyboardLock` only when `requestingUrl` is the
-  gateway origin; everything else stays denied as today.
-- If HTML full screen or the lock is refused, full screen falls back to today's native full
-  screen with no error dialog; only Windows key capture is lost (G5 still works).
-- Escape stays a remote key on tap; hold-Escape exits full screen.
-- Windowed mode does not capture the Windows key, matching Microsoft's Remote Desktop client
-  default (Windows key combinations only in full screen). G5 is the windowed-mode paste path.
+Decisions (revision 3, owner approved 2026-10-19: capture "always" while the remote view is
+focused, windowed or full screen):
+
+- The desktop app sets `disableHtmlFullscreenWindowResize: true`. HTML full screen becomes an
+  in-window state that only serves the key lock; it is not what F11 does.
+- While a session view is shown (bridge ≥ 4 app, a page that marks it supports the lock), the
+  page holds HTML full screen + `keyboard.lock()`: it is entered when the session's first frame
+  arrives and again whenever the user clicks the remote view while it is not held (both through
+  main's `executeJavaScript(..., true)` so no page user-activation is needed); it is released
+  (`keyboard.unlock()` + `document.exitFullscreen()`) when the session ends. The remote view
+  already fills the window, so nothing visible changes.
+- F11 / View → 전체 화면 go back to plain native full screen (`win.setFullScreen`), independent of
+  the lock. Because the lock hides F11 from main, the page forwards an F11 key-down to main's
+  native toggle while locked.
+- Hold-Escape (Chromium, ~1.5 s) releases the lock until the user clicks the remote view again;
+  an Escape tap stays a remote key. Win+L and Ctrl+Alt+Del stay with Windows. While locked,
+  Alt+Tab, Win+D etc. go to the Mac too; the user leaves the window with the mouse (owner accepted).
+- Permission handler: grant `fullscreen` and `keyboardLock` only for the gateway origin, as before.
+- If HTML full screen or the lock is refused or hangs, nothing else changes: the session works,
+  the Windows key is not captured, G5 still works; no error dialog. An old page (no marker) never
+  gets HTML full screen.
+- Browsers: unchanged (no lock).
 
 ### D5. Lock-screen paste (Mac agent path)
 
@@ -242,7 +258,7 @@ Decisions:
    - At the end of the rehearsal (pass or withdraw) the owner's app is pointed back at :8450
      (서버 주소 바꾸기) and, if the rehearsal build is not released, reinstalled from the current
      release; the :8451 candidate is stopped.
-   - Withdraw criteria: if the Windows key is not captured in full screen, D4's full-screen
+   - Withdraw criteria: if the Windows key is not captured, D4's key lock
      changes are removed from the release (G5 and G1–G3 still ship) and the owner decides on a
      follow-up; if lock-screen typing fails, G3 is dropped (VNC tile stays the fallback); if
      full screen breaks in any way, D4 is removed.
@@ -272,10 +288,11 @@ Decisions:
      and text already synced before the lock. Negative: with only the display asleep (within the
      lock delay) Cmd+V pastes normally and types nothing; right after unlock, pasting the same
      text again pastes it (not the older pasteboard content).
-  4. Windows full screen: Win+V / Win+C / Win+A reach the Mac; a bare Win tap does not open
-     Start; F11 leaves full screen while locked; hold-Escape leaves full screen; Win+L locks
-     Windows (expected).
-  5. Windowed mode: 클립보드 붙여넣기 pastes on the Mac.
+  4. Windows, windowed AND full screen: Win+V / Win+C / Win+A reach the Mac; a bare Win tap does
+     not open Start; F11 toggles native full screen while locked; hold-Escape releases the lock
+     and a click on the remote view takes it again; leaving the window with the mouse works;
+     Win+L locks Windows (expected).
+  5. 클립보드 붙여넣기 pastes on the Mac (windowed, and after hold-Escape).
   6. VNC and Ubuntu RDP: both directions, Korean text, multi-line text with no ping-pong.
   7. Over 64 KiB: notice shown, nothing pasted silently.
   8. Old app against the new gateway/agent and new app against the old agent: sessions work.
