@@ -36,76 +36,41 @@ let store;
 let gateway = ""; // configured gateway origin, "" until the user enters one
 let fullscreenTarget = false;
 let fullscreenTransition = false;
-// True from the moment the page is asked for HTML full screen until it leaves it. Only
-// document.exitFullscreen() ends HTML full screen and the keyboard lock that goes with
-// it; win.setFullScreen(false) does not (measured on Electron 44). The flag is set when
-// the request is made, not only on enter-html-full-screen, which arrives after
-// enter-full-screen: an exit queued during entry must still go through the page.
-let htmlFullscreen = false;
-// The OS did not (or could not) do what the page path was meant to: finish with native
-// full screen towards whatever the target is now. When the window already agrees with the
-// target there is no OS event to come, so the transition simply ends.
-function nativeFullscreen() {
-  if (window.isDestroyed() || window.isFullScreen() === fullscreenTarget) {
-    fullscreenTransition = false;
-    return;
-  }
-  window.setFullScreen(fullscreenTarget);
-}
-// How long the page may take to answer a full screen script. A renderer that never
-// answers must not leave the transition open for ever (it would swallow every later
-// F11 or menu request).
-const FULLSCREEN_SCRIPT_MS = 2000;
-// Runs a full screen script in the page. The script resolves false when it did nothing
-// (no full screen element to leave). Rejection, such an answer, or silence for
-// FULLSCREEN_SCRIPT_MS ends in the native path (`failed` first), so the transition always
-// ends; whatever the page says after that is ignored.
-function runFullscreenScript(script, failed) {
-  let settled = false;
-  const fallBack = () => {
-    if (settled) return;
-    settled = true;
-    clearTimeout(timer);
-    failed();
-    nativeFullscreen();
-  };
-  const timer = setTimeout(fallBack, FULLSCREEN_SCRIPT_MS);
-  window.webContents.executeJavaScript(script, true).then((result) => {
-    if (result === false) fallBack();
-    else if (!settled) {
+// How long the page may take to answer a key lock script. A denied fullscreen permission
+// makes requestFullscreen hang (measured on Electron 44), so a page that never answers
+// counts as a refusal.
+const KEY_LOCK_SCRIPT_MS = 2000;
+const KEY_LOCK_ON =
+  "document.documentElement.requestFullscreen().then(() => true)";
+const KEY_LOCK_OFF =
+  "document.fullscreenElement ? document.exitFullscreen().then(() => true) : true";
+// Runs a key lock script in the page with a user gesture. Resolves true only when the
+// page says so; rejection, any other answer or silence for KEY_LOCK_SCRIPT_MS is false.
+function runKeyLockScript(script) {
+  return new Promise((resolve) => {
+    let settled = false;
+    const done = (value) => {
+      if (settled) return;
       settled = true;
       clearTimeout(timer);
+      resolve(value);
+    };
+    const timer = setTimeout(() => done(false), KEY_LOCK_SCRIPT_MS);
+    try {
+      window.webContents.executeJavaScript(script, true).then(
+        (result) => done(result === true),
+        () => done(false),
+      );
+    } catch {
+      done(false);
     }
-  }, fallBack);
-}
-function enterFullscreen() {
-  htmlFullscreen = true;
-  // Refused permission, a dead or hung page, or a page that cannot take the keyboard
-  // lock (an old gateway page never sets the marker; HTML full screen without the lock
-  // would let an Escape tap leave it): today's native full screen, no dialog.
-  runFullscreenScript(
-    "window.__gomeFsLock ? document.documentElement.requestFullscreen().then(() => true) : false",
-    () => {
-      htmlFullscreen = false;
-    },
-  );
-}
-function leaveFullscreen() {
-  if (!htmlFullscreen) {
-    window.setFullScreen(false);
-    return;
-  }
-  runFullscreenScript(
-    "document.fullscreenElement ? document.exitFullscreen().then(() => true) : false",
-    () => {},
-  );
+  });
 }
 function applyFullscreenTarget() {
   if (fullscreenTransition || window.isFullScreen() === fullscreenTarget)
     return;
   fullscreenTransition = true;
-  if (fullscreenTarget) enterFullscreen();
-  else leaveFullscreen();
+  window.setFullScreen(fullscreenTarget);
 }
 function requestFullscreen(enabled) {
   fullscreenTarget = enabled;
@@ -255,6 +220,13 @@ function showSetup(reason) {
   // viewer opened a moment ago would keep them enabled for a page that ignores them.
   applyViewerState(closedViewer);
   requestFullscreen(false);
+  // A page that holds the key lock gives it back before it goes (navigating away would
+  // end it too, but nothing should depend on that).
+  if (
+    process.platform === "win32" &&
+    originOf(window.webContents.mainFrame.url) === gateway
+  )
+    void runKeyLockScript(KEY_LOCK_OFF);
   return window
     .loadURL(reason ? `${setupPage}?reason=${reason}` : setupPage)
     .catch(() => {});
@@ -319,6 +291,16 @@ app
       requestFullscreen(enabled);
     });
     handle("gateway", "remote:fullscreen-state", () => window.isFullScreen());
+    // The Windows key lock: the page asks for HTML full screen (which, with
+    // disableHtmlFullscreenWindowResize, keeps the window as it is) and takes
+    // navigator.keyboard.lock() itself. Main only runs the full screen script with a user
+    // gesture. Native full screen is never touched here. Other systems refuse.
+    handle("gateway", "remote:key-lock", async (on) => {
+      if (typeof on !== "boolean") throw new Error("Invalid key lock state.");
+      if (process.platform !== "win32") return false;
+      if (on && !window.isFocused()) return false;
+      return runKeyLockScript(on ? KEY_LOCK_ON : KEY_LOCK_OFF);
+    });
     handle("gateway", "remote:viewer-state", (state) => {
       if (
         !state ||
@@ -380,6 +362,9 @@ app
         contextIsolation: true,
         sandbox: true,
         webSecurity: true,
+        // HTML full screen (the key lock's carrier) must not resize or full-screen the
+        // window; F11 is the only way into native full screen.
+        disableHtmlFullscreenWindowResize: true,
       },
     });
     const publishFullscreen = () => {
@@ -391,16 +376,7 @@ app
       applyFullscreenTarget();
     };
     window.on("enter-full-screen", publishFullscreen);
-    window.on("leave-full-screen", () => {
-      htmlFullscreen = false;
-      publishFullscreen();
-    });
-    window.webContents.on("enter-html-full-screen", () => {
-      htmlFullscreen = true;
-    });
-    window.webContents.on("leave-html-full-screen", () => {
-      htmlFullscreen = false;
-    });
+    window.on("leave-full-screen", publishFullscreen);
     window.webContents.on("before-input-event", (event, input) => {
       if (input.key !== "F11") return;
       // Intercept both edges before Guacamole or a menu accelerator can receive F11.
@@ -460,7 +436,7 @@ app
       // Run with a throwaway --user-data-dir: with no saved address it only shows the
       // local address page, so there is no network and no real settings are touched.
       const state = await window.webContents.executeJavaScript(
-        "({page: location.href.split(/[?#]/)[0], title: document.title, bridgeVersion: window.desktop.bridgeVersion, read: typeof window.desktop.readClipboard, setup: typeof window.desktopSetup.save})",
+        "({page: location.href.split(/[?#]/)[0], title: document.title, bridgeVersion: window.desktop.bridgeVersion, read: typeof window.desktop.readClipboard, keyLock: typeof window.desktop.keyLock, setup: typeof window.desktopSetup.save})",
       );
       console.log(JSON.stringify(state));
       if (
@@ -468,6 +444,7 @@ app
         state.title !== "Gome Remote" ||
         state.bridgeVersion !== 4 ||
         state.read !== "function" ||
+        state.keyLock !== "function" ||
         state.setup !== "function"
       )
         throw new Error("The address page or the bridge is not as expected.");

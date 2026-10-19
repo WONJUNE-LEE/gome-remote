@@ -52,6 +52,11 @@ interface NativeBridge {
 interface DesktopBridge extends NativeBridge {
   bridgeVersion?: number;
   openSetup(): Promise<void>;
+  // The Windows key lock: true only in the Windows app. keyLock(true) puts the page in
+  // in-window HTML full screen (main refuses unless the window has focus), keyLock(false)
+  // leaves it; both answer whether it worked. Absent in older (unreleased) bridge 4 builds.
+  keyLockSupported?: boolean;
+  keyLock?(on: boolean): Promise<boolean>;
   // Absent in apps older than bridge version 4 and in browsers (no navigator.clipboard
   // fallback inside the app).
   readClipboard?(): Promise<ClipboardRead>;

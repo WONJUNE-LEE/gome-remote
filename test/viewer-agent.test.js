@@ -519,61 +519,126 @@ test("the measurement panel is added to the page only when the address asks for 
   );
 });
 
-// ---- the keyboard lock in HTML full screen (desktop app, bridge 4) ----
+// ---- the Windows key lock (Windows app, bridge 4 with keyLockSupported) ----
 
-const LOCK_BRIDGE = { bridgeVersion: 4 };
-const lockCalls = (v) => [v.keyboardCalls.lock.length, v.keyboardCalls.unlock];
+const WIN_APP = { bridgeVersion: 4, keyLockSupported: true };
+const lockCalls = (v) => [
+  v.bridgeCalls.keyLock.join(","),
+  v.keyboardCalls.lock.length,
+  v.keyboardCalls.unlock,
+];
+const noticeText = (v) =>
+  v.el("notice").hidden ? "" : v.el("notice").textContent;
+const ON_NOTICE = "Windows 키가 Mac으로 갑니다 · Esc를 길게 누르면 풀립니다";
+const RELEASED_NOTICE = "키 잡기를 풀었습니다 · 화면을 클릭하면 다시 잡습니다";
 
-test("connecting while the page is in HTML full screen takes the lock, and leaving full screen releases it", async () => {
-  const v = await opened(LOCK_BRIDGE);
-  v.setHtmlFullscreen(true);
-  await v.settle();
-  assert.deepEqual(lockCalls(v), [0, 0], "no lock before the session is up");
+test("the first picture takes HTML full screen and the lock in the focused Windows app, and says so once", async () => {
+  const v = await opened(WIN_APP);
+  assert.deepEqual(
+    lockCalls(v),
+    ["", 0, 0],
+    "no lock before the session is up",
+  );
   v.agents[0].deps.onFirstFrame();
   await v.settle();
-  assert.deepEqual(lockCalls(v), [1, 0]);
-  v.setHtmlFullscreen(false);
-  assert.deepEqual(lockCalls(v), [1, 1]);
-  // Entering full screen with the session already up takes it as well.
-  v.setHtmlFullscreen(true);
-  await v.settle();
-  assert.deepEqual(lockCalls(v), [2, 1]);
+  assert.deepEqual(lockCalls(v), ["true", 1, 0]);
+  assert.equal(noticeText(v), ON_NOTICE);
+  assert.equal(v.window.__gomeFsLock, undefined, "no page marker any more");
 });
 
 test("a Guacamole session takes the lock when it connects", async () => {
   const v = await viewer({
     appMode: true,
-    bridgeVersion: 4,
+    ...WIN_APP,
     targets: [mac, vnc, linux],
   });
-  v.setHtmlFullscreen(true);
   v.tiles()[2].click();
   await v.settle();
-  assert.deepEqual(lockCalls(v), [0, 0]);
+  assert.deepEqual(lockCalls(v), ["", 0, 0]);
   v.clients[0].onstatechange(3);
   await v.settle();
-  assert.deepEqual(lockCalls(v), [1, 0]);
+  assert.deepEqual(lockCalls(v), ["true", 1, 0]);
+});
+
+test("a window that is not focused when the picture arrives takes the lock when it gains the focus", async () => {
+  const v = await opened({ ...WIN_APP, windowFocused: false });
+  v.agents[0].deps.onFirstFrame();
+  await v.settle();
+  assert.deepEqual(lockCalls(v), ["", 0, 0]);
+  v.setWindowFocus(true);
+  await v.settle();
+  assert.deepEqual(lockCalls(v), ["true", 1, 0]);
+});
+
+test("window blur releases the lock and focus takes it again", async () => {
+  const v = await opened(WIN_APP);
+  v.agents[0].deps.onFirstFrame();
+  await v.settle();
+  v.setWindowFocus(false);
+  await v.settle();
+  assert.deepEqual(lockCalls(v), ["true,false", 1, 1]);
+  assert.equal(v.window.desktop.keyLockSupported, true);
+  v.setWindowFocus(true);
+  await v.settle();
+  assert.deepEqual(lockCalls(v), ["true,false,true", 2, 1]);
 });
 
 test("every end of the session releases the lock: the connection ending, 연결 종료, and back", async () => {
   for (const end of ["ended", "disconnect", "back"]) {
-    const v = await opened(LOCK_BRIDGE);
+    const v = await opened(WIN_APP);
     v.agents[0].deps.onFirstFrame();
-    v.setHtmlFullscreen(true);
     await v.settle();
-    assert.deepEqual(lockCalls(v), [1, 0], end);
+    assert.deepEqual(lockCalls(v), ["true", 1, 0], end);
     if (end === "ended") v.agents[0].deps.onEnded("disconnected");
     else if (end === "disconnect") v.el("disconnect").click();
     else v.el("back").click();
     await v.settle();
-    assert.deepEqual(lockCalls(v), [1, 1], end);
+    assert.deepEqual(lockCalls(v), ["true,false", 1, 1], end);
   }
 });
 
-test("F11 while locked leaves full screen from the page: once for down, repeat and up, and the Mac never sees it", async () => {
-  const v = await opened(LOCK_BRIDGE);
+test("hold-Escape (the full screen ends by itself) releases the lock with a notice; a click on the remote view takes it again", async () => {
+  const v = await opened(WIN_APP);
   v.agents[0].deps.onFirstFrame();
-  v.setHtmlFullscreen(true);
+  await v.settle();
+  v.setHtmlFullscreen(false); // Chromium's hold-Escape
+  await v.settle();
+  assert.deepEqual(
+    lockCalls(v),
+    ["true", 1, 1],
+    "unlocked, full screen already gone",
+  );
+  assert.equal(noticeText(v), RELEASED_NOTICE);
+  // Nothing re-takes it on its own.
+  v.setWindowFocus(true);
+  v.windowEvent("focus");
+  await v.settle();
+  assert.deepEqual(lockCalls(v), ["true", 1, 1]);
+  v.el("display").dispatchEvent({ type: "mousedown" });
+  await v.settle();
+  assert.deepEqual(lockCalls(v), ["true,true", 2, 1]);
+  assert.equal(
+    noticeText(v),
+    RELEASED_NOTICE,
+    "no second 'on' notice in this session",
+  );
+});
+
+test("the page's own exit is not taken for hold-Escape", async () => {
+  const v = await opened(WIN_APP);
+  v.agents[0].deps.onFirstFrame();
+  await v.settle();
+  v.setWindowFocus(false); // the harness bridge fires fullscreenchange on our exit
+  await v.settle();
+  assert.notEqual(noticeText(v), RELEASED_NOTICE);
+  v.setWindowFocus(true);
+  await v.settle();
+  assert.deepEqual(lockCalls(v), ["true,false,true", 2, 1]);
+});
+
+test("F11 while the lock is held toggles native full screen from the page: once for down, repeat and up, and the Mac never sees it", async () => {
+  const v = await opened(WIN_APP);
+  v.agents[0].deps.onFirstFrame();
   await v.settle();
   const down = v.windowKey("keydown");
   const repeat = v.windowKey("keydown", { repeat: true });
@@ -583,38 +648,61 @@ test("F11 while locked leaves full screen from the page: once for down, repeat a
     assert.equal(event.defaultPrevented, true);
     assert.equal(event.stopped, true);
   }
-  assert.deepEqual(v.bridgeCalls.fullscreen, [false]);
-  // Other keys are left alone.
+  assert.deepEqual(
+    v.bridgeCalls.fullscreen,
+    [true],
+    "native toggle, not exitFullscreen",
+  );
+  assert.deepEqual(lockCalls(v), ["true", 1, 0], "the lock is untouched");
   const other = v.windowKey("keydown", { key: "F1" });
   assert.equal(other.defaultPrevented, false);
-  assert.deepEqual(v.bridgeCalls.fullscreen, [false]);
+  assert.deepEqual(v.bridgeCalls.fullscreen, [true]);
 });
 
 test("F11 is not the page's business while the lock is not held", async () => {
-  const v = await opened(LOCK_BRIDGE);
-  v.agents[0].deps.onFirstFrame(); // connected, but not in full screen: no lock
+  const v = await opened({ ...WIN_APP, windowFocused: false });
+  v.agents[0].deps.onFirstFrame(); // connected, window unfocused: no lock
   await v.settle();
   const event = v.windowKey("keydown");
   assert.equal(event.defaultPrevented, false);
   assert.deepEqual(v.bridgeCalls.fullscreen, []);
 });
 
-test("a refused or missing lock leaves the session as it was, silently", async () => {
-  for (const keyboardLock of ["refused", "absent"]) {
-    const v = await opened({ ...LOCK_BRIDGE, keyboardLock });
+test("a refused or missing lock leaves the session as it was, silently, and gives full screen back", async () => {
+  for (const options of [
+    { keyboardLock: "refused" },
+    { keyboardLock: "absent" },
+    { keyLockAnswer: "refused" },
+  ]) {
+    const v = await opened({ ...WIN_APP, ...options });
     v.agents[0].deps.onFirstFrame();
-    v.setHtmlFullscreen(true);
     await v.settle();
-    assert.equal(v.el("viewer-error").open, false, keyboardLock);
+    const name = JSON.stringify(options);
+    assert.equal(v.el("viewer-error").open, false, name);
+    assert.equal(noticeText(v), "", name);
     const event = v.windowKey("keydown");
-    assert.equal(event.defaultPrevented, false, keyboardLock);
-    v.setHtmlFullscreen(false);
-    assert.equal(v.keyboardCalls.unlock, 0, keyboardLock);
+    assert.equal(event.defaultPrevented, false, name);
+    // It left HTML full screen at once (a second bridge call, false) unless it never got in.
+    const calls = v.bridgeCalls.keyLock;
+    assert.equal(calls[0], true, name);
+    if (options.keyLockAnswer !== "refused")
+      assert.equal(calls[1], false, name);
   }
 });
 
-test("with bridge 3 the lock is never taken, and in a browser it never is either", async () => {
+test("a lock that never resolves is given up after 2 s", async () => {
+  const v = await opened({ ...WIN_APP, keyboardLock: "hang" });
+  v.agents[0].deps.onFirstFrame();
+  await v.settle();
+  v.advance(2000);
+  await v.settle();
+  assert.deepEqual(v.bridgeCalls.keyLock, [true, false]);
+  assert.equal(noticeText(v), "");
+});
+
+test("a Mac or Linux app (keyLockSupported false), bridge 3 and a browser never lock, and F11 stays main's", async () => {
   for (const options of [
+    { appMode: true, bridgeVersion: 4, keyLockSupported: false },
     { appMode: true, bridgeVersion: 3 },
     { appMode: false },
   ]) {
@@ -622,30 +710,19 @@ test("with bridge 3 the lock is never taken, and in a browser it never is either
     v.tiles()[0].click();
     await v.settle();
     v.agents[0].deps.onFirstFrame();
-    v.setHtmlFullscreen(true);
     await v.settle();
-    assert.deepEqual(lockCalls(v), [0, 0], JSON.stringify(options));
-    // (A browser has its own F11 shortcut; the page's lock handler is not part of it.)
+    v.setWindowFocus(false);
+    v.setWindowFocus(true);
+    v.el("display").dispatchEvent({ type: "mousedown" });
+    await v.settle();
+    const name = JSON.stringify(options);
+    assert.deepEqual(lockCalls(v), ["", 0, 0], name);
+    assert.equal(noticeText(v), "", name);
     if (options.appMode) {
       const event = v.windowKey("keydown");
-      assert.equal(event.defaultPrevented, false, JSON.stringify(options));
-      assert.deepEqual(v.bridgeCalls.fullscreen, []);
+      assert.equal(event.defaultPrevented, false, name);
+      assert.deepEqual(v.bridgeCalls.fullscreen, [], name);
     }
-  }
-});
-
-test("the page marks that it takes the keyboard lock only in the app with bridge 4 or later", async () => {
-  for (const [options, expected] of [
-    [{ appMode: true, bridgeVersion: 4 }, true],
-    [{ appMode: true, bridgeVersion: 3 }, false],
-    [{ appMode: false }, false],
-  ]) {
-    const v = await viewer({ targets: [mac, vnc, linux], ...options });
-    assert.equal(
-      v.window.__gomeFsLock === true,
-      expected,
-      JSON.stringify(options),
-    );
   }
 });
 

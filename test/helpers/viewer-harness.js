@@ -113,8 +113,13 @@ export async function viewer({
   // recorder, for tests about what the page really sends the Mac.
   realAgent = false,
   // navigator.keyboard.lock() answers like Chromium in full screen: "granted" resolves,
-  // "refused" rejects, "absent" leaves navigator.keyboard undefined.
+  // "refused" rejects, "hang" never answers, "absent" leaves navigator.keyboard undefined.
   keyboardLock = "granted",
+  // The Windows app announces keyLockSupported; the other apps have the functions but
+  // answer false. `keyLockAnswer` is what the bridge says to keyLock(true): "granted"
+  // puts the document in HTML full screen, "refused" answers false, "hang" never answers.
+  keyLockSupported = false,
+  keyLockAnswer = "granted",
   // What the local clipboard holds (the bridge's readClipboard answers it). The page's
   // window has the focus unless `windowFocused` says otherwise.
   clipboardText = "",
@@ -177,7 +182,12 @@ export async function viewer({
     hasFocus: () => windowFocus,
   };
   let windowFocus = windowFocused;
-  const bridgeCalls = { viewerState: [], openSetup: 0, fullscreen: [] };
+  const bridgeCalls = {
+    viewerState: [],
+    openSetup: 0,
+    fullscreen: [],
+    keyLock: [],
+  };
   const keyboardCalls = { lock: [], unlock: 0 };
   // The local clipboard the bridge reads and writes. `hold` keeps reads pending until
   // `resolve()`; `fail` makes them answer that failure instead of the text.
@@ -201,6 +211,7 @@ export async function viewer({
           keyboard: {
             lock: async (...args) => {
               keyboardCalls.lock.push(args);
+              if (keyboardLock === "hang") return new Promise(() => {});
               if (keyboardLock === "refused")
                 throw new Error("NotAllowedError");
             },
@@ -236,6 +247,21 @@ export async function viewer({
         },
         ...(bridgeVersion >= 4
           ? {
+              keyLockSupported,
+              keyLock: async (on) => {
+                bridgeCalls.keyLock.push(on);
+                if (!keyLockSupported) return false;
+                if (on && keyLockAnswer === "refused") return false;
+                if (on && keyLockAnswer === "hang")
+                  return new Promise(() => {});
+                document.fullscreenElement = on
+                  ? document.documentElement
+                  : null;
+                (documentListeners.fullscreenchange ?? []).forEach((l) =>
+                  l({ type: "fullscreenchange" }),
+                );
+                return true;
+              },
               readClipboard: async () => {
                 clipboard.reads++;
                 if (clipboard.hold)

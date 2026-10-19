@@ -12,7 +12,7 @@ import {
   utf8Length,
 } from "./clipboard-sync";
 import { connectFailure, createSessionFlow, errorScreen } from "./flow";
-import { createKeyboardLock, isLockedF11 } from "./keyboard-lock";
+import { KEY_LOCK_NOTICE, createKeyLock } from "./keyboard-lock";
 import { guacamoleSource, initMeasure, videoSource } from "./measure";
 import { createResolution, sizeFor } from "./resolution";
 import {
@@ -185,34 +185,44 @@ async function setFullscreen(enabled: boolean) {
 }
 api.onFullscreenChange(fullscreenChanged);
 void api.fullscreenState().then(fullscreenChanged);
-// The keyboard lock is taken only inside the desktop app (bridge 4 or later: older apps
-// enter native full screen, where the lock is not available) while a session is
-// connected and the page is in HTML full screen. Browsers never get it.
-const keyboardLock = createKeyboardLock({
-  lock: () =>
-    navigator.keyboard ? navigator.keyboard.lock() : Promise.reject(),
-  unlock: () => navigator.keyboard?.unlock(),
-});
-const lockAvailable = appMode && (window.desktop?.bridgeVersion ?? 0) >= 4;
-function updateKeyboardLock() {
-  keyboardLock.update(
-    lockAvailable && !!document.fullscreenElement && flow.active,
-  );
+// The Windows key lock exists only in the Windows desktop app (the bridge says so); other
+// apps and browsers never create it and keep today's F11 and keys.
+const keyLock = api.keyLockSupported
+  ? createKeyLock({
+      supported: true,
+      enterHtml: () => api.keyLock(true),
+      exitHtml: () => api.keyLock(false),
+      lock: () =>
+        navigator.keyboard ? navigator.keyboard.lock() : Promise.reject(),
+      unlock: () => navigator.keyboard?.unlock(),
+      isHtmlFullscreen: () => !!document.fullscreenElement,
+      notify: (key) => showNoticeText(KEY_LOCK_NOTICE[key]),
+      log: (reason) => console.warn(`key lock: ${reason}`),
+      setTimeout: (callback, ms) => setTimeout(callback, ms),
+      clearTimeout: (id) => clearTimeout(id as number),
+    })
+  : undefined;
+// The lock is wanted while a session is shown and this window has the focus.
+function updateKeyLock() {
+  keyLock?.update({ session: flow.active, focused: document.hasFocus() });
 }
-if (lockAvailable) {
-  // Tells the app's main process this page takes the lock, so it may use HTML full
-  // screen (a page without the marker gets native full screen instead).
-  (window as unknown as { __gomeFsLock?: boolean }).__gomeFsLock = true;
-  document.addEventListener("fullscreenchange", updateKeyboardLock);
-  // Under the lock the page, not the app's main process, receives F11.
-  const lockedF11 = (event: KeyboardEvent) => {
-    if (!isLockedF11(event, keyboardLock.locked)) return;
+if (keyLock) {
+  document.addEventListener("fullscreenchange", () =>
+    keyLock.fullscreenChanged(),
+  );
+  // A click on the remote view takes the lock again after hold-Escape.
+  el("display").addEventListener("mousedown", () => keyLock.click(), true);
+  // While the lock is held the page, not the app's main process, receives F11, and it
+  // toggles the window's native full screen; the remote never sees the key.
+  const heldF11 = (event: KeyboardEvent) => {
+    if (!keyLock.held || event.key !== "F11") return;
     event.preventDefault();
     event.stopImmediatePropagation();
-    if (event.type === "keydown" && !event.repeat) void setFullscreen(false);
+    if (event.type === "keydown" && !event.repeat)
+      void setFullscreen(!fullscreen);
   };
-  window.addEventListener("keydown", lockedF11, true);
-  window.addEventListener("keyup", lockedF11, true);
+  window.addEventListener("keydown", heldF11, true);
+  window.addEventListener("keyup", heldF11, true);
 }
 // Browser fallback: the desktop app reserves F11 in its main process instead.
 if (!appMode) {
@@ -279,7 +289,9 @@ function hideNotice() {
   el("notice").textContent = "";
 }
 function showNotice(key: NoticeKey) {
-  const text = NOTICE_TEXT[key];
+  showNoticeText(NOTICE_TEXT[key]);
+}
+function showNoticeText(text: string | undefined) {
   if (!text) return;
   if (noticeTimer !== undefined) clearTimeout(noticeTimer);
   el("notice").textContent = text;
@@ -306,7 +318,7 @@ function stop() {
   // closes) so the remote is not left with a key down. The Mac channel drops them instead.
   if (client) sync?.flush();
   flow.stopped();
-  updateKeyboardLock();
+  keyLock?.end();
   resolution.stopped();
   resizeObserver?.disconnect();
   resizeObserver = undefined;
@@ -351,7 +363,7 @@ function sessionEnded(reason?: string) {
   sync?.end();
   sync = undefined;
   syncFocused = false;
-  updateKeyboardLock();
+  keyLock?.end();
   resolution.stopped();
   el("session-state").textContent = "연결 종료";
   showOverlay("ended", endText(reason));
@@ -540,7 +552,7 @@ async function connect(input: ConnectInput) {
       if (current !== generation) return;
       if (state === 3) {
         flow.connected();
-        updateKeyboardLock();
+        updateKeyLock();
         resolution.connected();
         surface.classList.add("remote-connected");
         syncViewerMenu();
@@ -601,7 +613,7 @@ async function connectAgent(
     onFirstFrame: () => {
       if (current !== generation) return;
       flow.connected();
-      updateKeyboardLock();
+      updateKeyLock();
       resolution.connected();
       session.element.classList.add("agent-connected");
       syncViewerMenu();
@@ -797,6 +809,8 @@ api.onViewerAction((action) => {
 window.addEventListener("blur", releaseInput);
 window.addEventListener("focus", () => updateSyncFocus());
 window.addEventListener("blur", () => updateSyncFocus());
+window.addEventListener("focus", updateKeyLock);
+window.addEventListener("blur", updateKeyLock);
 window.addEventListener("beforeunload", stop);
 // Measurement mode: does nothing unless the address has #measure (src/measure.ts).
 initMeasure({

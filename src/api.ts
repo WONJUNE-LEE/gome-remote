@@ -134,6 +134,12 @@ export const api = {
   viewerState: (state: ViewerState) => native.viewerState(forBridge(state)),
   onViewerAction: (callback: (action: string) => void) =>
     native.onViewerAction(callback),
+  // True only in the Windows app (bridge 4 with the key lock); browsers never have it.
+  keyLockSupported: appMode && window.desktop!.keyLockSupported === true,
+  keyLock: (on: boolean) =>
+    appMode && window.desktop!.keyLock
+      ? window.desktop!.keyLock(on)
+      : Promise.resolve(false),
   // Only the app has an address to change; in a browser the address bar is the setting.
   openSetup: () => (appMode ? window.desktop!.openSetup() : Promise.resolve()),
 };

@@ -72,8 +72,7 @@ async function desktop(
     platform = "win32",
     argv = [],
     page, // what executeJavaScript answers in the smoke test; "hang" never answers
-    fsLock = true, // whether the page sets window.__gomeFsLock (a page that takes the keyboard lock)
-    html = "granted", // how the page answers full screen scripts: "granted", "refused", "dead", "hang" or "no-element"
+    html = "granted", // how the page answers key lock scripts: "granted", "refused", "dead", "hang" or "late"
     packaged = false,
     version = "0.3.0",
     updater, // the stand-in electron-updater autoUpdater; one is made when packaged
@@ -101,12 +100,12 @@ async function desktop(
   const handlers = new Map();
   const loads = [];
   const external = [];
-  const fullscreenRequests = [];
+  const fullscreenRequests = []; // native win.setFullScreen calls only
+  const keyLockCalls = []; // key lock scripts the page was asked to run: true = enter, false = exit
   const notifications = [];
   const lifecycle = [];
   const scripts = [];
   const scriptCalls = [];
-  const nativeRequests = [];
   const timers = new Map();
   const intervals = new Map();
   const dialogs = [];
@@ -169,37 +168,22 @@ async function desktop(
         send: (...args) => notifications.push(args),
         executeJavaScript: async (script, userGesture) => {
           scriptCalls.push([script, userGesture]);
-          // Full screen scripts are answered by the stand-in page and recorded as the
-          // boolean they ask for, so they read like setFullScreen in the assertions.
-          // The enter script runs for real against a stand-in window and document, so the
-          // marker check is the code's own.
+          // Key lock scripts are answered by the stand-in page and recorded as the boolean
+          // they ask for.
           const enter = /requestFullscreen/.test(script);
-          if (enter) {
-            const requestFullscreen = () => {
-              fullscreenRequests.push(true);
-              if (htmlMode === "hang") return new Promise(() => {});
-              if (htmlMode === "late")
-                return new Promise((resolve) => lateAnswers.push(resolve));
-              if (htmlMode === "dead") throw new Error("page is gone");
-              // (Real Electron 44 never settles a denied requestFullscreen; "hang" is
-              // the realistic refusal, "refused" is the rejecting variant.)
-              if (htmlMode === "refused")
-                throw new TypeError("Permissions check failed");
-              return Promise.resolve();
-            };
-            return vm.runInNewContext(script, {
-              window: fsLock ? { __gomeFsLock: true } : {},
-              document: { documentElement: { requestFullscreen } },
-            });
-          }
-          if (/exitFullscreen/.test(script)) {
-            fullscreenRequests.push(false);
+          if (enter || /exitFullscreen/.test(script)) {
+            keyLockCalls.push(enter);
             if (htmlMode === "hang") return new Promise(() => {});
             if (htmlMode === "late")
               return new Promise((resolve) => lateAnswers.push(resolve));
-            if (htmlMode === "dead") throw new Error("page is gone");
-            // The exit script answers what it did: false when nothing was full screen.
-            if (htmlMode === "no-element") return false;
+            // (Real Electron 44 never settles a denied requestFullscreen; "hang" is
+            // the realistic refusal, "refused" is the rejecting variant.)
+            if (htmlMode === "refused" || htmlMode === "dead")
+              throw new Error(
+                htmlMode === "dead"
+                  ? "page is gone"
+                  : "Permissions check failed",
+              );
             return true;
           }
           scripts.push(script);
@@ -230,7 +214,6 @@ async function desktop(
       return this.destroyed === true;
     }
     setFullScreen(value) {
-      nativeRequests.push(value);
       fullscreenRequests.push(value);
     }
     async loadURL(url) {
@@ -333,7 +316,6 @@ async function desktop(
     lifecycle,
     scripts,
     scriptCalls,
-    nativeRequests,
     // Answers every script a "late" page was holding back.
     answerLate(value) {
       for (const resolve of lateAnswers.splice(0)) resolve(value);
@@ -374,19 +356,15 @@ async function desktop(
       return menu;
     },
     fullscreenRequests,
+    keyLockCalls,
     notifications,
     clipboardWrites,
     setFocused(value) {
       focused = value;
     },
-    // With `html`, the page's own full screen state changes around the native event in
-    // the order Electron emits them: enter-full-screen before enter-html-full-screen on
-    // the way in, leave-html-full-screen before leave-full-screen on the way out.
-    finishFullscreen(value, { html: inHtml = false } = {}) {
+    finishFullscreen(value) {
       fullscreen = value;
-      if (inHtml && !value) window.webContents.emit("leave-html-full-screen");
       window.emit(value ? "enter-full-screen" : "leave-full-screen");
-      if (inHtml && value) window.webContents.emit("enter-html-full-screen");
     },
     input(input) {
       let prevented = false;
@@ -519,6 +497,8 @@ test("bridge calls work only from the gateway origin in the window's top frame",
       ["open-setup"],
       ["clipboard-read"],
       ["clipboard-write", "x"],
+      ["key-lock", true],
+      ["key-lock", false],
     ])
       await assert.rejects(
         f.invoke(name, input),
@@ -1348,7 +1328,7 @@ test("showing the address page closes the Remote menu entries and leaves fullscr
       resolution: "1920x1080",
     });
     await f.invoke("fullscreen", true);
-    f.finishFullscreen(true, { html: true });
+    f.finishFullscreen(true);
     assert.equal(item("back").enabled, true);
     assert.equal(item("resolution").enabled, true);
     assert.deepEqual(f.fullscreenRequests, [true]);
@@ -1373,180 +1353,164 @@ test("showing the address page closes the Remote menu entries and leaves fullscr
       [true, false],
       `${how}: leaves fullscreen`,
     );
-    assert.match(f.scriptCalls.at(-1)[0], /exitFullscreen/, how);
-    assert.deepEqual(f.nativeRequests, [], `${how}: HTML full screen exit`);
+    assert.deepEqual(
+      f.keyLockCalls,
+      [false],
+      `${how}: the page lock is released`,
+    );
+    assert.equal(f.scriptCalls.at(-1)[1], true, how);
   }
 });
 
-// ---- desktop full screen through HTML full screen ----
+// ---- the Windows key lock (remote:key-lock) ----
 
-test("entering full screen asks the page for HTML full screen with a user gesture; native full screen is not requested", async (t) => {
-  const f = await desktop({ html: "granted" }, t);
-  await f.invoke("fullscreen", true);
-  assert.equal(f.scriptCalls.at(-1)[1], true);
-  assert.match(
-    f.scriptCalls.at(-1)[0],
-    /^window\.__gomeFsLock \? document\.documentElement\.requestFullscreen\(\)/,
-  );
-  assert.deepEqual(f.fullscreenRequests, [true]);
-  assert.deepEqual(f.nativeRequests, []);
-});
+const ENTER_LOCK =
+  /^document\.documentElement\.requestFullscreen\(\)\.then\(\(\) => true\)$/;
+const EXIT_LOCK =
+  /^document\.fullscreenElement \? document\.exitFullscreen\(\)\.then\(\(\) => true\) : true$/;
 
-test("a page without the full screen lock marker (an old gateway page) gets native full screen, never HTML full screen", async (t) => {
-  const f = await desktop({ html: "granted", fsLock: false }, t);
-  await f.invoke("fullscreen", true);
-  await settle();
-  assert.deepEqual(f.nativeRequests, [true]);
-  assert.deepEqual(f.fullscreenRequests, [true], "only the native request");
-  assert.deepEqual(f.dialogs, []);
-  // The fallback is plain native full screen: its exit is native too.
-  f.finishFullscreen(true);
-  await f.invoke("fullscreen", false);
-  assert.deepEqual(f.nativeRequests, [true, false]);
-});
-
-test("a refused or failing HTML full screen falls back to native full screen without any dialog", async (t) => {
-  for (const html of ["refused", "dead"]) {
-    const f = await desktop({ html }, t);
-    await f.invoke("fullscreen", true);
-    await settle();
-    assert.deepEqual(f.nativeRequests, [true], html);
-    assert.deepEqual(f.dialogs, [], html);
-    // The fallback is plain native full screen: its exit is native too.
-    f.finishFullscreen(true);
-    await f.invoke("fullscreen", false);
-    assert.deepEqual(f.nativeRequests, [true, false], html);
-  }
-});
-
-test("a refusal that arrives after the user already asked to leave does not enter native full screen", async (t) => {
-  const f = await desktop({ html: "refused" }, t);
-  // Both requests arrive before the page has answered the first.
-  await Promise.all([
-    f.invoke("fullscreen", true),
-    f.invoke("fullscreen", false), // queued behind the pending entry
-  ]);
-  await settle();
-  assert.deepEqual(f.nativeRequests, []);
-  // The transition ended, so a later request is not swallowed.
-  await f.invoke("fullscreen", true);
-  await settle();
-  assert.deepEqual(f.nativeRequests, [true]);
-});
-
-test("leaving ends HTML full screen through document.exitFullscreen, never win.setFullScreen(false) alone", async (t) => {
-  const f = await desktop({ html: "granted" }, t);
-  await f.invoke("fullscreen", true);
-  f.finishFullscreen(true, { html: true });
-  await f.invoke("fullscreen", false);
-  assert.match(f.scriptCalls.at(-1)[0], /exitFullscreen/);
-  assert.equal(f.scriptCalls.at(-1)[1], true);
-  assert.deepEqual(f.nativeRequests, []);
-  f.finishFullscreen(false, { html: true });
-  assert.deepEqual(f.notifications.at(-1), ["remote:fullscreen-state", false]);
-});
-
-test("an exit queued during the entry still goes through the page", async (t) => {
+test("the window keeps its size in HTML full screen: disableHtmlFullscreenWindowResize is set", async (t) => {
   const f = await desktop({}, t);
-  await f.invoke("fullscreen", true);
-  await f.invoke("fullscreen", false);
-  // enter-full-screen arrives before enter-html-full-screen.
-  f.finishFullscreen(true);
-  assert.match(f.scriptCalls.at(-1)[0], /exitFullscreen/);
-  assert.deepEqual(f.nativeRequests, []);
-});
-
-test("hold-Escape (leave-html-full-screen then leave-full-screen) publishes false and the next exit uses the native path", async (t) => {
-  const f = await desktop({ html: "granted" }, t);
-  await f.invoke("fullscreen", true);
-  f.finishFullscreen(true, { html: true });
-  f.finishFullscreen(false, { html: true });
-  assert.deepEqual(f.notifications.at(-1), ["remote:fullscreen-state", false]);
-  assert.equal(await f.invoke("fullscreen-state"), false);
-  // Native full screen later (no page involved), then an exit: native.
-  f.finishFullscreen(true);
-  await f.invoke("fullscreen", false);
-  assert.deepEqual(f.nativeRequests, [false]);
-});
-
-test("the exit survives a dead page: executeJavaScript rejects -> setFullScreen(false)", async (t) => {
-  const f = await desktop({ html: "granted" }, t);
-  await f.invoke("fullscreen", true);
-  f.finishFullscreen(true, { html: true });
-  f.setHtml("dead");
-  await f.invoke("fullscreen", false);
-  await settle();
-  assert.deepEqual(f.nativeRequests, [false]);
-  f.finishFullscreen(false);
-  assert.deepEqual(f.notifications.at(-1), ["remote:fullscreen-state", false]);
-});
-
-test("an exit script that finds no full screen element ends in the native path and the transition ends", async (t) => {
-  const f = await desktop({ html: "granted" }, t);
-  await f.invoke("fullscreen", true);
-  f.finishFullscreen(true); // native full screen is on, the page has no element
-  f.setHtml("no-element");
-  await f.invoke("fullscreen", false);
-  await settle();
-  assert.deepEqual(f.nativeRequests, [false]);
-  f.finishFullscreen(false);
-  // Not swallowed: F11 enters again.
   assert.equal(
-    f.input({ type: "keyDown", key: "F11", isAutoRepeat: false }),
+    f.windowOptions.webPreferences.disableHtmlFullscreenWindowResize,
     true,
   );
-  assert.match(f.scriptCalls.at(-1)[0], /requestFullscreen/);
 });
 
-test("a renderer that never answers falls back to native full screen after 2 s, and a late answer changes nothing", async (t) => {
-  for (const enter of [true, false]) {
-    const f = await desktop({ html: enter ? "late" : "granted" }, t);
-    if (!enter) {
-      await f.invoke("fullscreen", true);
-      f.finishFullscreen(true, { html: true });
-      f.setHtml("late");
-    }
-    const before = f.timers.size;
-    await f.invoke("fullscreen", enter);
-    const guard = [...f.timers.values()].at(-1);
-    assert.equal(f.timers.size, before + 1);
-    assert.equal(guard.ms, 2000);
-    assert.deepEqual(f.nativeRequests, [], "nothing before the guard fires");
-    guard.callback();
-    assert.deepEqual(f.nativeRequests, [enter]);
-    // The transition is over: the native event is published and F11 works again.
-    f.finishFullscreen(enter);
-    assert.deepEqual(f.notifications.at(-1), [
-      "remote:fullscreen-state",
-      enter,
-    ]);
-    // The page answers after the guard: no second toggle, whatever it says.
-    f.answerLate(false);
-    await settle();
-    guard.callback(); // firing again does nothing more
-    assert.deepEqual(f.nativeRequests, [enter]);
-    // And F11 is not swallowed: it toggles back.
-    assert.equal(
-      f.input({ type: "keyDown", key: "F11", isAutoRepeat: false }),
-      true,
-    );
-    assert.equal(f.fullscreenRequests.at(-1), !enter);
+test("remote:key-lock on runs requestFullscreen with a user gesture and answers true; off runs the exit script", async (t) => {
+  const f = await desktop({}, t);
+  f.setFocused(true);
+  assert.equal(await f.invoke("key-lock", true), true);
+  assert.match(f.scriptCalls.at(-1)[0], ENTER_LOCK);
+  assert.equal(f.scriptCalls.at(-1)[1], true);
+  assert.equal(await f.invoke("key-lock", false), true);
+  assert.match(f.scriptCalls.at(-1)[0], EXIT_LOCK);
+  assert.equal(f.scriptCalls.at(-1)[1], true);
+  assert.deepEqual(f.keyLockCalls, [true, false]);
+});
+
+test("remote:key-lock never touches native full screen, in either direction", async (t) => {
+  const f = await desktop({}, t);
+  f.setFocused(true);
+  await f.invoke("key-lock", true);
+  f.finishFullscreen(true); // the user is in native full screen as well
+  await f.invoke("key-lock", false);
+  await f.invoke("key-lock", true);
+  assert.deepEqual(f.fullscreenRequests, []);
+  assert.deepEqual(f.notifications, [["remote:fullscreen-state", true]]);
+});
+
+test("remote:key-lock is refused (false) off Windows, with no script run", async (t) => {
+  for (const platform of ["darwin", "linux"]) {
+    const f = await desktop({ platform }, t);
+    f.setFocused(true);
+    assert.equal(await f.invoke("key-lock", true), false, platform);
+    assert.equal(await f.invoke("key-lock", false), false, platform);
+    assert.deepEqual(f.keyLockCalls, [], platform);
   }
 });
 
-test("F11 from the menu or before-input-event toggles relative to the pending target (no re-entry after a page-requested exit)", async (t) => {
-  const f = await desktop({ html: "granted" }, t);
-  const key = { type: "keyDown", key: "F11", isAutoRepeat: false };
-  assert.equal(f.input(key), true);
-  assert.equal(f.input({ ...key, type: "keyUp" }), true);
-  f.finishFullscreen(true, { html: true });
-  // The page asked to leave (its F11 while locked) and the same press also reached main.
-  await f.invoke("fullscreen", false);
-  assert.equal(f.input(key), true); // pending exit: F11 means "enter" again by design
-  const entries = f.scriptCalls.filter(([s]) => /requestFullscreen/.test(s));
-  assert.equal(entries.length, 1, "no re-entry while the exit is in flight");
-  f.finishFullscreen(false, { html: true });
-  assert.match(f.scriptCalls.at(-1)[0], /requestFullscreen/);
+test("remote:key-lock on needs a focused window; off works while unfocused", async (t) => {
+  const f = await desktop({}, t);
+  f.setFocused(false);
+  assert.equal(await f.invoke("key-lock", true), false);
+  assert.deepEqual(f.keyLockCalls, []);
+  assert.equal(await f.invoke("key-lock", false), true);
+  assert.deepEqual(f.keyLockCalls, [false]);
+});
+
+test("remote:key-lock takes only a boolean and only from the gateway page's top frame", async (t) => {
+  const f = await desktop({}, t);
+  f.setFocused(true);
+  for (const bad of ["true", 1, undefined, null])
+    await assert.rejects(f.invoke("key-lock", bad), /Invalid key lock state/);
+  for (const url of ["https://evil.example/", SETUP, "about:blank", ""]) {
+    f.show(url);
+    await assert.rejects(f.invoke("key-lock", true), /Untrusted origin/, url);
+  }
+  f.show(`${GATEWAY}/`);
+  await assert.rejects(
+    f.invoke("key-lock", true, {
+      sender: f.window.webContents,
+      senderFrame: { url: `${GATEWAY}/` },
+    }),
+    /Untrusted sender/,
+  );
+  assert.deepEqual(f.keyLockCalls, []);
+});
+
+test("a refused, failing or silent page answers false; silence is cut off after 2 s and a late answer changes nothing", async (t) => {
+  for (const html of ["refused", "dead"]) {
+    const f = await desktop({ html }, t);
+    f.setFocused(true);
+    assert.equal(await f.invoke("key-lock", true), false, html);
+    assert.equal(await f.invoke("key-lock", false), false, html);
+    assert.deepEqual(f.dialogs, [], html);
+  }
+  for (const html of ["hang", "late"]) {
+    const f = await desktop({ html }, t);
+    f.setFocused(true);
+    const before = f.timers.size;
+    const answer = f.invoke("key-lock", true);
+    const guard = [...f.timers.values()].at(-1);
+    assert.equal(f.timers.size, before + 1, html);
+    assert.equal(guard.ms, 2000, html);
+    guard.callback();
+    assert.equal(await answer, false, html);
+    f.answerLate(true);
+    await settle();
+    assert.equal(guard.cleared, true, html);
+    assert.deepEqual(f.fullscreenRequests, [], html);
+  }
+});
+
+test("a granted answer clears the 2 s guard", async (t) => {
+  const f = await desktop({}, t);
+  f.setFocused(true);
+  const before = f.timers.size;
+  await f.invoke("key-lock", true);
+  assert.equal(f.timers.size, before + 1);
+  assert.equal([...f.timers.values()].at(-1).cleared, true);
+});
+
+test("showing the address page releases the page lock only on Windows and only from the gateway page", async (t) => {
+  const f = await desktop({}, t);
+  f.menu.getMenuItemById("change-server").click();
+  await settle();
+  assert.deepEqual(f.keyLockCalls, [false]);
+  // The address page itself is showing now: a second visit has nothing to release.
+  f.menu.getMenuItemById("change-server").click();
+  await settle();
+  assert.deepEqual(f.keyLockCalls, [false]);
+  const mac = await desktop({ platform: "darwin" }, t);
+  mac.menu.getMenuItemById("change-server").click();
+  await settle();
+  assert.deepEqual(mac.keyLockCalls, []);
+});
+
+test("a dead page does not keep the address page from showing", async (t) => {
+  const f = await desktop({ html: "dead" }, t);
+  f.menu.getMenuItemById("change-server").click();
+  await settle();
+  assert.ok(f.loads.at(-1).startsWith(SETUP));
+});
+
+test("F11 and the View menu stay native full screen: no page script, whatever the lock does", async (t) => {
+  const f = await desktop({}, t);
+  f.setFocused(true);
+  await f.invoke("key-lock", true);
+  const calls = f.scriptCalls.length;
+  assert.equal(
+    f.input({ key: "F11", type: "keyDown", isAutoRepeat: false }),
+    true,
+  );
+  assert.deepEqual(f.fullscreenRequests, [true]);
+  f.finishFullscreen(true);
+  f.menu.getMenuItemById("back"); // (menu exists)
+  const view = f.menu.template.find((m) => m.label === "View");
+  view.submenu[0].click();
+  assert.deepEqual(f.fullscreenRequests, [true, false]);
+  assert.equal(f.scriptCalls.length, calls, "F11 runs no page script");
 });
 
 test("the permission handler grants fullscreen and keyboardLock only for the gateway origin's requestingUrl", async (t) => {
@@ -1608,6 +1572,7 @@ const goodPage = {
   title: "Gome Remote",
   bridgeVersion: 4,
   read: "function",
+  keyLock: "function",
   setup: "function",
 };
 test("--smoke-test shows only the address page, never the saved gateway, and quits with success", async (t) => {
@@ -1629,6 +1594,7 @@ test("--smoke-test exits 1 when the page or the bridge is not what the app promi
     { ...goodPage, bridgeVersion: 2 },
     { ...goodPage, bridgeVersion: 3 },
     { ...goodPage, read: "undefined" },
+    { ...goodPage, keyLock: "undefined" },
     { ...goodPage, bridgeVersion: undefined },
     { ...goodPage, setup: "undefined" },
     { ...goodPage, title: "" },
