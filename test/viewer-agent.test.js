@@ -994,13 +994,13 @@ test("the session start does not read the clipboard, a later focus gain does", a
   });
 });
 
-const types2 = (channel) => channel.messages().map((m) => m.type);
-
 test("the 클립보드 붙여넣기 action sends the changed text, then Command+V, in that order", async () => {
-  const { v, channel } = await syncing({ clipboardText: "메뉴 글" });
+  const { v, channel, surface } = await syncing({ clipboardText: "메뉴 글" });
+  const focusedBefore = surface.focused;
   const before = channel.sent.length;
   v.action("paste-clipboard");
   await v.settle();
+  assert.equal(surface.focused, focusedBefore, "the menu path moves no focus");
   const sent = channel
     .messages()
     .slice(before)
@@ -1043,10 +1043,16 @@ test("the #paste-remote button is disabled until the first frame, does the same 
   surface.children[0].showFrame(1);
   await v.settle();
   assert.equal(v.el("paste-remote").disabled, false);
+  const focusedBefore = surface.focused;
   v.el("paste-remote").click();
   await v.settle();
+  assert.equal(
+    surface.focused,
+    focusedBefore + 1,
+    "typing goes back to the remote screen after the button",
+  );
   assert.deepEqual(
-    types2(channel).filter((t) => t === "clipboard" || t === "key"),
+    types(channel).filter((t) => t === "clipboard" || t === "key"),
     ["clipboard", "key", "key", "key", "key"],
   );
   assert.deepEqual(keysOf(channel), [

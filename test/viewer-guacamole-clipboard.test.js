@@ -510,8 +510,15 @@ test("the #paste-remote button on an RDP session sends Ctrl+V, is disabled befor
   client.onstatechange(3);
   await v.settle();
   assert.equal(v.el("paste-remote").disabled, false);
+  const surface = v.keyboards.at(-1).element;
+  const focusedBefore = surface.focusCount ?? 0;
   v.el("paste-remote").click();
   await v.settle();
+  assert.equal(
+    surface.focusCount,
+    focusedBefore + 1,
+    "typing goes back to the remote screen after the button",
+  );
   assert.deepEqual(keys(client), [
     `down:${CTRL.toString(16)}`,
     "down:76",

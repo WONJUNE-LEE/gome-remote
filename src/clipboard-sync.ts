@@ -94,6 +94,9 @@ export interface ClipboardSync {
 interface Flight {
   kind: "focus" | "paste";
   retried: boolean;
+  // The paste menu item or bar button: a user action that reads even if the view has not
+  // (yet) been marked focused.
+  menu?: boolean;
   // remoteClipboard() calls seen when the read began; a focus read that a newer remote
   // text overtook is stale and must not be sent back.
   epoch: number;
@@ -112,9 +115,14 @@ export function createClipboardSync(deps: SyncDeps): ClipboardSync {
   // At most one read is in flight. A trigger waits in `queue` and re-reads when its turn
   // comes, so texts are sent in trigger order.
   let flight: Flight | undefined;
-  let queue: Array<{ kind: "focus" | "paste"; retried: boolean }> = [];
+  let queue: Array<{
+    kind: "focus" | "paste";
+    retried: boolean;
+    menu?: boolean;
+  }> = [];
   let barrier = false;
   let barrierTimer: Timer | undefined;
+  let pasteRetry: Timer | undefined;
   let held: Array<() => void> = [];
   const retryTimers = new Set<Timer>();
 
@@ -127,10 +135,22 @@ export function createClipboardSync(deps: SyncDeps): ClipboardSync {
     deps.notify(key);
   };
 
-  const handle = (read: Flight, result: LocalResult) => {
+  // Returns "retry" when a menu paste read hit the focus guard and will be read once more
+  // within the same barrier.
+  const handle = (read: Flight, result: LocalResult): "retry" | undefined => {
     const paste = read.kind === "paste";
     if (!result.ok) {
       if (paste) {
+        if (result.reason === "unfocused" && read.menu && !read.retried) {
+          // The menu may still be closing: the window is focused again a moment later.
+          pasteRetry = deps.setTimeout(() => {
+            pasteRetry = undefined;
+            if (!barrier) return;
+            queue.push({ kind: "paste", retried: true, menu: true });
+            pump();
+          }, FOCUS_RETRY_MS);
+          return "retry";
+        }
         if (result.reason !== "denied") deps.notify("bridge-refused");
       } else if (result.reason === "unfocused" && !read.retried) {
         const id = deps.setTimeout(() => {
@@ -148,9 +168,9 @@ export function createClipboardSync(deps: SyncDeps): ClipboardSync {
     if (text === "") return;
     if (text === lastSynced && !(paste && locked)) return;
     if (deps.latin1Only && /[^\u0000-ÿ]/.test(text))
-      return refuse("unsupported-chars", text, paste);
+      return void refuse("unsupported-chars", text, paste);
     if (utf8Length(text) > MAX_CLIPBOARD_BYTES)
-      return refuse("too-large", text, paste);
+      return void refuse("too-large", text, paste);
     const sent = remote.sendClipboard(text, result.concealed);
     if (sent === "sent") lastSynced = text;
     else if (sent === "too-large") refuse("too-large", text, paste);
@@ -159,10 +179,11 @@ export function createClipboardSync(deps: SyncDeps): ClipboardSync {
   const settle = (mine: Flight, result: LocalResult) => {
     if (flight !== mine) return; // abandoned: timed out, focus lost or ended
     flight = undefined;
+    let retry: "retry" | undefined;
     try {
-      handle(mine, result);
+      retry = handle(mine, result);
     } finally {
-      if (mine.kind === "paste") closeBarrier();
+      if (mine.kind === "paste" && retry !== "retry") closeBarrier();
       pump();
     }
   };
@@ -189,6 +210,8 @@ export function createClipboardSync(deps: SyncDeps): ClipboardSync {
   function closeBarrier() {
     if (barrierTimer !== undefined) deps.clearTimeout(barrierTimer);
     barrierTimer = undefined;
+    if (pasteRetry !== undefined) deps.clearTimeout(pasteRetry);
+    pasteRetry = undefined;
     barrier = false;
     queue = queue.filter((t) => t.kind !== "paste");
     if (flight?.kind === "paste") flight = undefined;
@@ -206,8 +229,8 @@ export function createClipboardSync(deps: SyncDeps): ClipboardSync {
     pump();
   }
 
-  function openBarrier() {
-    if (!focused || barrier) return;
+  function openBarrier(menu = false) {
+    if ((!focused && !menu) || barrier) return;
     barrier = true;
     barrierTimer = deps.setTimeout(() => {
       barrierTimer = undefined;
@@ -218,7 +241,7 @@ export function createClipboardSync(deps: SyncDeps): ClipboardSync {
       closeBarrier();
       deps.notify("read-timeout");
     }, PASTE_BARRIER_MS);
-    queue.push({ kind: "paste", retried: false });
+    queue.push({ kind: "paste", retried: false, menu });
     pump();
   }
 
@@ -287,7 +310,9 @@ export function createClipboardSync(deps: SyncDeps): ClipboardSync {
       if (isPasteShortcut(event, deps.target)) openBarrier();
     },
     pasteFromMenu(press) {
-      openBarrier();
+      // An explicit user action: always opens the barrier and reads, whatever the focus
+      // flag says (a native menu click may blur the window first).
+      openBarrier(true);
       gate(press);
     },
     gate,

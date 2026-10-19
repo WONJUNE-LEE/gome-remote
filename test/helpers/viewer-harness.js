@@ -83,7 +83,9 @@ class FakeElement {
   click() {
     this.onclick?.({ stopPropagation() {} });
   }
-  focus() {}
+  focus() {
+    this.focusCount = (this.focusCount ?? 0) + 1;
+  }
   showModal() {
     this.open = true;
   }

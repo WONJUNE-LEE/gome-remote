@@ -671,6 +671,50 @@ test("paste_from_menu_runs_the_barrier_then_presses_through_the_gate", async () 
   assert.deepEqual(r.log, ["clipboard menu text", "press", "other"]);
 });
 
+test("paste_from_menu_reads_and_sends_first_even_when_the_view_is_not_marked_focused", async () => {
+  const r = rig();
+  // A native menu click may blur the window first: focused is false.
+  r.s.pasteFromMenu(() => r.log.push("press"));
+  r.event("other");
+  assert.deepEqual(r.log, []);
+  assert.equal(r.pending(), 1, "the read starts at once");
+  await r.answer("menu text");
+  assert.deepEqual(r.log, ["clipboard menu text", "press", "other"]);
+  assert.deepEqual(r.notices, []);
+  // The keyboard path is unchanged: unfocused, a paste key opens no barrier.
+  r.s.pasteShortcut(key({ ctrlKey: true }));
+  r.event("V");
+  assert.equal(r.pending(), 0);
+  assert.deepEqual(r.log.slice(-1), ["V"]);
+});
+
+test("paste_from_menu_retries_once_after_an_unfocused_answer_within_the_barrier", async () => {
+  const r = rig();
+  r.s.pasteFromMenu(() => r.log.push("press"));
+  await r.answer({ ok: false, reason: "unfocused" });
+  assert.deepEqual(r.log, [], "the press waits for the retry");
+  assert.deepEqual(r.notices, []);
+  await r.advance(FOCUS_RETRY_MS);
+  assert.equal(r.pending(), 1, "the retry read is in flight");
+  await r.answer("after retry");
+  assert.deepEqual(r.log, ["clipboard after retry", "press"]);
+  assert.deepEqual(r.notices, []);
+  assert.equal(r.timerCount(), 0);
+});
+
+test("paste_from_menu_unfocused_twice_releases_the_press_and_tells_the_user", async () => {
+  const r = rig();
+  r.s.pasteFromMenu(() => r.log.push("press"));
+  await r.answer({ ok: false, reason: "unfocused" });
+  await r.advance(FOCUS_RETRY_MS);
+  await r.answer({ ok: false, reason: "unfocused" });
+  assert.deepEqual(r.log, ["press"], "the user asked to paste: the press goes");
+  assert.deepEqual(r.notices, ["bridge-refused"]);
+  await r.advance(PASTE_BARRIER_MS);
+  assert.equal(r.pending(), 0, "no third read");
+  assert.equal(r.timerCount(), 0);
+});
+
 test("old_agent_never_answers_so_nothing_waits_for_a_reply", async () => {
   const r = rig();
   r.s.setViewFocused(true);

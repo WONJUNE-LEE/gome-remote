@@ -737,7 +737,15 @@ document
     button.onclick = () => el<HTMLDialogElement>(button.dataset.close!).close();
   });
 el("text-input").onclick = openTextDialog;
-el("paste-remote").onclick = pasteClipboard;
+el("paste-remote").onclick = () => {
+  pasteClipboard();
+  // Typing goes to the remote screen again, and Space/Enter do not press the button twice.
+  if (agent) agent.focus();
+  else
+    el("display")
+      .querySelector<HTMLElement>(".remote-surface")
+      ?.focus({ preventScroll: true });
+};
 el<HTMLFormElement>("text-form").onsubmit = (event) => {
   event.preventDefault();
   if (flow.active) {
