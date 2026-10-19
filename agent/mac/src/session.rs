@@ -1292,6 +1292,39 @@ mod tests {
     }
 
     #[test]
+    fn a_reopened_channel_is_told_the_lock_state_again() {
+        let rig = rig_polling();
+        let (hooks, _peer) = rig.open();
+        hooks.channel_open();
+        assert_eq!(rig.texts(0), vec![protocol::lock_notice(false)]);
+        hooks.channel_open(); // the channel closed and opened again: the page has forgotten
+        assert_eq!(rig.texts(0), vec![protocol::lock_notice(false)], "announced again on the second opening");
+        assert!(texts_after_a_while(&rig, 0).is_empty());
+    }
+
+    #[test]
+    fn the_end_of_a_session_drops_the_text_it_held() {
+        let rig = rig();
+        // A session's hooks built by hand, so its clipboard state can be looked at.
+        let own = Hooks {
+            core: rig.agent.core.clone(),
+            id: AtomicU64::new(0),
+            controller: Mutex::new(BitrateController::new(12_000_000)),
+            display_px: Size { w: 2560, h: 1440 },
+            size: Mutex::new(Size { w: 1280, h: 720 }),
+            clip: Mutex::new(ClipState::new()),
+            peer: OnceLock::new(),
+            me: Weak::new(),
+            ticking: AtomicBool::new(false),
+        };
+        rig.platform.board.set_locked(true);
+        own.clip().inbound(&rig.platform.board, "pw", false);
+        assert_eq!(own.clip().held_text(), Some("pw"), "the text is held on the locked console");
+        own.closed();
+        assert_eq!(own.clip().held_text(), None, "the session's end took the held text with it");
+    }
+
+    #[test]
     fn a_lock_change_is_sent_once_within_one_poll() {
         let rig = rig_polling();
         let (hooks, _peer) = rig.open();

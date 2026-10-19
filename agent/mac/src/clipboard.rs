@@ -199,6 +199,20 @@ impl KeyDecision {
     }
 }
 
+/// The one log line for a text that was not synced: the reason and the byte length, never the text.
+fn skip_log_line(reason: protocol::SkipReason, len: Option<usize>) -> String {
+    match len {
+        Some(len) => format!("[clipboard] not sent: {} ({len} bytes)", reason.as_str()),
+        None => format!("[clipboard] not sent: {}", reason.as_str()),
+    }
+}
+
+/// Logs one skip (D8) and returns the notice that tells the page.
+fn skip(reason: protocol::SkipReason, len: Option<usize>) -> String {
+    eprintln!("{}", skip_log_line(reason, len));
+    protocol::skipped_notice(reason)
+}
+
 /// The clipboard sync's decisions for one session. It owns no clock, thread or log of clipboard
 /// text: the caller ticks it every `POLL` and hands it the `Board` each time.
 #[derive(Default)]
@@ -305,13 +319,7 @@ impl ClipState {
     /// Reads the pasteboard for the page (this may block on a system alert): the message to send,
     /// if any. Touches no state, so it belongs outside the session's locks.
     pub fn read_for_page(board: &dyn Board) -> Option<String> {
-        let skipped = |reason: protocol::SkipReason, len: Option<usize>| {
-            match len {
-                Some(len) => eprintln!("[clipboard] not sent: {} ({len} bytes)", reason.as_str()),
-                None => eprintln!("[clipboard] not sent: {}", reason.as_str()),
-            }
-            Some(protocol::skipped_notice(reason))
-        };
+        let skipped = |reason: protocol::SkipReason, len: Option<usize>| Some(skip(reason, len));
         if board.access() == Access::AlwaysDeny {
             return skipped(protocol::SkipReason::ReadDenied, None);
         }
@@ -378,16 +386,13 @@ impl ClipState {
             .unwrap_or(held);
         if text.is_empty() {
             self.told_empty = true;
-            return KeyDecision {
-                act: KeyAct::Inject,
-                notice: Some(protocol::skipped_notice(protocol::SkipReason::LockedEmpty)),
-            };
+            return KeyDecision { act: KeyAct::Inject, notice: Some(skip(protocol::SkipReason::LockedEmpty, Some(0))) };
         }
         self.swallowed_v = true;
         if text.contains(['\r', '\n']) {
             KeyDecision {
                 act: KeyAct::Swallow,
-                notice: Some(protocol::skipped_notice(protocol::SkipReason::LockedMultiline)),
+                notice: Some(skip(protocol::SkipReason::LockedMultiline, Some(held.len()))),
             }
         } else {
             KeyDecision { act: KeyAct::Type(text.to_string()), notice: None }
@@ -407,6 +412,12 @@ impl ClipState {
         self.release();
     }
 
+    /// The text held for a locked console, for the tests that look at what a session leaves behind.
+    #[cfg(test)]
+    pub(crate) fn held_text(&self) -> Option<&str> {
+        self.held.as_deref()
+    }
+
     /// The lock notice did not reach the page: the next tick announces the state again.
     pub fn forget_lock(&mut self) {
         self.last_lock = None;
@@ -420,6 +431,15 @@ mod tests {
 
     fn types(list: &[&str]) -> Vec<String> {
         list.iter().map(|t| t.to_string()).collect()
+    }
+
+    #[test]
+    fn a_skip_log_line_has_the_reason_and_the_byte_length_and_never_the_text() {
+        use crate::protocol::SkipReason::*;
+        assert_eq!(skip_log_line(LockedMultiline, Some(7)), "[clipboard] not sent: locked-multiline (7 bytes)");
+        assert_eq!(skip_log_line(LockedEmpty, Some(0)), "[clipboard] not sent: locked-empty (0 bytes)");
+        assert_eq!(skip_log_line(ReadDenied, None), "[clipboard] not sent: read-denied");
+        assert_eq!(skip_log_line(TooLarge, Some(65_537)), "[clipboard] not sent: too-large (65537 bytes)");
     }
 
     #[test]
