@@ -7,13 +7,18 @@ const { contextBridge, ipcRenderer } = require("electron");
 // "auto" only to version 2 or later.
 // Version 3 adds the protocol "agent" (the Mac agent) to viewerState; its menu behaves like
 // RDP's (the resolution can be changed). A page talking to an older app sends "rdp" instead.
+// Version 4 adds readClipboard and writeClipboard. Both are refused (as a result, not a
+// throw) unless the window has focus, and the text never reaches a log.
 // The main process answers these calls only while the window shows the configured
 // gateway origin, so exposing them here grants nothing to any other page.
 const bridge = {
-  bridgeVersion: 3,
+  bridgeVersion: 4,
   fullscreen: (enabled) => ipcRenderer.invoke("remote:fullscreen", enabled),
   fullscreenState: () => ipcRenderer.invoke("remote:fullscreen-state"),
   viewerState: (state) => ipcRenderer.invoke("remote:viewer-state", state),
+  readClipboard: () => ipcRenderer.invoke("remote:clipboard-read"),
+  writeClipboard: (text, opts) =>
+    ipcRenderer.invoke("remote:clipboard-write", text, opts),
   openSetup: () => ipcRenderer.invoke("remote:open-setup"),
   onViewerAction: (callback) => {
     const listener = (_event, action) => callback(action);

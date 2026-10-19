@@ -1,6 +1,8 @@
 const {
   app,
   BrowserWindow,
+  clipboard,
+  ClipboardItem,
   ipcMain,
   dialog,
   Menu,
@@ -12,6 +14,7 @@ const path = require("node:path");
 const { pathToFileURL } = require("node:url");
 const { AddressStore, gatewayOrigin } = require("./address.cjs");
 const { createUpdater } = require("./updater.cjs");
+const { createClipboardService } = require("./clipboard.cjs");
 const smokeTest = process.argv.includes("--smoke-test");
 let smokeTimer;
 
@@ -259,6 +262,20 @@ app
         throw new Error("Invalid viewer state.");
       applyViewerState(state);
     });
+    // Clipboard text only moves while this window has focus; the service answers with a
+    // result instead of throwing when it does not.
+    const clipboardService = createClipboardService({
+      clipboard,
+      ClipboardItem,
+      Blob: require("node:buffer").Blob,
+      platform: process.platform,
+      isFocused: () => !!window && !window.isDestroyed() && window.isFocused(),
+      log: (line) => console.error(line),
+    });
+    handle("gateway", "remote:clipboard-read", () => clipboardService.read());
+    handle("gateway", "remote:clipboard-write", (text, opts) =>
+      clipboardService.write(text, opts),
+    );
     if (app.isPackaged && !smokeTest) {
       try {
         updater = createUpdater({
@@ -358,13 +375,14 @@ app
       // Run with a throwaway --user-data-dir: with no saved address it only shows the
       // local address page, so there is no network and no real settings are touched.
       const state = await window.webContents.executeJavaScript(
-        "({page: location.href.split(/[?#]/)[0], title: document.title, bridgeVersion: window.desktop.bridgeVersion, setup: typeof window.desktopSetup.save})",
+        "({page: location.href.split(/[?#]/)[0], title: document.title, bridgeVersion: window.desktop.bridgeVersion, read: typeof window.desktop.readClipboard, setup: typeof window.desktopSetup.save})",
       );
       console.log(JSON.stringify(state));
       if (
         state.page !== setupPage ||
         state.title !== "Gome Remote" ||
-        state.bridgeVersion !== 3 ||
+        state.bridgeVersion !== 4 ||
+        state.read !== "function" ||
         state.setup !== "function"
       )
         throw new Error("The address page or the bridge is not as expected.");

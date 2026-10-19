@@ -31,10 +31,10 @@ function load(protocol = "https:") {
   return { ipc, calls, exposed };
 }
 
-test("the bridge announces version 3 and exposes only the viewer, fullscreen and address-page functions", () => {
+test("the bridge announces version 4 and exposes only the viewer, fullscreen, clipboard and address-page functions", () => {
   const { exposed } = load();
   assert.deepEqual([...Object.keys(exposed)], ["desktop"]);
-  assert.equal(exposed.desktop.bridgeVersion, 3);
+  assert.equal(exposed.desktop.bridgeVersion, 4);
   assert.deepEqual([...Object.keys(exposed.desktop)].sort(), [
     "bridgeVersion",
     "fullscreen",
@@ -42,7 +42,9 @@ test("the bridge announces version 3 and exposes only the viewer, fullscreen and
     "onFullscreenChange",
     "onViewerAction",
     "openSetup",
+    "readClipboard",
     "viewerState",
+    "writeClipboard",
   ]);
   for (const removed of [
     "settings",
@@ -73,11 +75,15 @@ test("preload forwards native menu actions without exposing Electron events", as
   await desktop.fullscreen(true);
   await desktop.fullscreenState();
   await desktop.openSetup();
+  await desktop.readClipboard();
+  await desktop.writeClipboard("a", { concealed: true });
   assert.deepEqual(calls, [
     ["remote:viewer-state", state],
     ["remote:fullscreen", true],
     ["remote:fullscreen-state"],
     ["remote:open-setup"],
+    ["remote:clipboard-read"],
+    ["remote:clipboard-write", "a", { concealed: true }],
   ]);
   const fullscreen = [];
   const removeFullscreen = desktop.onFullscreenChange((...args) =>

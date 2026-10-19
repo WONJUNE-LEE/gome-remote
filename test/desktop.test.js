@@ -76,6 +76,9 @@ async function desktop(
     version = "0.3.0",
     updater, // the stand-in electron-updater autoUpdater; one is made when packaged
     updaterModule, // replaces require("electron-updater") entirely (it may throw)
+    clipboardText = "", // what the stand-in clipboard's readText answers
+    clipboardFormats = {}, // raw formats on the stand-in clipboard: type -> Blob
+    clipboardFail = {}, // { readText, write, writeText }: make that call reject
   } = {},
   t,
 ) {
@@ -109,6 +112,47 @@ async function desktop(
   let openHandler;
   let windowOptions;
   const permissions = {};
+  let focused = false;
+  const clipboardWrites = [];
+  // The parts of Electron's async clipboard the app uses. A write is recorded as what a
+  // reader would see: its types, the plain text and the size of every other format.
+  class ClipboardItem {
+    constructor(items) {
+      this.items = items;
+      this.types = Object.keys(items);
+    }
+    async getType(type) {
+      if (!(type in this.items)) throw new Error(`no ${type}`);
+      const value = this.items[type];
+      return typeof value === "string" ? new Blob([value]) : value;
+    }
+  }
+  const clipboard = {
+    readText: async () => {
+      if (clipboardFail.readText) throw new Error("readText failed");
+      return clipboardText;
+    },
+    has: async (type) => type in clipboardFormats,
+    read: async () => [new ClipboardItem(clipboardFormats)],
+    writeText: async (text) => {
+      if (clipboardFail.writeText) throw new Error("writeText failed");
+      clipboardWrites.push({ text });
+    },
+    write: async (items) => {
+      if (clipboardFail.write) throw new Error("write failed");
+      for (const item of items) {
+        const extra = {};
+        for (const type of item.types)
+          if (type !== "text/plain")
+            extra[type] = (await item.getType(type)).size;
+        clipboardWrites.push({
+          text: item.items["text/plain"],
+          types: item.types,
+          extra,
+        });
+      }
+    },
+  };
   class BrowserWindow extends EventEmitter {
     constructor(options) {
       super();
@@ -139,6 +183,9 @@ async function desktop(
     isFullScreen() {
       return fullscreen;
     }
+    isFocused() {
+      return focused;
+    }
     isDestroyed() {
       return this.destroyed === true;
     }
@@ -162,6 +209,8 @@ async function desktop(
       exit: (code) => lifecycle.push(["exit", code]),
     },
     BrowserWindow,
+    clipboard,
+    ClipboardItem,
     ipcMain: { handle: (name, callback) => handlers.set(name, callback) },
     nativeTheme: { shouldUseDarkColors: false },
     shell: { openExternal: async (url) => external.push(url) },
@@ -260,6 +309,13 @@ async function desktop(
     },
     call,
     invoke: (name, input, event) => call(`remote:${name}`, input, event),
+    // clipboard-write takes two arguments, which `invoke` cannot pass.
+    writeClipboard: (text, opts) =>
+      handlers.get("remote:clipboard-write")(
+        { sender: window.webContents, senderFrame: frame() },
+        text,
+        opts,
+      ),
     // Pretend the window now shows `url` (without a main-process load).
     show(url) {
       frame().url = url;
@@ -269,6 +325,10 @@ async function desktop(
     },
     fullscreenRequests,
     notifications,
+    clipboardWrites,
+    setFocused(value) {
+      focused = value;
+    },
     finishFullscreen(value) {
       fullscreen = value;
       window.emit(value ? "enter-full-screen" : "leave-full-screen");
@@ -402,6 +462,8 @@ test("bridge calls work only from the gateway origin in the window's top frame",
         },
       ],
       ["open-setup"],
+      ["clipboard-read"],
+      ["clipboard-write", "x"],
     ])
       await assert.rejects(
         f.invoke(name, input),
@@ -434,6 +496,218 @@ test("bridge calls work only from the gateway origin in the window's top frame",
   assert.equal(f.loads.length, loadsBefore);
   await f.invoke("open-setup");
   assert.deepEqual(f.loads.at(-1), SETUP);
+});
+
+test("clipboard channels answer only while the window is focused, from the gateway origin in the top frame", async (t) => {
+  const f = await desktop({ clipboardText: "복사" }, t);
+  f.setFocused(true);
+  assert.deepEqual(await f.invoke("clipboard-read"), {
+    ok: true,
+    text: "복사",
+    concealed: false,
+  });
+  f.setFocused(false);
+  assert.deepEqual(await f.invoke("clipboard-read"), {
+    ok: false,
+    reason: "unfocused",
+  });
+  assert.deepEqual(await f.writeClipboard("x"), {
+    ok: false,
+    reason: "unfocused",
+  });
+  assert.deepEqual(f.clipboardWrites, []);
+  f.setFocused(true);
+  for (const url of ["https://evil.example/", SETUP, "about:blank"]) {
+    f.show(url);
+    for (const name of ["clipboard-read", "clipboard-write"])
+      await assert.rejects(f.invoke(name, "x"), /Untrusted origin/);
+  }
+  f.show(`${GATEWAY}/`);
+  const subframe = { url: `${GATEWAY}/` };
+  for (const name of ["clipboard-read", "clipboard-write"]) {
+    await assert.rejects(
+      f.invoke(name, "x", {
+        sender: f.window.webContents,
+        senderFrame: subframe,
+      }),
+      /Untrusted sender/,
+    );
+    await assert.rejects(
+      f.invoke(name, "x", {
+        sender: {},
+        senderFrame: f.window.webContents.mainFrame,
+      }),
+      /Untrusted sender/,
+    );
+  }
+  assert.deepEqual(f.clipboardWrites, []);
+  f.window.destroyed = true;
+  assert.deepEqual(await f.invoke("clipboard-read"), {
+    ok: false,
+    reason: "unfocused",
+  });
+});
+
+test("write validates its arguments, caps at 64 KiB of UTF-8 and never logs the text", async (t) => {
+  const logs = [];
+  const f = await desktop({ logs }, t);
+  f.setFocused(true);
+  for (const [text, opts] of [
+    [undefined],
+    [null],
+    [5],
+    [["a"]],
+    [{ toString: () => "a" }],
+    ["a", null],
+    ["a", "yes"],
+    ["a", []],
+    ["a", { concealed: "yes" }],
+    ["a", { concealed: 1 }],
+    ["a", { concealed: true, extra: 1 }],
+    ["a", Object.create({ concealed: true })],
+  ])
+    await assert.rejects(
+      f.writeClipboard(text, opts),
+      /Invalid clipboard text\./,
+      JSON.stringify([text, opts]),
+    );
+  assert.deepEqual(f.clipboardWrites, []);
+  // 21 845 Korean characters are 65 535 bytes; one more is 65 538.
+  assert.deepEqual(await f.writeClipboard("가".repeat(21845)), {
+    ok: true,
+    concealed: false,
+  });
+  assert.equal(f.clipboardWrites.length, 1);
+  assert.deepEqual(await f.writeClipboard("가".repeat(21846)), {
+    ok: false,
+    reason: "too-large",
+  });
+  assert.equal(f.clipboardWrites.length, 1, "the clipboard is untouched");
+  assert.deepEqual(
+    await f.writeClipboard("a".repeat(65536), { concealed: false }),
+    { ok: true, concealed: false },
+  );
+  assert.deepEqual(await f.writeClipboard("a".repeat(65537)), {
+    ok: false,
+    reason: "too-large",
+  });
+  assert.ok(logs.some((line) => /too-large/.test(line) && /bytes/.test(line)));
+  assert.ok(logs.every((line) => !/[가a]{3}/.test(line)));
+});
+
+test("on win32 LF is written as CRLF and a concealed write adds the exclusion format; elsewhere nothing is added", async (t) => {
+  const mark =
+    'electron application/osclipboard;format="ExcludeClipboardContentFromMonitorProcessing"';
+  const win = await desktop({}, t);
+  win.setFocused(true);
+  assert.deepEqual(await win.writeClipboard("a\nb\r\nc\rd"), {
+    ok: true,
+    concealed: false,
+  });
+  assert.deepEqual(win.clipboardWrites.pop(), { text: "a\r\nb\r\nc\r\nd" });
+  assert.deepEqual(await win.writeClipboard("a\nb", { concealed: true }), {
+    ok: true,
+    concealed: true,
+  });
+  assert.deepEqual(win.clipboardWrites.pop(), {
+    text: "a\r\nb",
+    types: ["text/plain", mark],
+    extra: { [mark]: 4 },
+  });
+  for (const platform of ["darwin", "linux"]) {
+    const other = await desktop({ platform }, t);
+    other.setFocused(true);
+    assert.deepEqual(
+      await other.writeClipboard("a\nb", { concealed: true }),
+      { ok: true, concealed: false },
+      platform,
+    );
+    assert.deepEqual(other.clipboardWrites, [{ text: "a\nb" }], platform);
+  }
+});
+
+test("a failing concealed write falls back to plain text and says so", async (t) => {
+  const logs = [];
+  const f = await desktop({ logs, clipboardFail: { write: true } }, t);
+  f.setFocused(true);
+  assert.deepEqual(await f.writeClipboard("비밀\n번호", { concealed: true }), {
+    ok: true,
+    concealed: false,
+  });
+  assert.deepEqual(f.clipboardWrites, [{ text: "비밀\r\n번호" }]);
+  assert.deepEqual(
+    logs.filter((line) => line.includes("[clipboard]")),
+    ["[clipboard] concealed mark dropped"],
+  );
+  const broken = await desktop(
+    { logs, clipboardFail: { write: true, writeText: true } },
+    t,
+  );
+  broken.setFocused(true);
+  assert.deepEqual(await broken.writeClipboard("비밀", { concealed: true }), {
+    ok: false,
+    reason: "failed",
+  });
+  assert.ok(logs.every((line) => !line.includes("비밀")));
+});
+
+test("read reports concealed when the exclusion format or CanIncludeInClipboardHistory=0 is present", async (t) => {
+  const exclude =
+    'electron application/osclipboard;format="ExcludeClipboardContentFromMonitorProcessing"';
+  const history =
+    'electron application/osclipboard;format="CanIncludeInClipboardHistory"';
+  const dword = (value) => {
+    const bytes = new Uint8Array(4);
+    new DataView(bytes.buffer).setUint32(0, value, true);
+    return new Blob([bytes]);
+  };
+  for (const [formats, concealed] of [
+    [{}, false],
+    [{ [exclude]: new Blob([new Uint8Array(4)]) }, true],
+    [{ [history]: dword(0) }, true],
+    [{ [history]: dword(1) }, false],
+    [{ [history]: new Blob([new Uint8Array(2)]) }, false],
+  ]) {
+    const f = await desktop(
+      { clipboardText: "pw", clipboardFormats: formats },
+      t,
+    );
+    f.setFocused(true);
+    assert.deepEqual(
+      await f.invoke("clipboard-read"),
+      { ok: true, text: "pw", concealed },
+      Object.keys(formats).join(),
+    );
+  }
+  // A format that cannot be read at all counts as not concealed.
+  const odd = await desktop(
+    { clipboardText: "pw", clipboardFormats: { [history]: "not a blob" } },
+    t,
+  );
+  odd.setFocused(true);
+  assert.deepEqual(await odd.invoke("clipboard-read"), {
+    ok: true,
+    text: "pw",
+    concealed: false,
+  });
+});
+
+test("an empty or non-text clipboard reads as empty text", async (t) => {
+  const f = await desktop({ clipboardText: "" }, t);
+  f.setFocused(true);
+  assert.deepEqual(await f.invoke("clipboard-read"), {
+    ok: true,
+    text: "",
+    concealed: false,
+  });
+  const logs = [];
+  const failing = await desktop({ logs, clipboardFail: { readText: true } }, t);
+  failing.setFocused(true);
+  assert.deepEqual(await failing.invoke("clipboard-read"), {
+    ok: false,
+    reason: "failed",
+  });
+  assert.ok(logs.some((line) => line === "[clipboard] read failed"));
 });
 
 test("without a configured address no bridge call is accepted from any page", async (t) => {
@@ -1036,7 +1310,8 @@ test("showing the address page while windowed does not touch fullscreen", async 
 const goodPage = {
   page: SETUP,
   title: "Gome Remote",
-  bridgeVersion: 3,
+  bridgeVersion: 4,
+  read: "function",
   setup: "function",
 };
 test("--smoke-test shows only the address page, never the saved gateway, and quits with success", async (t) => {
@@ -1056,7 +1331,8 @@ test("--smoke-test exits 1 when the page or the bridge is not what the app promi
   for (const page of [
     { ...goodPage, bridgeVersion: 1 },
     { ...goodPage, bridgeVersion: 2 },
-    { ...goodPage, bridgeVersion: 4 },
+    { ...goodPage, bridgeVersion: 3 },
+    { ...goodPage, read: "undefined" },
     { ...goodPage, bridgeVersion: undefined },
     { ...goodPage, setup: "undefined" },
     { ...goodPage, title: "" },
