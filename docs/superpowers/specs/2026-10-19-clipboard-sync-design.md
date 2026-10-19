@@ -32,13 +32,15 @@ Mac with Cmd+C, paste on Windows with Ctrl+V.
   becomes the client's clipboard content.
 - G3. Paste at the Mac lock screen: while the Mac is locked, a remote paste types the client's
   clipboard text into the focused field (the lock-screen field refuses a real paste).
-- G4. The Windows key reaches the Mac as Command, including Win+V / Win+C / Win+A, whenever the
-  remote view is focused in the desktop app — windowed or full screen (owner, 2026-10-19,
-  revision 3).
+- G4. On a Windows client, the Windows key reaches the Mac as Command, including Win+V / Win+C /
+  Win+A, whenever the remote view is focused in the desktop app — windowed or full screen
+  (owner, 2026-10-19, revision 3). Mac and Linux clients keep today's keys (no lock): on a Mac
+  client Command already is Command.
 - G5. A paste path that needs no Command key: a 원격 menu item 클립보드 붙여넣기 (and a button in
   the browser bar) that sends the client clipboard and pastes it. This is the fallback if G4
   fails on Windows or the key lock was released (hold-Escape).
-- G6. Same behaviour for every client OS of the desktop app (Windows, Mac, Linux); browsers get
+- G6. Same clipboard behaviour for every client OS of the desktop app (Windows, Mac, Linux; G4 is
+  Windows only); browsers get
   it where the browser allows clipboard access.
 
 ## 3. Non-goals and anti-goals
@@ -109,7 +111,9 @@ records the limit in README if it only carries Latin-1.
 
 ### D4. Command key capture (Windows key) — measured on Electron 44.5.1
 
-Measured 2026-10-19 on Linux/Xvfb with Electron 44.5.1 (a throwaway spike, not in the repo):
+First spike, 2026-10-19 (Linux/Xvfb, Electron 44.5.1, throwaway; HISTORICAL — it measured the
+revision-2 design without `disableHtmlFullscreenWindowResize`; where it differs, the second
+spike below is current):
 
 - `keyboard.lock()` resolves in native full screen alone but does nothing: keys still reach
   main's `before-input-event`. With HTML full screen (`requestFullscreen` run from main through
@@ -137,24 +141,37 @@ when `web_contents->IsFullscreen()`, which is the HTML full-screen state, hence 
 Decisions (revision 3, owner approved 2026-10-19: capture "always" while the remote view is
 focused, windowed or full screen):
 
+- Windows clients only (`process.platform === "win32"` in main decides; the bridge tells the
+  page). Mac and Linux desktop apps: F11 is plain native full screen, no HTML full screen, no
+  lock — the same keys as the released 0.3.2.
 - The desktop app sets `disableHtmlFullscreenWindowResize: true`. HTML full screen becomes an
   in-window state that only serves the key lock; it is not what F11 does.
-- While a session view is shown (bridge ≥ 4 app, a page that marks it supports the lock), the
-  page holds HTML full screen + `keyboard.lock()`: it is entered when the session's first frame
-  arrives and again whenever the user clicks the remote view while it is not held (both through
-  main's `executeJavaScript(..., true)` so no page user-activation is needed); it is released
-  (`keyboard.unlock()` + `document.exitFullscreen()`) when the session ends. The remote view
-  already fills the window, so nothing visible changes.
+- While a session view is shown AND the window is focused (Windows app with bridge ≥ 4, a page
+  that marks it supports the lock), the page holds HTML full screen + `keyboard.lock()`. It is
+  taken when the session's first frame arrives, when the window gains focus, and when the user
+  clicks the remote view while not held — always through main's `executeJavaScript(..., true)`,
+  so no page user-activation is needed. It is released (`keyboard.unlock()` +
+  `document.exitFullscreen()`) on window blur and when the session ends, so nothing is captured
+  while another Windows app is in front, whatever Chromium's hook does on blur.
+- If the lock is refused or does not resolve within 2 s after HTML full screen was entered, the
+  page leaves HTML full screen at once (an unlocked HTML full screen would make an Escape tap
+  leave full screen instead of reaching the Mac).
 - F11 / View → 전체 화면 go back to plain native full screen (`win.setFullScreen`), independent of
-  the lock. Because the lock hides F11 from main, the page forwards an F11 key-down to main's
-  native toggle while locked.
-- Hold-Escape (Chromium, ~1.5 s) releases the lock until the user clicks the remote view again;
-  an Escape tap stays a remote key. Win+L and Ctrl+Alt+Del stay with Windows. While locked,
-  Alt+Tab, Win+D etc. go to the Mac too; the user leaves the window with the mouse (owner accepted).
+  the lock (measured: the lock survives native toggles). Because the lock hides F11 from main,
+  the page forwards an F11 key-down to main's native toggle while locked.
+- Hold-Escape (Chromium, ~1.5 s) releases the lock until the user clicks the remote view or the
+  window gains focus again; an Escape tap stays a remote key. Win+L and Ctrl+Alt+Del stay with
+  Windows. While locked, Alt+Tab, Win+D etc. go to the Mac too; the user leaves the window with
+  the mouse (owner accepted).
+- Signals: when the lock is first taken in a session the viewer shows a short notice
+  ("Windows 키가 Mac으로 갑니다 · Esc를 길게 누르면 풀립니다"); when hold-Escape releases it,
+  "키 잡기를 풀었습니다 · 화면을 클릭하면 다시 잡습니다". A refused / timed-out lock logs one
+  line (reason only) and shows no dialog.
 - Permission handler: grant `fullscreen` and `keyboardLock` only for the gateway origin, as before.
-- If HTML full screen or the lock is refused or hangs, nothing else changes: the session works,
-  the Windows key is not captured, G5 still works; no error dialog. An old page (no marker) never
-  gets HTML full screen.
+- If HTML full screen or the lock is refused or hangs, the session works, the Windows key is not
+  captured, G5 still works; no error dialog. An old page (no marker) never gets HTML full screen.
+- Kill switch: the lock is gated by the page marker, so repointing the gateway to the previous
+  candidate turns the lock off for every installed app without an app downgrade.
 - Browsers: unchanged (no lock).
 
 ### D5. Lock-screen paste (Mac agent path)
@@ -258,10 +275,12 @@ focused, windowed or full screen):
    - At the end of the rehearsal (pass or withdraw) the owner's app is pointed back at :8450
      (서버 주소 바꾸기) and, if the rehearsal build is not released, reinstalled from the current
      release; the :8451 candidate is stopped.
-   - Withdraw criteria: if the Windows key is not captured, D4's key lock
-     changes are removed from the release (G5 and G1–G3 still ship) and the owner decides on a
-     follow-up; if lock-screen typing fails, G3 is dropped (VNC tile stays the fallback); if
-     full screen breaks in any way, D4 is removed.
+   - Withdraw criteria: D4's key lock is removed from the release (G5 and G1–G3 still ship) and
+     the owner decides on a follow-up if any of these happens on Windows: the Windows key is not
+     captured; capture leaks outside the focused window (other apps lose Win / Alt+Tab / Win+D,
+     also after minimising or clicking away); hold-Escape or the click re-lock does not work; F11
+     no longer toggles full screen; the user can get stuck. If lock-screen typing fails, G3 is
+     dropped (VNC tile stays the fallback).
 3. Merge; tag desktop v0.3.3 → installed apps self-update (Windows, Mac).
 4. Point :8450 at the new gateway candidate like the 0.3.0 cutover (new dir under
    ~/remote-candidates; previous dir kept).
@@ -289,9 +308,12 @@ focused, windowed or full screen):
      lock delay) Cmd+V pastes normally and types nothing; right after unlock, pasting the same
      text again pastes it (not the older pasteboard content).
   4. Windows, windowed AND full screen: Win+V / Win+C / Win+A reach the Mac; a bare Win tap does
-     not open Start; F11 toggles native full screen while locked; hold-Escape releases the lock
-     and a click on the remote view takes it again; leaving the window with the mouse works;
-     Win+L locks Windows (expected).
+     not open Start; an Escape tap reaches the Mac; F11 toggles native full screen while locked;
+     hold-Escape releases the lock (notice shown) and a click on the remote view takes it again;
+     negative: after clicking another app, after minimising the window, and after hold-Escape,
+     Win / Alt+Tab / Win+D work in Windows as usual; Win+L locks Windows (expected).
+  4b. Mac client app: Cmd+Q / Cmd+W / Cmd+H act on the local app as in
+     0.3.2 (no lock on Mac clients).
   5. 클립보드 붙여넣기 pastes on the Mac (windowed, and after hold-Escape).
   6. VNC and Ubuntu RDP: both directions, Korean text, multi-line text with no ping-pong.
   7. Over 64 KiB: notice shown, nothing pasted silently.
