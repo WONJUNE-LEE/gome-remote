@@ -216,6 +216,10 @@ Good to know:
   takes no argument and no environment variable, and it is signed with the hardened
   runtime. Anyone who controls the gateway server can therefore control the Mac's screen
   and input (as before, when the server held the Mac account password).
+  With the desktop app (bridge version 4) whoever controls the gateway can also read the
+  client's clipboard text while the app window is focused, and receives the text that
+  clipboard sync sends from the Mac. This is the same trust placed in the gateway for the
+  screen and input.
 - **The 30-day reconfirmation.** macOS 27 asks the owner every 30 days to confirm that a
   program may record the screen. If the screen goes blank or the tile says 권한 필요 (or
   권한 필요(의심)) around then, open Mac (VNC) and click the confirmation window.
@@ -316,6 +320,9 @@ Open the same address in a browser for the identical screen.
   with the browser's own clipboard permission; a refused permission is silent. An app older
   than bridge version 4 (0.3.2 and earlier) has no clipboard sync and no menu item; the
   update arrives with the next desktop release tag.
+  During a rollout, while the new app still loads an old gateway page, or after the gateway
+  is rolled back to an older page, the **클립보드 붙여넣기** menu item is shown but does nothing:
+  the page has no clipboard sync to answer it. Update the gateway to bring it back.
 - Mac (agent) clipboard writes are current-host-only (Universal Clipboard does not carry
   them to other Apple devices). Text the Mac marks as concealed (password managers) is passed on
   with the matching mark where the system allows it. If Windows Clipboard History still keeps
