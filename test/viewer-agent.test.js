@@ -633,3 +633,333 @@ test("with bridge 3 the lock is never taken, and in a browser it never is either
     }
   }
 });
+
+// ---- clipboard sync over the Mac session (the real src/agent.ts on a fake connection) ----
+
+const NOTICES = (await loadTs("clipboard-sync.ts")).NOTICE_TEXT;
+const types = (channel) => channel.messages().map((m) => m.type);
+const keyEvent = (code, extra = {}) => ({
+  code,
+  key: code === "KeyV" ? "v" : code.replace(/Left$/, ""),
+  ...extra,
+});
+
+// The session is up with its channel open and the first picture shown; `surface` is the
+// element the real agent put on the page.
+async function syncing(options = {}) {
+  const v = await opened({ realAgent: true, ...options });
+  const pc = v.rig.peers.at(-1);
+  const channel = pc.channels[0];
+  channel.open();
+  pc.setState("connected");
+  await v.settle();
+  const surface = v.el("display").children.at(-1);
+  pc.track({ id: "stream" });
+  surface.children[0].showFrame(1);
+  await v.settle();
+  return { v, pc, channel, surface };
+}
+// Cmd+V as a keyboard sends it.
+const cmdV = (surface) => {
+  surface.fire("keydown", keyEvent("MetaLeft", { metaKey: true }));
+  surface.fire("keydown", keyEvent("KeyV", { metaKey: true }));
+  surface.fire("keyup", keyEvent("KeyV", { metaKey: true }));
+  surface.fire("keyup", keyEvent("MetaLeft"));
+};
+const keysOf = (channel) =>
+  channel
+    .messages()
+    .filter((m) => m.type === "key")
+    .map((m) => `${m.code}:${m.down ? "down" : "up"}`);
+
+test("copy then Cmd+V reaches the channel in order: the text first, then the held keys", async () => {
+  const { v, channel, surface } = await syncing({ clipboardText: "" });
+  assert.deepEqual(
+    channel.messages().filter((m) => m.type.startsWith("clipboard")),
+    [{ type: "clipboard-watch", on: true }],
+    "watch goes on when the view is focused and nothing is pushed for an empty clipboard",
+  );
+  v.clipboard.text = "새 텍스트";
+  v.clipboard.hold = true;
+  const before = channel.sent.length;
+  cmdV(surface);
+  await v.settle();
+  assert.deepEqual(
+    channel.messages().slice(before),
+    [{ type: "key", code: "MetaLeft", down: true }],
+    "only the Command key-down so far: V and everything after it are held",
+  );
+  v.clipboard.hold = false;
+  v.clipboard.resolve();
+  await v.settle();
+  assert.deepEqual(channel.messages().slice(before), [
+    { type: "key", code: "MetaLeft", down: true },
+    { type: "clipboard", text: "새 텍스트", concealed: false },
+    { type: "key", code: "KeyV", down: true },
+    { type: "key", code: "KeyV", down: false },
+    { type: "key", code: "MetaLeft", down: false },
+  ]);
+});
+
+test("a paste read slower than 500 ms releases the held keys and tells the user, and the late text is never sent", async () => {
+  const { v, channel, surface } = await syncing();
+  v.clipboard.text = "늦은 텍스트";
+  v.clipboard.hold = true;
+  cmdV(surface);
+  await v.settle();
+  v.advance(499);
+  assert.deepEqual(keysOf(channel), ["MetaLeft:down"]);
+  v.advance(1);
+  assert.deepEqual(keysOf(channel), [
+    "MetaLeft:down",
+    "KeyV:down",
+    "KeyV:up",
+    "MetaLeft:up",
+  ]);
+  assert.equal(v.el("notice").hidden, false);
+  assert.equal(v.el("notice").textContent, NOTICES["read-timeout"]);
+  v.clipboard.resolve();
+  await v.settle();
+  assert.equal(types(channel).includes("clipboard"), false, "no stale send");
+});
+
+test("window blur sends watch off and the release, and focus sends watch on again", async () => {
+  const { v, channel } = await syncing();
+  const at = channel.sent.length;
+  v.setWindowFocus(false);
+  await v.settle();
+  const after = channel.messages().slice(at);
+  assert.deepEqual(
+    after.map((m) => m.type),
+    ["release", "clipboard-watch"],
+  );
+  assert.deepEqual(after[1], { type: "clipboard-watch", on: false });
+  v.setWindowFocus(true);
+  await v.settle();
+  assert.deepEqual(channel.messages().at(-1), {
+    type: "clipboard-watch",
+    on: true,
+  });
+});
+
+test("a window that opens a session without the focus sends no watch until it gets it", async () => {
+  const { v, channel } = await syncing({ windowFocused: false });
+  assert.equal(types(channel).includes("clipboard-watch"), false);
+  assert.equal(v.clipboard.reads, 0, "the clipboard is not read unfocused");
+  v.setWindowFocus(true);
+  await v.settle();
+  assert.deepEqual(channel.messages().at(-1), {
+    type: "clipboard-watch",
+    on: true,
+  });
+});
+
+test("a lock message resets the baseline: the same text is sent again", async () => {
+  const { v, channel, surface } = await syncing();
+  v.clipboard.text = "같은 글";
+  cmdV(surface);
+  await v.settle();
+  cmdV(surface);
+  await v.settle();
+  const sent = () => types(channel).filter((t) => t === "clipboard").length;
+  assert.equal(sent(), 1, "an unchanged text is not sent twice");
+  channel.receive(JSON.stringify({ type: "lock", locked: true }));
+  cmdV(surface);
+  await v.settle();
+  assert.equal(sent(), 2, "after the lock message the text goes again");
+});
+
+test("clipboard text from the Mac is written through the bridge, concealed as flagged, and only while focused", async () => {
+  const { v, channel } = await syncing();
+  channel.receive(
+    JSON.stringify({ type: "clipboard", text: "x", concealed: true }),
+  );
+  await v.settle();
+  assert.deepEqual(plain(v.clipboard.writes), [["x", { concealed: true }]]);
+  v.setWindowFocus(false);
+  channel.receive(
+    JSON.stringify({ type: "clipboard", text: "y", concealed: false }),
+  );
+  await v.settle();
+  assert.equal(v.clipboard.writes.length, 1, "nothing written while blurred");
+});
+
+test("skip notices and a too-large clipboard show the notice text, which hides after 4 seconds", async () => {
+  const { v, channel, surface } = await syncing();
+  const notice = v.el("notice");
+  assert.equal(notice.hidden, true, "hidden by default");
+  channel.receive(
+    JSON.stringify({ type: "clipboard-skipped", reason: "read-denied" }),
+  );
+  assert.equal(notice.hidden, false);
+  assert.equal(notice.textContent, NOTICES["read-denied"]);
+  v.advance(3999);
+  assert.equal(notice.hidden, false);
+  v.advance(1);
+  assert.equal(notice.hidden, true);
+
+  v.clipboard.text = "가".repeat(21846); // 65 538 bytes
+  cmdV(surface);
+  await v.settle();
+  assert.equal(notice.hidden, false);
+  assert.equal(notice.textContent, NOTICES["too-large"]);
+  assert.equal(types(channel).includes("clipboard"), false, "never truncated");
+  assert.deepEqual(keysOf(channel).slice(-4), [
+    "MetaLeft:down",
+    "KeyV:down",
+    "KeyV:up",
+    "MetaLeft:up",
+  ]);
+  // A second notice restarts the 4 seconds instead of being cut short by the first.
+  v.advance(2000);
+  channel.receive(
+    JSON.stringify({ type: "clipboard-skipped", reason: "locked-empty" }),
+  );
+  assert.equal(notice.textContent, NOTICES["locked-empty"]);
+  v.advance(3999);
+  assert.equal(notice.hidden, false);
+  v.advance(1);
+  assert.equal(notice.hidden, true);
+  assert.ok(!JSON.stringify(notice).includes("가가가"), "no clipboard text");
+});
+
+test("an old agent session works exactly as before: Cmd+V reaches the channel and no notice appears", async () => {
+  const { v, channel, surface } = await syncing({ clipboardText: "문장" });
+  // The old agent never answers: no lock, no clipboard, no watch reply.
+  cmdV(surface);
+  await v.settle();
+  assert.deepEqual(keysOf(channel), [
+    "MetaLeft:down",
+    "KeyV:down",
+    "KeyV:up",
+    "MetaLeft:up",
+  ]);
+  assert.equal(v.el("notice").hidden, true);
+  // A read that never answers still lets the keys through within 500 ms.
+  v.clipboard.hold = true;
+  v.clipboard.text = "다른 문장";
+  const before = keysOf(channel).length;
+  cmdV(surface);
+  await v.settle();
+  v.advance(500);
+  assert.equal(keysOf(channel).length - before, 4);
+});
+
+test("an old app (bridge 3) creates no sync and sends no watch", async () => {
+  const { v, channel, surface } = await syncing({ bridgeVersion: 3 });
+  cmdV(surface);
+  v.setWindowFocus(false);
+  v.setWindowFocus(true);
+  await v.settle();
+  assert.deepEqual(keysOf(channel), [
+    "MetaLeft:down",
+    "KeyV:down",
+    "KeyV:up",
+    "MetaLeft:up",
+  ]);
+  assert.equal(
+    types(channel).some((t) => t.startsWith("clipboard")),
+    false,
+  );
+  assert.equal(v.el("notice").hidden, true);
+});
+
+test("a browser uses navigator.clipboard, and a denied read is silent", async () => {
+  const reads = [];
+  const writes = [];
+  let deny = false;
+  const { v, channel, surface } = await syncing({
+    appMode: false,
+    browserClipboard: {
+      readText: async () => {
+        reads.push(1);
+        if (deny) throw new Error("NotAllowedError");
+        return "브라우저 글";
+      },
+      writeText: async (text) => writes.push(text),
+    },
+  });
+  assert.deepEqual(
+    channel.messages().filter((m) => m.type.startsWith("clipboard")),
+    [
+      { type: "clipboard-watch", on: true },
+      { type: "clipboard", text: "브라우저 글", concealed: false },
+    ],
+    "the focus read pushes the browser's text",
+  );
+  channel.receive(
+    JSON.stringify({ type: "clipboard", text: "맥에서", concealed: false }),
+  );
+  await v.settle();
+  assert.deepEqual(writes, ["맥에서"]);
+  deny = true;
+  cmdV(surface);
+  await v.settle();
+  assert.equal(v.el("notice").hidden, true, "denied is not an error notice");
+  assert.deepEqual(keysOf(channel).slice(-4), [
+    "MetaLeft:down",
+    "KeyV:down",
+    "KeyV:up",
+    "MetaLeft:up",
+  ]);
+});
+
+test("a paste held at the end of the session is dropped, and the next session starts fresh with watch on", async () => {
+  const first = await syncing();
+  first.v.clipboard.hold = true;
+  first.v.clipboard.text = "붙일 글";
+  cmdV(first.surface);
+  await first.v.settle();
+  assert.deepEqual(keysOf(first.channel), ["MetaLeft:down"]);
+  // The connection fails with the V still held.
+  first.pc.setState("failed");
+  await first.v.settle();
+  assert.equal(first.v.el("overlay-title").textContent, ENDED);
+  first.v.clipboard.hold = false;
+  first.v.clipboard.resolve();
+  await first.v.settle();
+  assert.deepEqual(
+    keysOf(first.channel),
+    ["MetaLeft:down"],
+    "the held V and what followed never went out",
+  );
+  assert.equal(types(first.channel).includes("clipboard"), false);
+  // 다시 연결: a new session, a new channel.
+  first.v.el("overlay-reconnect").click();
+  await first.v.settle();
+  const pc = first.v.rig.peers.at(-1);
+  assert.notEqual(pc, first.pc);
+  const channel = pc.channels[0];
+  channel.open();
+  pc.setState("connected");
+  await first.v.settle();
+  const surface = first.v.el("display").children.at(-1);
+  pc.track({ id: "stream" });
+  surface.children[0].showFrame(1);
+  await first.v.settle();
+  assert.deepEqual(
+    channel.messages().filter((m) => m.type.startsWith("clipboard")),
+    [
+      { type: "clipboard-watch", on: true },
+      { type: "clipboard", text: "붙일 글", concealed: false },
+    ],
+    "the new session turns the watch on and starts from a fresh baseline (the old session's text is sent again, only once)",
+  );
+  assert.deepEqual(keysOf(channel), []);
+});
+
+test("leaving the viewer with a paste held sends no held key afterwards", async () => {
+  const { v, channel, surface } = await syncing();
+  v.clipboard.hold = true;
+  v.clipboard.text = "글";
+  cmdV(surface);
+  await v.settle();
+  v.el("disconnect").click();
+  v.clipboard.hold = false;
+  v.clipboard.resolve();
+  await v.settle();
+  v.advance(1000);
+  assert.deepEqual(keysOf(channel), ["MetaLeft:down"]);
+  assert.equal(types(channel).at(-1), "release");
+  assert.equal(types(channel).includes("clipboard"), false);
+});

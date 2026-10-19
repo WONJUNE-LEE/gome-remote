@@ -102,7 +102,7 @@ const BRIDGE_1_RESOLUTIONS = ["1440x900", "1920x1080", "2560x1440"];
 // on any resolution but the fixed sizes.
 export async function viewer({
   appMode = false,
-  bridgeVersion = 3,
+  bridgeVersion = 4,
   targets,
   fetchHandler,
   hash = "",
@@ -113,6 +113,12 @@ export async function viewer({
   // navigator.keyboard.lock() answers like Chromium in full screen: "granted" resolves,
   // "refused" rejects, "absent" leaves navigator.keyboard undefined.
   keyboardLock = "granted",
+  // What the local clipboard holds (the bridge's readClipboard answers it). The page's
+  // window has the focus unless `windowFocused` says otherwise.
+  clipboardText = "",
+  windowFocused = true,
+  // A browser's navigator.clipboard, for the page outside the app.
+  browserClipboard,
 } = {}) {
   const rig = realAgent ? await agentHarness() : undefined;
   const fetches = [];
@@ -166,11 +172,28 @@ export async function viewer({
       (documentListeners[type] ??= []).push(listener),
     removeEventListener() {},
     async exitFullscreen() {},
+    hasFocus: () => windowFocus,
   };
+  let windowFocus = windowFocused;
   const bridgeCalls = { viewerState: [], openSetup: 0, fullscreen: [] };
   const keyboardCalls = { lock: [], unlock: 0 };
-  const navigator =
-    keyboardLock === "absent"
+  // The local clipboard the bridge reads and writes. `hold` keeps reads pending until
+  // `resolve()`; `fail` makes them answer that failure instead of the text.
+  const clipboard = {
+    text: clipboardText,
+    concealed: false,
+    reads: 0,
+    writes: [],
+    hold: false,
+    fail: undefined,
+    held: [],
+    resolve() {
+      for (const release of clipboard.held.splice(0)) release();
+    },
+  };
+  const navigator = {
+    ...(browserClipboard ? { clipboard: browserClipboard } : {}),
+    ...(keyboardLock === "absent"
       ? {}
       : {
           keyboard: {
@@ -183,7 +206,8 @@ export async function viewer({
               keyboardCalls.unlock++;
             },
           },
-        };
+        }),
+  };
   let actionListener;
   const desktop = appMode
     ? {
@@ -208,6 +232,26 @@ export async function viewer({
         openSetup: async () => {
           bridgeCalls.openSetup++;
         },
+        ...(bridgeVersion >= 4
+          ? {
+              readClipboard: async () => {
+                clipboard.reads++;
+                if (clipboard.hold)
+                  await new Promise((resolve) => clipboard.held.push(resolve));
+                return (
+                  clipboard.fail ?? {
+                    ok: true,
+                    text: clipboard.text,
+                    concealed: clipboard.concealed,
+                  }
+                );
+              },
+              writeClipboard: async (text, options) => {
+                clipboard.writes.push([text, options]);
+                return { ok: true };
+              },
+            }
+          : {}),
       }
     : undefined;
   // devicePixelRatio is read from the window each time, as in a browser.
@@ -320,6 +364,9 @@ export async function viewer({
       this.video = new FakeElement("video");
       this.sizes = [];
       this.texts = [];
+      this.clipboards = [];
+      this.watches = [];
+      this.pasteShortcuts = 0;
       this.releases = 0;
       this.closed = 0;
       this.focused = 0;
@@ -336,6 +383,16 @@ export async function viewer({
     sendText(text) {
       this.texts.push(text);
       return true;
+    }
+    sendClipboard(text, concealed) {
+      this.clipboards.push([text, concealed]);
+      return "sent";
+    }
+    sendWatch(on) {
+      this.watches.push(on);
+    }
+    pasteShortcut() {
+      this.pasteShortcuts++;
     }
     release() {
       this.releases++;
@@ -371,6 +428,12 @@ export async function viewer({
   const flow = await loadTs("flow.ts");
   const keyboardLockModule = await loadTs("keyboard-lock.ts");
   const agentMessages = await loadTs("agent-messages.ts");
+  const clipboardSync = await loadTs("clipboard-sync.ts");
+  const clipboardLocal = await loadTs(
+    "clipboard-local.ts",
+    { window, navigator },
+    { "./api": api },
+  );
   // The measurement module is given recording stand-ins: a page without #measure must
   // leave `measureUse` empty (no document access, no timer, no message port).
   const measureUse = [];
@@ -403,6 +466,8 @@ export async function viewer({
       window,
       document,
       navigator,
+      setTimeout: fakeSetTimeout,
+      clearTimeout: fakeClearTimeout,
       location: { hash },
       Event,
       ResizeObserver: class {
@@ -425,6 +490,8 @@ export async function viewer({
       "./tiles": tiles,
       "./flow": flow,
       "./keyboard-lock": keyboardLockModule,
+      "./clipboard-sync": clipboardSync,
+      "./clipboard-local": clipboardLocal,
       "./agent": rig
         ? { createAgentSession: (deps) => rig.mod.createAgentSession(deps) }
         : { createAgentSession: (deps) => new FakeAgent(deps) },
@@ -451,7 +518,16 @@ export async function viewer({
     measureUse,
     bridgeCalls,
     keyboardCalls,
+    clipboard,
     settle,
+    // The window gains or loses the focus: document.hasFocus() answers, then the
+    // window's own event fires.
+    setWindowFocus: (on) => {
+      windowFocus = on;
+      (windowListeners[on ? "focus" : "blur"] ?? []).forEach((l) =>
+        l({ type: on ? "focus" : "blur" }),
+      );
+    },
     // The page enters or leaves HTML full screen (the document's own state).
     setHtmlFullscreen: (on) => {
       document.fullscreenElement = on ? document.documentElement : null;

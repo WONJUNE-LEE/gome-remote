@@ -102,7 +102,23 @@ test("main.ts takes its failure screens and its connection policy from flow.ts",
   assert.match(main, /errorScreen\(kind, appMode\)/);
   assert.match(main, /connectFailure\(kind\)/);
   assert.match(main, /createSessionFlow\(/);
-  assert.doesNotMatch(main, /setTimeout|setInterval/);
+  // No timer starts a connection: the only timers are the clipboard notice's 4 seconds
+  // and the ones handed to the clipboard sync (its paste barrier).
+  assert.doesNotMatch(main, /setInterval/);
+  const timers = main
+    .split("\n")
+    .filter((line) => /setTimeout|clearTimeout/.test(line))
+    .map((line) => line.trim());
+  assert.deepEqual(timers, [
+    "let noticeTimer: ReturnType<typeof setTimeout> | undefined;",
+    "if (noticeTimer !== undefined) clearTimeout(noticeTimer);",
+    "if (noticeTimer !== undefined) clearTimeout(noticeTimer);",
+    "noticeTimer = setTimeout(hideNotice, NOTICE_MS);",
+    "setTimeout: ((callback: () => void, ms?: number) =>",
+    "setTimeout(callback, ms)) as typeof setTimeout,",
+    "clearTimeout: ((id?: ReturnType<typeof setTimeout>) =>",
+    "clearTimeout(id)) as typeof clearTimeout,",
+  ]);
   // The only call of connect() is the `begin` effect handed to flow.ts.
   assert.equal(
     (main.match(/(?<![.\w])connect\(/g) || []).length,

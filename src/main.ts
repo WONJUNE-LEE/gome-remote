@@ -2,6 +2,13 @@ import Guacamole from "../vendor/guacamole.js";
 import { ApiError, api, appMode, autoResolution } from "./api";
 import { createAgentSession, type AgentSession } from "./agent";
 import { endText, startFailureReason } from "./agent-messages";
+import { localClipboardFor } from "./clipboard-local";
+import {
+  NOTICE_TEXT,
+  createClipboardSync,
+  type ClipboardSync,
+  type NoticeKey,
+} from "./clipboard-sync";
 import { connectFailure, createSessionFlow, errorScreen } from "./flow";
 import { createKeyboardLock, isLockedF11 } from "./keyboard-lock";
 import { guacamoleSource, initMeasure, videoSource } from "./measure";
@@ -52,6 +59,7 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
       <button id="disconnect" class="danger">연결 종료</button>
     </div>
     <div id="viewport" class="viewport">
+      <div id="notice" class="notice" role="status" hidden></div>
       <div id="overlay" class="overlay">
         <div id="overlay-spinner" class="spinner"></div>
         <h2 id="overlay-title"></h2>
@@ -78,6 +86,11 @@ let client: any;
 // The Mac (agent) session, when the open target is one; it replaces `client` for that target.
 let agent: AgentSession | undefined;
 let keyboard: any;
+// The clipboard sync of the open Mac session (a new one for every session), and whether the
+// remote view counted as focused when it was last evaluated.
+let sync: ClipboardSync | undefined;
+let syncFocused = false;
+let noticeTimer: ReturnType<typeof setTimeout> | undefined;
 let resizeObserver: ResizeObserver | undefined;
 let releaseMouse: (() => void) | undefined;
 // When a connection may start, and what the session knows about its last attempt.
@@ -250,6 +263,28 @@ function openTarget(target: Target) {
   });
   flow.open({ targetId: target.id, width, height });
 }
+// A short, non-blocking message about the clipboard. Only the fixed text of the notice
+// is shown: never the clipboard's own text.
+const NOTICE_MS = 4000;
+function hideNotice() {
+  if (noticeTimer !== undefined) clearTimeout(noticeTimer);
+  noticeTimer = undefined;
+  el("notice").hidden = true;
+  el("notice").textContent = "";
+}
+function showNotice(key: NoticeKey) {
+  const text = NOTICE_TEXT[key];
+  if (!text) return;
+  if (noticeTimer !== undefined) clearTimeout(noticeTimer);
+  el("notice").textContent = text;
+  el("notice").hidden = false;
+  noticeTimer = setTimeout(hideNotice, NOTICE_MS);
+}
+// The remote view is focused while this window has the focus and the session shows a picture.
+function updateSyncFocus() {
+  syncFocused = !!sync && document.hasFocus() && flow.active;
+  sync?.setViewFocused(syncFocused);
+}
 function releaseInput() {
   agent?.release();
   keyboard?.reset();
@@ -274,6 +309,11 @@ function stop() {
   client = undefined;
   agent?.close();
   agent = undefined;
+  // After the session is closed: keys still held for a paste are dropped with the channel.
+  sync?.end();
+  sync = undefined;
+  syncFocused = false;
+  hideNotice();
   keyboard = undefined;
   releaseMouse = undefined;
   el("display").classList.remove("agent-display");
@@ -298,6 +338,8 @@ function showOverlay(
 function sessionEnded(reason?: string) {
   releaseInput();
   flow.stopped();
+  sync?.end();
+  syncFocused = false;
   updateKeyboardLock();
   resolution.stopped();
   el("session-state").textContent = "연결 종료";
@@ -440,6 +482,10 @@ async function connectAgent(
   size: { width: number; height: number },
   current: number,
 ) {
+  // Only where there is a local clipboard to sync (the app with bridge 4 or later, or a
+  // browser with navigator.clipboard).
+  const local = localClipboardFor();
+  let thisSync: ClipboardSync | undefined;
   const session = createAgentSession({
     signal: (sdp) =>
       api.agentSession({
@@ -459,11 +505,39 @@ async function connectAgent(
       el("overlay").hidden = true;
       el<HTMLButtonElement>("text-input").disabled = false;
       session.focus();
+      updateSyncFocus();
     },
     onEnded: (reason) => {
       if (current === generation) flow.ended(reason);
     },
+    gate: (run) => (thisSync ? thisSync.gate(run) : run()),
+    onPasteKey: (event) => thisSync?.pasteShortcut(event),
+    // A watch switched on before the channel was open went nowhere: say it again.
+    onChannelOpen: () => {
+      if (current === generation && syncFocused) session.sendWatch(true);
+    },
+    onAgentMessage: (m) => {
+      if (current !== generation || !thisSync) return;
+      if (m.type === "lock") thisSync.setRemoteLocked(m.locked);
+      else if (m.type === "clipboard")
+        thisSync.remoteClipboard(m.text, m.concealed);
+      else thisSync.remoteSkipped(m.reason);
+    },
   });
+  if (local) {
+    thisSync = sync = createClipboardSync({
+      local,
+      remote: session,
+      target: "mac",
+      notify: (key) => {
+        if (current === generation) showNotice(key);
+      },
+      setTimeout: ((callback: () => void, ms?: number) =>
+        setTimeout(callback, ms)) as typeof setTimeout,
+      clearTimeout: ((id?: ReturnType<typeof setTimeout>) =>
+        clearTimeout(id)) as typeof clearTimeout,
+    });
+  }
   agent = session;
   el("display").classList.add("agent-display");
   el("display").append(session.element);
@@ -585,6 +659,8 @@ api.onViewerAction((action) => {
   else if (action === "text-input") openTextDialog();
 });
 window.addEventListener("blur", releaseInput);
+window.addEventListener("focus", updateSyncFocus);
+window.addEventListener("blur", updateSyncFocus);
 window.addEventListener("beforeunload", stop);
 // Measurement mode: does nothing unless the address has #measure (src/measure.ts).
 initMeasure({

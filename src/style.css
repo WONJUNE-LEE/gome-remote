@@ -376,6 +376,21 @@ svg {
 .remote-connected.remote-pointer-active .remote-cursor {
   visibility: visible;
 }
+.notice {
+  position: absolute;
+  z-index: 6;
+  left: 50%;
+  bottom: 24px;
+  transform: translateX(-50%);
+  max-width: 80%;
+  padding: 10px 16px;
+  border-radius: 12px;
+  background: rgba(20, 18, 16, 0.88);
+  color: #fff;
+  font-size: 14px;
+  text-align: center;
+  pointer-events: none;
+}
 /* Shown only while there is no remote picture to cover; hidden once connected. */
 .overlay {
   position: absolute;

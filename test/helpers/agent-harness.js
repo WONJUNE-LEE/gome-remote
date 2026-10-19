@@ -92,6 +92,7 @@ export class FakeChannel {
     this.closed = 0;
     this.onclose = null;
     this.onmessage = null;
+    this.onopen = null;
   }
   // A message from the agent.
   receive(data) {
@@ -99,6 +100,7 @@ export class FakeChannel {
   }
   open() {
     this.readyState = "open";
+    this.onopen?.();
   }
   send(text) {
     if (this.readyState !== "open") throw new Error("InvalidStateError");

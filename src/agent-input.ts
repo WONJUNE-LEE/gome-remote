@@ -98,7 +98,7 @@ const TEXT_OVERHEAD_BYTES = 22;
 
 // A lone surrogate cannot be sent: JSON.stringify writes it as a `\udXXX` escape, which the
 // agent's JSON parser rejects, and the whole piece would be lost. U+FFFD stands in.
-function wellFormed(text: string): string {
+export function wellFormed(text: string): string {
   let out = "";
   for (let i = 0; i < text.length; i++) {
     const unit = text.charCodeAt(i);

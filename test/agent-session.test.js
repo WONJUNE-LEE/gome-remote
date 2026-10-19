@@ -717,3 +717,180 @@ test("watchFrames reports frame gaps over 500 ms and the freeze count that chang
   assert.equal(result.gapsOver500ms, 2);
   assert.equal(result.freezeCount, 2);
 });
+
+// ---- clipboard over the channel ----
+
+test("agent messages are routed: replaced ends the session, lock, clipboard and skip notices reach onAgentMessage, binary and malformed are ignored", async () => {
+  const h = await agentHarness();
+  const got = [];
+  h.deps.onAgentMessage = (m) => got.push(plain(m));
+  await h.connect();
+  const channel = h.channel();
+  channel.receive(JSON.stringify({ type: "lock", locked: true }));
+  channel.receive(
+    JSON.stringify({ type: "clipboard", text: "글", concealed: false }),
+  );
+  channel.receive(
+    JSON.stringify({ type: "clipboard-skipped", reason: "too-large" }),
+  );
+  channel.receive(new ArrayBuffer(4));
+  channel.receive("{not json");
+  channel.receive(JSON.stringify({ type: "unknown" }));
+  channel.receive(JSON.stringify({ type: "lock", locked: "yes" }));
+  assert.deepEqual(got, [
+    { type: "lock", locked: true },
+    { type: "clipboard", text: "글", concealed: false },
+    { type: "clipboard-skipped", reason: "too-large" },
+  ]);
+  assert.deepEqual(h.deps.ended, [], "none of them ends the session");
+  channel.receive(JSON.stringify({ type: "replaced" }));
+  assert.deepEqual(h.deps.ended, ["replaced"]);
+  assert.equal(got.length, 3, "replaced is not passed on");
+});
+
+test("a throwing onAgentMessage cannot break the channel", async () => {
+  const h = await agentHarness();
+  h.deps.onAgentMessage = () => {
+    throw new Error("boom");
+  };
+  await h.connect();
+  h.channel().receive(JSON.stringify({ type: "lock", locked: true }));
+  h.channel().receive(JSON.stringify({ type: "replaced" }));
+  assert.deepEqual(h.deps.ended, ["replaced"]);
+});
+
+test("sendClipboard sends the message; text over 256 KiB once encoded is too large and nothing is sent", async () => {
+  const h = await agentHarness();
+  await h.connect();
+  const before = h.channel().sent.length;
+  assert.equal(h.session.sendClipboard("안녕\r\n", true), "sent");
+  assert.deepEqual(h.messages().slice(before), [
+    { type: "clipboard", text: "안녕\r\n", concealed: true },
+  ]);
+  // 65 536 control characters are 64 KiB of text but 6 bytes each once escaped.
+  assert.equal(
+    h.session.sendClipboard("\u0001".repeat(65_536), false),
+    "too-large",
+  );
+  // The message length counts bytes, not UTF-16 units: this text is under 256 KiB in
+  // units but over it in bytes.
+  assert.equal(
+    h.session.sendClipboard(
+      "\u0001".repeat(42_000) + "가".repeat(23_536),
+      false,
+    ),
+    "too-large",
+  );
+  assert.equal(h.channel().sent.length, before + 1, "nothing else went out");
+  // A text near the limit still goes: 64 KiB of plain text.
+  assert.equal(h.session.sendClipboard("a".repeat(65_536), false), "sent");
+});
+
+test("sendClipboard replaces a lone surrogate with U+FFFD", async () => {
+  const h = await agentHarness();
+  await h.connect();
+  assert.equal(h.session.sendClipboard("a\ud800b\udc00c😀", false), "sent");
+  const raw = h.channel().sent.at(-1);
+  assert.equal(raw.includes("\\ud800"), false);
+  assert.equal(JSON.parse(raw).text, "a�b�c😀");
+});
+
+test("sendClipboard on a closed channel answers closed, sendWatch sends only while open", async () => {
+  const h = await agentHarness();
+  assert.equal(h.session.sendClipboard("x", false), "closed", "not yet open");
+  await h.connect();
+  h.session.sendWatch(true);
+  h.session.sendWatch(false);
+  assert.deepEqual(h.messages().slice(-2), [
+    { type: "clipboard-watch", on: true },
+    { type: "clipboard-watch", on: false },
+  ]);
+  const channel = h.channel();
+  h.session.close();
+  const sent = channel.sent.length;
+  assert.equal(h.session.sendClipboard("x", false), "closed");
+  h.session.sendWatch(true);
+  assert.equal(channel.sent.length, sent);
+});
+
+test("every send goes through the gate, clipboard and watch do not, and the key hook sees key-downs only", async () => {
+  const h = await agentHarness();
+  const held = [];
+  const seen = [];
+  h.deps.gate = (run) => held.push(run);
+  h.deps.onPasteKey = (event) => seen.push(event.code);
+  await h.connect();
+  const before = h.channel().sent.length;
+  h.surface.fire("keydown", { code: "KeyV", key: "v", metaKey: true });
+  h.surface.fire("keyup", { code: "KeyV", key: "v", metaKey: true });
+  assert.deepEqual(seen, ["KeyV"], "key-down only, and before the send");
+  assert.equal(h.channel().sent.length, before, "the keys wait in the gate");
+  assert.equal(h.session.sendClipboard("x", false), "sent");
+  h.session.sendWatch(true);
+  assert.deepEqual(
+    h
+      .messages()
+      .slice(before)
+      .map((m) => m.type),
+    ["clipboard", "clipboard-watch"],
+    "the clipboard text and watch bypass the gate",
+  );
+  held.splice(0).forEach((run) => run());
+  assert.deepEqual(h.messages().slice(-2), [
+    { type: "key", code: "KeyV", down: true },
+    { type: "key", code: "KeyV", down: false },
+  ]);
+});
+
+test("a key whose code the page cannot name does not reach onPasteKey", async () => {
+  const h = await agentHarness();
+  const seen = [];
+  h.deps.onPasteKey = (event) => seen.push(event.code);
+  await h.connect();
+  h.surface.fire("keydown", { code: "Unidentified", key: "v", metaKey: true });
+  assert.deepEqual(seen, []);
+});
+
+test("pasteShortcut sends Command down, V down, V up, Command up through the gate", async () => {
+  const h = await agentHarness();
+  const held = [];
+  h.deps.gate = (run) => held.push(run);
+  await h.connect();
+  const before = h.channel().sent.length;
+  h.session.pasteShortcut();
+  assert.equal(held.length, 4);
+  assert.equal(h.channel().sent.length, before);
+  held.splice(0).forEach((run) => run());
+  assert.deepEqual(h.messages().slice(before), [
+    { type: "key", code: "MetaLeft", down: true },
+    { type: "key", code: "KeyV", down: true },
+    { type: "key", code: "KeyV", down: false },
+    { type: "key", code: "MetaLeft", down: false },
+  ]);
+});
+
+test("a held item that runs after the channel closed is dropped, and the end sends its release without waiting for the gate", async () => {
+  const h = await agentHarness();
+  const held = [];
+  h.deps.gate = (run) => held.push(run);
+  await h.connect();
+  const channel = h.channel();
+  h.surface.fire("keydown", { code: "KeyV", key: "v", metaKey: true });
+  const before = channel.sent.length;
+  h.session.close();
+  assert.deepEqual(
+    channel.messages().slice(before),
+    [{ type: "release" }],
+    "the release is not held behind the barrier",
+  );
+  held.splice(0).forEach((run) => run());
+  assert.equal(channel.sent.length, before + 1, "the late V is dropped");
+});
+
+test("onChannelOpen is called when the channel opens", async () => {
+  const h = await agentHarness();
+  let opened = 0;
+  h.deps.onChannelOpen = () => opened++;
+  await h.connect();
+  assert.equal(opened, 1);
+});
