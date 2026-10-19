@@ -310,10 +310,12 @@
 - 해상도 선택은 `agent`에서도 켜진다(자동 기본).
 - 브리지 버전 3: `viewer-state`의 `protocol`에 `agent`를 더한다. 브리지 2 이하 앱에는 `rdp`로
   보낸다(메뉴 동작이 같다: 해상도 사용 가능). 앱 모드 판정 기준은 그대로 1.
-- 브리지 버전 4: 앱이 클립보드 읽기·쓰기 채널(`clipboard-read`, `clipboard-write`)과 키보드 잠금용 HTML
-  전체 화면을 더한다. 페이지가 이를 쓸 수 있다고 표시한(`window.__gomeFsLock`) 때만 HTML 전체 화면을
-  쓰고, 표시가 없는 이전 페이지에는 기존 전체 화면을 쓴다. 브리지 3 이하 앱에서는 페이지가 클립보드
-  동기화와 키보드 잠금을 켜지 않는다.
+- 브리지 버전 4: 앱이 클립보드 읽기·쓰기 채널(`clipboard-read`, `clipboard-write`)과 Windows 키 잠금용
+  `keyLockSupported`·`keyLock(on)`(`remote:key-lock`)을 더한다. `keyLockSupported`는 Windows 앱에서만 참이고,
+  main이 Windows가 아니면 `keyLock`을 거절한다. 잠금은 창 안의 HTML 전체 화면(`disableHtmlFullscreenWindowResize`)과
+  `keyboard.lock()`이며, 페이지가 세션 화면이 보이고 창에 포커스가 있는 동안 잡고 blur·세션 끝에서 푼다.
+  F11과 보기 → 전체 화면은 기존 기본 전체 화면이다. 브리지 3 이하 앱에서는 페이지가 클립보드 동기화와
+  키 잠금을 켜지 않고, Mac·Linux 앱과 브라우저에서는 키 잠금만 켜지 않는다.
 - CSP는 바꾸지 않는다. 실제 앱에서 확인한다(V2, V3).
 - 측정 모드: 주소에 `#measure`가 있을 때만 작은 패널이 뜨고, 지정한 위치에 클릭 N번을 보내
   표시된 화면의 픽셀이 바뀌는 시각을 같은 폴링 루프로 잰다(`agent`와 `vnc` 모두 같은 코드, 8절).

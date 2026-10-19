@@ -290,7 +290,8 @@ Open the same address in a browser for the identical screen.
 - Click a tile. While connecting, the window shows a spinner and "<name>에 연결하는 중".
 - In the app, use the native **원격** menu: 서버 목록, 해상도 (RDP and the Mac agent; 자동 by default; apps older than bridge version 2 offer fixed sizes only), 텍스트 입력,
   클립보드 붙여넣기 (bridge version 4 or later), 다시 연결, 연결 종료. F11 and
-  **View → 전체 화면** toggle full screen locally; Escape stays a remote key.
+  **View → 전체 화면** toggle full screen locally (on Windows also while the keyboard is
+  captured); Escape stays a remote key on a tap.
 - In a browser the same controls sit in a bar above the picture, never over it.
 - One pointer is drawn over a connected desktop: the remote cursor on the Guacamole paths (RDP
   and VNC), and your own device's pointer in a Mac (agent) session, whose picture has no cursor in it.
@@ -334,12 +335,15 @@ Open the same address in a browser for the identical screen.
   agent's memory only and is never written to the Mac pasteboard; it is dropped on unlock and
   at session end. One trailing line break is dropped; text with a line break inside is refused
   with a notice. VNC sessions have no such special case.
-- Windows key (desktop app on Windows): full screen (F11 or **View → 전체 화면**) is HTML full
-  screen with the keyboard locked to the page, so Win+V, Win+C and the bare Windows key go to
-  the Mac as Command. While locked the page handles F11 itself to leave full screen; hold
-  Escape for about 2 seconds to leave as well (a tap stays a remote key). A denied full-screen
-  permission falls back to ordinary full screen after 2 seconds, without Windows key capture.
-  In a window, the Windows key stays with Windows; use **클립보드 붙여넣기**.
+- Windows key (desktop app on Windows): while a remote view is shown and the app window has the
+  focus, the app captures the keyboard, windowed or full screen, so Win+V, Win+C and the bare
+  Windows key go to the Mac as Command (Alt+Tab, Win+D and the like go to the Mac too). A short
+  notice says so when it starts. Leave with the mouse (clicking another window or switching
+  away releases it) or hold Escape for about 1.5 seconds, which releases it with a notice;
+  click the remote view to take it again (a tap on Escape stays a remote key). F11 still
+  toggles full screen while it is held. Win+L and Ctrl+Alt+Del stay with Windows. If the
+  keyboard capture is refused, the session works without it. The Mac and Linux apps and
+  browsers are unchanged: no capture, F11 and **View → 전체 화면** are plain full screen.
 - Korean text over Mac (VNC): whether macOS Screen Sharing carries Korean and emoji in the
   clipboard is not yet measured (see `docs/verification.md`); until it is, assume Latin-1 text
   only on that path. The Mac agent carries Unicode; Ubuntu (RDP) with Korean is also still to be checked.
