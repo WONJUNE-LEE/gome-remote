@@ -29,6 +29,31 @@ pub enum PasteRead {
     Denied,
 }
 
+/// The type `Board::write` sets and `read` asks for.
+pub const TEXT_TYPE: &str = "public.utf8-plain-text";
+/// Other string flavours `stringForType:` converts from; their presence means text exists.
+pub const OTHER_TEXT_TYPES: [&str; 2] = ["public.plain-text", "NSStringPboardType"];
+/// The community convention password managers use to mark a copy as secret.
+pub const CONCEALED_TYPE: &str = "org.nspasteboard.ConcealedType";
+
+/// Turns what a pasteboard read produced (the text if any, the declared types, the access
+/// setting) into a `PasteRead`. An empty pasteboard is `NoText` whatever the access is, so
+/// it never shows as a refusal.
+pub fn classify(text: Option<String>, types: &[String], access: Access) -> PasteRead {
+    match text {
+        Some(text) if text.is_empty() => PasteRead::NoText,
+        Some(text) => PasteRead::Text { text, concealed: types.iter().any(|t| t == CONCEALED_TYPE) },
+        None => {
+            let has_text_type = types.iter().any(|t| t == TEXT_TYPE || OTHER_TEXT_TYPES.contains(&t.as_str()));
+            if has_text_type && access != Access::AlwaysAllow {
+                PasteRead::Denied
+            } else {
+                PasteRead::NoText
+            }
+        }
+    }
+}
+
 /// The pasteboard and the console lock, as the clipboard sync sees them.
 pub trait Board: Send + Sync {
     /// Never prompts.
@@ -106,6 +131,50 @@ impl Board for FakeBoard {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn types(list: &[&str]) -> Vec<String> {
+        list.iter().map(|t| t.to_string()).collect()
+    }
+
+    #[test]
+    fn classify_plain_text_is_text_and_not_concealed() {
+        let read = classify(Some("hi".into()), &types(&[TEXT_TYPE]), Access::AlwaysAllow);
+        assert_eq!(read, PasteRead::Text { text: "hi".into(), concealed: false });
+    }
+
+    #[test]
+    fn classify_text_with_the_marker_is_concealed() {
+        let read = classify(Some("pw".into()), &types(&[TEXT_TYPE, CONCEALED_TYPE]), Access::Ask);
+        assert_eq!(read, PasteRead::Text { text: "pw".into(), concealed: true });
+    }
+
+    #[test]
+    fn classify_empty_text_is_no_text() {
+        assert_eq!(classify(Some(String::new()), &types(&[TEXT_TYPE]), Access::AlwaysAllow), PasteRead::NoText);
+    }
+
+    #[test]
+    fn classify_unreadable_text_is_denied_unless_access_is_always_allow() {
+        for ty in [TEXT_TYPE, "NSStringPboardType", "public.plain-text"] {
+            assert_eq!(classify(None, &types(&[ty]), Access::Ask), PasteRead::Denied, "{ty}");
+            assert_eq!(classify(None, &types(&[ty]), Access::AlwaysDeny), PasteRead::Denied, "{ty}");
+            assert_eq!(classify(None, &types(&[ty]), Access::AlwaysAllow), PasteRead::NoText, "{ty}");
+        }
+    }
+
+    #[test]
+    fn classify_a_pasteboard_without_a_text_type_is_no_text_under_every_access() {
+        for access in [Access::AlwaysAllow, Access::Ask, Access::AlwaysDeny] {
+            assert_eq!(classify(None, &types(&["public.png"]), access), PasteRead::NoText);
+        }
+    }
+
+    #[test]
+    fn classify_an_empty_pasteboard_is_no_text_never_denied() {
+        for access in [Access::AlwaysAllow, Access::Ask, Access::AlwaysDeny] {
+            assert_eq!(classify(None, &[], access), PasteRead::NoText);
+        }
+    }
 
     #[test]
     fn the_fake_board_counts_every_write_and_logs_it_without_a_read() {
