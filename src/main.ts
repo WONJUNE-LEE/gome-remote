@@ -3,6 +3,7 @@ import { ApiError, api, appMode, autoResolution } from "./api";
 import { createAgentSession, type AgentSession } from "./agent";
 import { endText, startFailureReason } from "./agent-messages";
 import { connectFailure, createSessionFlow, errorScreen } from "./flow";
+import { createKeyboardLock, isLockedF11 } from "./keyboard-lock";
 import { guacamoleSource, initMeasure, videoSource } from "./measure";
 import { createResolution, sizeFor } from "./resolution";
 import {
@@ -168,6 +169,32 @@ async function setFullscreen(enabled: boolean) {
 }
 api.onFullscreenChange(fullscreenChanged);
 void api.fullscreenState().then(fullscreenChanged);
+// The keyboard lock is taken only inside the desktop app (bridge 4 or later: older apps
+// enter native full screen, where the lock is not available) while a session is
+// connected and the page is in HTML full screen. Browsers never get it.
+const keyboardLock = createKeyboardLock({
+  lock: () =>
+    navigator.keyboard ? navigator.keyboard.lock() : Promise.reject(),
+  unlock: () => navigator.keyboard?.unlock(),
+});
+const lockAvailable = appMode && (window.desktop?.bridgeVersion ?? 0) >= 4;
+function updateKeyboardLock() {
+  keyboardLock.update(
+    lockAvailable && !!document.fullscreenElement && flow.active,
+  );
+}
+if (lockAvailable) {
+  document.addEventListener("fullscreenchange", updateKeyboardLock);
+  // Under the lock the page, not the app's main process, receives F11.
+  const lockedF11 = (event: KeyboardEvent) => {
+    if (!isLockedF11(event, keyboardLock.locked)) return;
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    if (event.type === "keydown" && !event.repeat) void setFullscreen(false);
+  };
+  window.addEventListener("keydown", lockedF11, true);
+  window.addEventListener("keyup", lockedF11, true);
+}
 // Browser fallback: the desktop app reserves F11 in its main process instead.
 if (!appMode) {
   const localShortcut = (event: KeyboardEvent) => {
@@ -235,6 +262,7 @@ function stop() {
   generation++;
   releaseInput();
   flow.stopped();
+  updateKeyboardLock();
   resolution.stopped();
   resizeObserver?.disconnect();
   resizeObserver = undefined;
@@ -270,6 +298,7 @@ function showOverlay(
 function sessionEnded(reason?: string) {
   releaseInput();
   flow.stopped();
+  updateKeyboardLock();
   resolution.stopped();
   el("session-state").textContent = "연결 종료";
   showOverlay("ended", endText(reason));
@@ -382,6 +411,7 @@ async function connect(input: ConnectInput) {
       if (current !== generation) return;
       if (state === 3) {
         flow.connected();
+        updateKeyboardLock();
         resolution.connected();
         surface.classList.add("remote-connected");
         syncViewerMenu();
@@ -421,6 +451,7 @@ async function connectAgent(
     onFirstFrame: () => {
       if (current !== generation) return;
       flow.connected();
+      updateKeyboardLock();
       resolution.connected();
       session.element.classList.add("agent-connected");
       syncViewerMenu();

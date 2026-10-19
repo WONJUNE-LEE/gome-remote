@@ -110,6 +110,9 @@ export async function viewer({
   // Use the real src/agent.ts (on the agent harness's fake RTCPeerConnection) instead of the
   // recorder, for tests about what the page really sends the Mac.
   realAgent = false,
+  // navigator.keyboard.lock() answers like Chromium in full screen: "granted" resolves,
+  // "refused" rejects, "absent" leaves navigator.keyboard undefined.
+  keyboardLock = "granted",
 } = {}) {
   const rig = realAgent ? await agentHarness() : undefined;
   const fetches = [];
@@ -164,12 +167,30 @@ export async function viewer({
     removeEventListener() {},
     async exitFullscreen() {},
   };
-  const bridgeCalls = { viewerState: [], openSetup: 0 };
+  const bridgeCalls = { viewerState: [], openSetup: 0, fullscreen: [] };
+  const keyboardCalls = { lock: [], unlock: 0 };
+  const navigator =
+    keyboardLock === "absent"
+      ? {}
+      : {
+          keyboard: {
+            lock: async (...args) => {
+              keyboardCalls.lock.push(args);
+              if (keyboardLock === "refused")
+                throw new Error("NotAllowedError");
+            },
+            unlock: () => {
+              keyboardCalls.unlock++;
+            },
+          },
+        };
   let actionListener;
   const desktop = appMode
     ? {
         bridgeVersion,
-        fullscreen: async () => {},
+        fullscreen: async (enabled) => {
+          bridgeCalls.fullscreen.push(enabled);
+        },
         fullscreenState: async () => false,
         onFullscreenChange: () => () => {},
         viewerState: async (state) => {
@@ -348,6 +369,7 @@ export async function viewer({
     JSON,
   });
   const flow = await loadTs("flow.ts");
+  const keyboardLockModule = await loadTs("keyboard-lock.ts");
   const agentMessages = await loadTs("agent-messages.ts");
   // The measurement module is given recording stand-ins: a page without #measure must
   // leave `measureUse` empty (no document access, no timer, no message port).
@@ -380,6 +402,7 @@ export async function viewer({
     {
       window,
       document,
+      navigator,
       location: { hash },
       Event,
       ResizeObserver: class {
@@ -401,6 +424,7 @@ export async function viewer({
       "./api": api,
       "./tiles": tiles,
       "./flow": flow,
+      "./keyboard-lock": keyboardLockModule,
       "./agent": rig
         ? { createAgentSession: (deps) => rig.mod.createAgentSession(deps) }
         : { createAgentSession: (deps) => new FakeAgent(deps) },
@@ -426,7 +450,38 @@ export async function viewer({
     body,
     measureUse,
     bridgeCalls,
+    keyboardCalls,
     settle,
+    // The page enters or leaves HTML full screen (the document's own state).
+    setHtmlFullscreen: (on) => {
+      document.fullscreenElement = on ? document.documentElement : null;
+      (documentListeners.fullscreenchange ?? []).forEach((l) =>
+        l({ type: "fullscreenchange" }),
+      );
+    },
+    // A key event for the page's window listeners, in listener order; a listener that
+    // calls stopImmediatePropagation ends the delivery, as in a browser.
+    windowKey: (type, init = {}) => {
+      const event = {
+        type,
+        key: "F11",
+        repeat: false,
+        defaultPrevented: false,
+        stopped: false,
+        preventDefault() {
+          event.defaultPrevented = true;
+        },
+        stopImmediatePropagation() {
+          event.stopped = true;
+        },
+        ...init,
+      };
+      for (const listener of windowListeners[type] ?? []) {
+        if (event.stopped) break;
+        listener(event);
+      }
+      return event;
+    },
     // The viewer element changes size (CSS pixels): every live observer is told.
     resizeViewport: (width, height) => {
       el("viewport").clientWidth = width;

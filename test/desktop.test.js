@@ -72,6 +72,7 @@ async function desktop(
     platform = "win32",
     argv = [],
     page, // what executeJavaScript answers in the smoke test; "hang" never answers
+    html = "granted", // how the page answers full screen scripts: "granted", "refused" or "dead"
     packaged = false,
     version = "0.3.0",
     updater, // the stand-in electron-updater autoUpdater; one is made when packaged
@@ -103,10 +104,13 @@ async function desktop(
   const notifications = [];
   const lifecycle = [];
   const scripts = [];
+  const scriptCalls = [];
+  const nativeRequests = [];
   const timers = new Map();
   const intervals = new Map();
   const dialogs = [];
   let fullscreen = false;
+  let htmlMode = html;
   let window;
   let menu;
   let openHandler;
@@ -161,7 +165,18 @@ async function desktop(
       this.webContents = Object.assign(new EventEmitter(), {
         mainFrame: { url: "about:blank" },
         send: (...args) => notifications.push(args),
-        executeJavaScript: async (script) => {
+        executeJavaScript: async (script, userGesture) => {
+          scriptCalls.push([script, userGesture]);
+          // Full screen scripts are answered by the stand-in page and recorded as the
+          // boolean they ask for, so they read like setFullScreen in the assertions.
+          const enter = /requestFullscreen/.test(script);
+          if (enter || /exitFullscreen/.test(script)) {
+            fullscreenRequests.push(enter);
+            if (htmlMode === "dead") throw new Error("page is gone");
+            if (enter && htmlMode === "refused")
+              throw new TypeError("Permissions check failed");
+            return undefined;
+          }
           scripts.push(script);
           if (page === "hang") return new Promise(() => {});
           if (page instanceof Error) throw page;
@@ -190,6 +205,7 @@ async function desktop(
       return this.destroyed === true;
     }
     setFullScreen(value) {
+      nativeRequests.push(value);
       fullscreenRequests.push(value);
     }
     async loadURL(url) {
@@ -291,6 +307,11 @@ async function desktop(
     loads,
     lifecycle,
     scripts,
+    scriptCalls,
+    nativeRequests,
+    setHtml(mode) {
+      htmlMode = mode;
+    },
     timers,
     intervals,
     dialogs,
@@ -329,9 +350,14 @@ async function desktop(
     setFocused(value) {
       focused = value;
     },
-    finishFullscreen(value) {
+    // With `html`, the page's own full screen state changes around the native event in
+    // the order Electron emits them: enter-full-screen before enter-html-full-screen on
+    // the way in, leave-html-full-screen before leave-full-screen on the way out.
+    finishFullscreen(value, { html: inHtml = false } = {}) {
       fullscreen = value;
+      if (inHtml && !value) window.webContents.emit("leave-html-full-screen");
       window.emit(value ? "enter-full-screen" : "leave-full-screen");
+      if (inHtml && value) window.webContents.emit("enter-html-full-screen");
     },
     input(input) {
       let prevented = false;
@@ -1271,7 +1297,7 @@ test("showing the address page closes the Remote menu entries and leaves fullscr
       resolution: "1920x1080",
     });
     await f.invoke("fullscreen", true);
-    f.finishFullscreen(true);
+    f.finishFullscreen(true, { html: true });
     assert.equal(item("back").enabled, true);
     assert.equal(item("resolution").enabled, true);
     assert.deepEqual(f.fullscreenRequests, [true]);
@@ -1295,7 +1321,141 @@ test("showing the address page closes the Remote menu entries and leaves fullscr
       [true, false],
       `${how}: leaves fullscreen`,
     );
+    assert.match(f.scriptCalls.at(-1)[0], /exitFullscreen/, how);
+    assert.deepEqual(f.nativeRequests, [], `${how}: HTML full screen exit`);
   }
+});
+
+// ---- desktop full screen through HTML full screen ----
+
+test("entering full screen asks the page for HTML full screen with a user gesture; native full screen is not requested", async (t) => {
+  const f = await desktop({ html: "granted" }, t);
+  await f.invoke("fullscreen", true);
+  assert.deepEqual(f.scriptCalls.at(-1), [
+    "document.documentElement.requestFullscreen()",
+    true,
+  ]);
+  assert.deepEqual(f.nativeRequests, []);
+});
+
+test("a refused or failing HTML full screen falls back to native full screen without any dialog", async (t) => {
+  for (const html of ["refused", "dead"]) {
+    const f = await desktop({ html }, t);
+    await f.invoke("fullscreen", true);
+    await settle();
+    assert.deepEqual(f.nativeRequests, [true], html);
+    assert.deepEqual(f.dialogs, [], html);
+    // The fallback is plain native full screen: its exit is native too.
+    f.finishFullscreen(true);
+    await f.invoke("fullscreen", false);
+    assert.deepEqual(f.nativeRequests, [true, false], html);
+  }
+});
+
+test("a refusal that arrives after the user already asked to leave does not enter native full screen", async (t) => {
+  const f = await desktop({ html: "refused" }, t);
+  // Both requests arrive before the page has answered the first.
+  await Promise.all([
+    f.invoke("fullscreen", true),
+    f.invoke("fullscreen", false), // queued behind the pending entry
+  ]);
+  await settle();
+  assert.deepEqual(f.nativeRequests, []);
+  // The transition ended, so a later request is not swallowed.
+  await f.invoke("fullscreen", true);
+  await settle();
+  assert.deepEqual(f.nativeRequests, [true]);
+});
+
+test("leaving ends HTML full screen through document.exitFullscreen, never win.setFullScreen(false) alone", async (t) => {
+  const f = await desktop({ html: "granted" }, t);
+  await f.invoke("fullscreen", true);
+  f.finishFullscreen(true, { html: true });
+  await f.invoke("fullscreen", false);
+  assert.match(f.scriptCalls.at(-1)[0], /exitFullscreen/);
+  assert.equal(f.scriptCalls.at(-1)[1], true);
+  assert.deepEqual(f.nativeRequests, []);
+  f.finishFullscreen(false, { html: true });
+  assert.deepEqual(f.notifications.at(-1), ["remote:fullscreen-state", false]);
+});
+
+test("an exit queued during the entry still goes through the page", async (t) => {
+  const f = await desktop({}, t);
+  await f.invoke("fullscreen", true);
+  await f.invoke("fullscreen", false);
+  // enter-full-screen arrives before enter-html-full-screen.
+  f.finishFullscreen(true);
+  assert.match(f.scriptCalls.at(-1)[0], /exitFullscreen/);
+  assert.deepEqual(f.nativeRequests, []);
+});
+
+test("hold-Escape (leave-html-full-screen then leave-full-screen) publishes false and the next exit uses the native path", async (t) => {
+  const f = await desktop({ html: "granted" }, t);
+  await f.invoke("fullscreen", true);
+  f.finishFullscreen(true, { html: true });
+  f.finishFullscreen(false, { html: true });
+  assert.deepEqual(f.notifications.at(-1), ["remote:fullscreen-state", false]);
+  assert.equal(await f.invoke("fullscreen-state"), false);
+  // Native full screen later (no page involved), then an exit: native.
+  f.finishFullscreen(true);
+  await f.invoke("fullscreen", false);
+  assert.deepEqual(f.nativeRequests, [false]);
+});
+
+test("the exit survives a dead page: executeJavaScript rejects -> setFullScreen(false)", async (t) => {
+  const f = await desktop({ html: "granted" }, t);
+  await f.invoke("fullscreen", true);
+  f.finishFullscreen(true, { html: true });
+  f.setHtml("dead");
+  await f.invoke("fullscreen", false);
+  await settle();
+  assert.deepEqual(f.nativeRequests, [false]);
+  f.finishFullscreen(false);
+  assert.deepEqual(f.notifications.at(-1), ["remote:fullscreen-state", false]);
+});
+
+test("F11 from the menu or before-input-event toggles relative to the pending target (no re-entry after a page-requested exit)", async (t) => {
+  const f = await desktop({ html: "granted" }, t);
+  const key = { type: "keyDown", key: "F11", isAutoRepeat: false };
+  assert.equal(f.input(key), true);
+  assert.equal(f.input({ ...key, type: "keyUp" }), true);
+  f.finishFullscreen(true, { html: true });
+  // The page asked to leave (its F11 while locked) and the same press also reached main.
+  await f.invoke("fullscreen", false);
+  assert.equal(f.input(key), true); // pending exit: F11 means "enter" again by design
+  const entries = f.scriptCalls.filter(([s]) => /requestFullscreen/.test(s));
+  assert.equal(entries.length, 1, "no re-entry while the exit is in flight");
+  f.finishFullscreen(false, { html: true });
+  assert.match(f.scriptCalls.at(-1)[0], /requestFullscreen/);
+});
+
+test("the permission handler grants fullscreen and keyboardLock only for the gateway origin's requestingUrl", async (t) => {
+  const f = await desktop({}, t);
+  const ask = (permission, requestingUrl) =>
+    new Promise((r) =>
+      f.permissions.request({}, permission, r, { requestingUrl }),
+    );
+  for (const p of ["fullscreen", "keyboardLock"]) {
+    assert.equal(await ask(p, `${GATEWAY}/`), true, p);
+    for (const u of [
+      "https://evil.example/",
+      "https://gateway.tail123.ts.net:8451/",
+      SETUP,
+      "",
+      undefined,
+    ])
+      assert.equal(await ask(p, u), false, `${p} ${u}`);
+  }
+  for (const p of [
+    "media",
+    "clipboard-read",
+    "notifications",
+    "geolocation",
+    "pointerLock",
+  ])
+    assert.equal(await ask(p, `${GATEWAY}/`), false, p);
+  assert.equal(f.permissions.check({}, "fullscreen", GATEWAY), false);
+  assert.equal(f.permissions.check({}, "automatic-fullscreen", GATEWAY), false);
 });
 
 test("showing the address page while windowed does not touch fullscreen", async (t) => {

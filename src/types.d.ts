@@ -60,6 +60,13 @@ interface DesktopBridge extends NativeBridge {
     opts?: { concealed?: boolean },
   ): Promise<ClipboardWrite>;
 }
+// navigator.keyboard (Keyboard Lock API); Chromium only, so it may be absent.
+interface Navigator {
+  readonly keyboard?: {
+    lock(keyCodes?: string[]): Promise<void>;
+    unlock(): void;
+  };
+}
 interface Window {
   desktop?: DesktopBridge;
 }

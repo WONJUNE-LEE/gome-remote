@@ -36,11 +36,50 @@ let store;
 let gateway = ""; // configured gateway origin, "" until the user enters one
 let fullscreenTarget = false;
 let fullscreenTransition = false;
+// True from the moment the page is asked for HTML full screen until it leaves it. Only
+// document.exitFullscreen() ends HTML full screen and the keyboard lock that goes with
+// it; win.setFullScreen(false) does not (measured on Electron 44). The flag is set when
+// the request is made, not only on enter-html-full-screen, which arrives after
+// enter-full-screen: an exit queued during entry must still go through the page.
+let htmlFullscreen = false;
+// The OS did not (or could not) do what the page path was meant to: finish with native
+// full screen towards whatever the target is now. When the window already agrees with the
+// target there is no OS event to come, so the transition simply ends.
+function nativeFullscreen() {
+  if (window.isDestroyed() || window.isFullScreen() === fullscreenTarget) {
+    fullscreenTransition = false;
+    return;
+  }
+  window.setFullScreen(fullscreenTarget);
+}
+function enterFullscreen() {
+  htmlFullscreen = true;
+  window.webContents
+    .executeJavaScript("document.documentElement.requestFullscreen()", true)
+    .catch(() => {
+      // Refused permission or a dead page: today's native full screen, no dialog.
+      htmlFullscreen = false;
+      nativeFullscreen();
+    });
+}
+function leaveFullscreen() {
+  if (!htmlFullscreen) {
+    window.setFullScreen(false);
+    return;
+  }
+  window.webContents
+    .executeJavaScript(
+      "document.fullscreenElement ? document.exitFullscreen() : undefined",
+      true,
+    )
+    .catch(() => nativeFullscreen());
+}
 function applyFullscreenTarget() {
   if (fullscreenTransition || window.isFullScreen() === fullscreenTarget)
     return;
   fullscreenTransition = true;
-  window.setFullScreen(fullscreenTarget);
+  if (fullscreenTarget) enterFullscreen();
+  else leaveFullscreen();
 }
 function requestFullscreen(enabled) {
   fullscreenTarget = enabled;
@@ -323,7 +362,16 @@ app
       applyFullscreenTarget();
     };
     window.on("enter-full-screen", publishFullscreen);
-    window.on("leave-full-screen", publishFullscreen);
+    window.on("leave-full-screen", () => {
+      htmlFullscreen = false;
+      publishFullscreen();
+    });
+    window.webContents.on("enter-html-full-screen", () => {
+      htmlFullscreen = true;
+    });
+    window.webContents.on("leave-html-full-screen", () => {
+      htmlFullscreen = false;
+    });
     window.webContents.on("before-input-event", (event, input) => {
       if (input.key !== "F11") return;
       // Intercept both edges before Guacamole or a menu accelerator can receive F11.
@@ -359,8 +407,16 @@ app
       if (originOf(url) === gateway && status >= 400)
         void showSetup("unreachable");
     });
+    // Full screen and the keyboard lock (HTML full screen is how the lock is taken) are
+    // granted to the gateway page only; the check handler stays closed, so everything
+    // else, automatic full screen included, is refused.
     window.webContents.session.setPermissionRequestHandler(
-      (_webContents, _permission, callback) => callback(false),
+      (_webContents, permission, callback, details) =>
+        callback(
+          (permission === "fullscreen" || permission === "keyboardLock") &&
+            !!gateway &&
+            originOf(details?.requestingUrl) === gateway,
+        ),
     );
     window.webContents.session.setPermissionCheckHandler(() => false);
     if (smokeTest || !gateway) await showSetup();
