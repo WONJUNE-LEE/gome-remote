@@ -222,14 +222,22 @@ export async function viewer({
         }),
   };
   let actionListener;
+  // The window's native full screen state, as main reports it (the bridge's fullscreen()
+  // calls only record; a test drives the state with setNativeFullscreen).
+  let nativeFullscreen = false;
+  let fullscreenListener;
+  const warnings = []; // console.warn lines of the page, each an array of arguments
   const desktop = appMode
     ? {
         bridgeVersion,
         fullscreen: async (enabled) => {
           bridgeCalls.fullscreen.push(enabled);
         },
-        fullscreenState: async () => false,
-        onFullscreenChange: () => () => {},
+        fullscreenState: async () => nativeFullscreen,
+        onFullscreenChange: (callback) => {
+          fullscreenListener = callback;
+          return () => {};
+        },
         viewerState: async (state) => {
           bridgeCalls.viewerState.push(state);
           if (
@@ -565,6 +573,7 @@ export async function viewer({
       window,
       document,
       navigator,
+      console: { warn: (...args) => warnings.push(args) },
       setTimeout: fakeSetTimeout,
       clearTimeout: fakeClearTimeout,
       location: { hash },
@@ -620,6 +629,7 @@ export async function viewer({
     measureUse,
     bridgeCalls,
     keyboardCalls,
+    warnings,
     clipboard,
     window,
     settle,
@@ -630,6 +640,11 @@ export async function viewer({
       (windowListeners[on ? "focus" : "blur"] ?? []).forEach((l) =>
         l({ type: on ? "focus" : "blur" }),
       );
+    },
+    // The app window enters or leaves native full screen; main tells the page.
+    setNativeFullscreen: (on) => {
+      nativeFullscreen = on;
+      fullscreenListener?.(on);
     },
     // The page enters or leaves HTML full screen (the document's own state).
     setHtmlFullscreen: (on) => {

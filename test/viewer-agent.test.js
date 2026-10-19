@@ -657,6 +657,18 @@ test("F11 while the lock is held toggles native full screen from the page: once 
   const other = v.windowKey("keydown", { key: "F1" });
   assert.equal(other.defaultPrevented, false);
   assert.deepEqual(v.bridgeCalls.fullscreen, [true]);
+  // Main reports the new native state; the next F11 leaves full screen.
+  v.setNativeFullscreen(true);
+  await v.settle();
+  v.windowKey("keydown");
+  await v.settle();
+  assert.deepEqual(v.bridgeCalls.fullscreen, [true, false]);
+  v.setNativeFullscreen(false);
+  await v.settle();
+  v.windowKey("keydown");
+  await v.settle();
+  assert.deepEqual(v.bridgeCalls.fullscreen, [true, false, true]);
+  assert.deepEqual(lockCalls(v), ["true", 1, 0], "the lock stays untouched");
 });
 
 test("F11 is not the page's business while the lock is not held", async () => {
@@ -669,10 +681,10 @@ test("F11 is not the page's business while the lock is not held", async () => {
 });
 
 test("a refused or missing lock leaves the session as it was, silently, and gives full screen back", async () => {
-  for (const options of [
-    { keyboardLock: "refused" },
-    { keyboardLock: "absent" },
-    { keyLockAnswer: "refused" },
+  for (const [options, reason] of [
+    [{ keyboardLock: "refused" }, "key-lock-refused"],
+    [{ keyboardLock: "absent" }, "key-lock-refused"],
+    [{ keyLockAnswer: "refused" }, "html-full-screen-refused"],
   ]) {
     const v = await opened({ ...WIN_APP, ...options });
     v.agents[0].deps.onFirstFrame();
@@ -680,6 +692,7 @@ test("a refused or missing lock leaves the session as it was, silently, and give
     const name = JSON.stringify(options);
     assert.equal(v.el("viewer-error").open, false, name);
     assert.equal(noticeText(v), "", name);
+    assert.deepEqual(v.warnings, [[`key lock: ${reason}`]], name);
     const event = v.windowKey("keydown");
     assert.equal(event.defaultPrevented, false, name);
     // It left HTML full screen at once (a second bridge call, false) unless it never got in.
@@ -698,6 +711,8 @@ test("a lock that never resolves is given up after 2 s", async () => {
   await v.settle();
   assert.deepEqual(v.bridgeCalls.keyLock, [true, false]);
   assert.equal(noticeText(v), "");
+  assert.equal(v.el("viewer-error").open, false);
+  assert.deepEqual(v.warnings, [["key lock: key-lock-timeout"]]);
 });
 
 test("a Mac or Linux app (keyLockSupported false), bridge 3 and a browser never lock, and F11 stays main's", async () => {
