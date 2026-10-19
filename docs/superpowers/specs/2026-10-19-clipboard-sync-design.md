@@ -3,8 +3,10 @@
 Status: owner approved the direction in chat on 2026-10-19 (grade F); owner decisions from the
 design review are recorded in §4 (marked "owner, 2026-10-19"). Revision 3: D4/G4 changed to
 capture the Windows key in windowed mode too (owner, 2026-10-19), after implementation.
-Implemented on branch `feat/clipboard-sync` (not merged, not released); rehearsal pending
-(device checks in `docs/verification.md`).
+Implemented on branch `feat/clipboard-sync`; released as 0.3.3 pending (PR, merge and tag in
+progress, 2026-10-19). Rehearsal partial: the owner reported Windows-to-Mac and Mac-to-Windows
+paste and windowed Windows-key capture with release as passed; the other device checks are
+not yet run (`docs/verification.md`).
 
 ## 1. Why
 

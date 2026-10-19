@@ -414,17 +414,48 @@ address) when it is run. Do not edit an entry to say "pass" without that evidenc
   `no_overrides` test, not by a run.
 - Agent V6. Cutover and rollback rehearsal, including the installer's rollback to `.prev`.
 
-## Clipboard sync and Command key capture: device checks (not yet run)
+## Clipboard sync and Command key capture: device checks (partly run)
 
 The code is on branch `feat/clipboard-sync`; its automated tests ran on Linux, and the Mac
 build loop (tests, `--features dev-install`, fmt, clippy) ran on the owner's Mac; there has been
-no CI run for this branch yet (see "Automated checks"). None of the checks below has been run on a
+no CI run for this branch yet (see "Automated checks"). Apart from the owner's partial rehearsal
+report recorded below (2026-10-19), none of the checks below has been run on a
 real Windows PC or against a real Mac session. The design is `docs/superpowers/specs/2026-10-19-clipboard-sync-design.md`
 (§5 rehearsal, §6 list). Each entry is filled in with its date and evidence (numbers and
 words, no tailnet login, device name or address) when it is run; do not edit an entry to say
 "pass" without that evidence. Rehearsal setup: agent 0.2.0 installed by the owner with
 `./install.sh`; a candidate gateway on a spare port; the CI build of the desktop app on the
 Windows PC pointed at it, and pointed back at the production address afterwards.
+
+### Rehearsal result, recorded 2026-10-19, owner's report
+
+Rehearsal on the owner's Windows PC against the :8451 candidate gateway at commit `3ceb94a`,
+with Mac agent 0.2.0 installed. The owner released first and chose to check the rest later
+("지금 배포, 나중에 확인").
+
+PASSED per the owner's report:
+
+- Windows to Mac paste: Ctrl+C on Windows, then Win+V / Cmd+V on the Mac (windowed mode).
+- Mac to Windows paste: Cmd+C on the Mac, then Ctrl+V on Windows.
+- Windows key capture in windowed mode, with release: the Start menu was not opened from the
+  remote view; Win and Alt+Tab worked normally after leaving the window; hold-Escape
+  released the lock.
+
+Limits of this evidence: it is the owner's verbal report only. There are no screenshots or logs,
+full-screen mode was not reported, and the exact sub-checks of items 1, 2 and 4 below (for
+example the "immediately after copying" timing, or Win+C / Win+A, the Escape tap, F11 and the
+focus re-lock) were not itemised. The device-list lines below stay "Not yet run" until each
+sub-check is recorded with its own evidence.
+
+NOT YET RUN (the owner chose to release first):
+
+- Lock-screen paste (item 3).
+- VNC and Ubuntu RDP with Korean text (item 6), and the VNC clipboard encoding outcome A/B
+  (0.3.3 ships with guacd's default encoding).
+- Windows Clipboard History exclusion mark.
+- Mac client check 4b.
+- The over-64 KiB notice (item 7).
+- Old-app combinations (item 8).
 
 Spec §6 device list, verbatim:
 
