@@ -347,3 +347,31 @@ test("enter and exit never overlap, and the latest want wins", async () => {
   assert.equal(r.lock.held, false);
   assert.equal(r.maxInFlight, 1);
 });
+
+test("hold-Escape at the end of a session, while a take is in flight, does not latch the next session", async () => {
+  const r = rig();
+  r.lock.update(ON);
+  r.next("enter").resolve(true);
+  await settle();
+  r.escapeHeld();
+  r.lock.end();
+  r.next("lock").resolve();
+  await settle();
+  assert.deepEqual(r.notices, [], "no notice for the ended session");
+  await r.finishExits();
+  r.lock.update(ON);
+  assert.deepEqual(
+    r.log.slice(-1),
+    ["enter"],
+    "the next session takes at once",
+  );
+  // The same for a refusal that lands after the session ended.
+  const q = rig();
+  q.lock.update(ON);
+  q.lock.end();
+  q.next("enter").resolve(false);
+  await settle();
+  await q.finishExits();
+  q.lock.update(ON);
+  assert.equal(q.log.filter((x) => x === "enter").length, 2);
+});

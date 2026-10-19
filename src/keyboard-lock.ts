@@ -74,9 +74,9 @@ export function createKeyLock(deps: KeyLockDeps) {
     busy = false;
     evaluate();
   }
-  function fail(reason: string) {
+  function fail(reason: string, mine = epoch) {
     taking = false;
-    failed = true;
+    if (mine === epoch) failed = true;
     deps.log(reason);
     deps.unlock();
     void safely(deps.exitHtml).then(settle);
@@ -87,16 +87,19 @@ export function createKeyLock(deps: KeyLockDeps) {
     lostWhileTaking = false;
     const mine = epoch;
     void safely(deps.enterHtml).then(async (entered) => {
-      if (!entered) return fail("html-full-screen-refused");
+      if (!entered) return fail("html-full-screen-refused", mine);
       const result = await guardedLock();
-      if (result !== "ok") return fail(`key-lock-${result}`);
+      if (result !== "ok") return fail(`key-lock-${result}`, mine);
       taking = false;
       if (lostWhileTaking || !deps.isHtmlFullscreen()) {
         // Hold-Escape (or a page that left full screen) while the lock was being granted.
         lostWhileTaking = false;
         deps.unlock();
-        releasedByUser = true;
-        if (mine === epoch) deps.notify("key-lock-released");
+        // A session that ended meanwhile must not leave its latch to the next one.
+        if (mine === epoch) {
+          releasedByUser = true;
+          deps.notify("key-lock-released");
+        }
         return settle();
       }
       held = true;

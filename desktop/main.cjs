@@ -418,7 +418,9 @@ app
     window.webContents.session.setPermissionRequestHandler(
       (_webContents, permission, callback, details) =>
         callback(
-          (permission === "fullscreen" || permission === "keyboardLock") &&
+          // Only the Windows app has the key lock; elsewhere nothing is granted, as in 0.3.2.
+          process.platform === "win32" &&
+            (permission === "fullscreen" || permission === "keyboardLock") &&
             !!gateway &&
             originOf(details?.requestingUrl) === gateway,
         ),

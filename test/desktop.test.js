@@ -1542,6 +1542,20 @@ test("the permission handler grants fullscreen and keyboardLock only for the gat
   assert.equal(f.permissions.check({}, "automatic-fullscreen", GATEWAY), false);
 });
 
+test("on Mac and Linux the permission handler grants nothing, not even fullscreen or keyboardLock to the gateway", async (t) => {
+  for (const platform of ["darwin", "linux"]) {
+    const f = await desktop({ platform }, t);
+    for (const p of ["fullscreen", "keyboardLock", "media", "clipboard-read"])
+      assert.equal(
+        await new Promise((r) =>
+          f.permissions.request({}, p, r, { requestingUrl: `${GATEWAY}/` }),
+        ),
+        false,
+        `${platform} ${p}`,
+      );
+  }
+});
+
 test("with no gateway configured the permission handler grants nothing, not even to an empty requestingUrl", async (t) => {
   const f = await desktop({ stored: "" }, t);
   const ask = (permission, requestingUrl) =>
