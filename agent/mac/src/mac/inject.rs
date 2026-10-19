@@ -14,6 +14,8 @@ use std::time::Instant;
 
 const KEY_RETURN: u16 = 36;
 const KEY_TAB: u16 = 48;
+const KEY_SHIFT: u16 = 56;
+const SHIFT_FLAG: u64 = 0x0002_0000;
 /// kCGHIDEventTap
 const HID_TAP: u32 = 0;
 /// kCGScrollEventUnitPixel
@@ -214,12 +216,45 @@ impl Injector {
                             post_key(KEY_TAB, false, 0, false);
                         }
                         TypeStep::Units(units) => post_units(&units, 0),
+                        TypeStep::Key { .. } => {} // only `plan_keys` makes Key steps
                     }
                 }
             }
             InputMsg::Release => self.release_locked(&mut s),
             InputMsg::Size(_) => {} // handled by the session, not by the injector
             InputMsg::Clipboard { .. } | InputMsg::ClipboardWatch(_) => {} // handled by the session, not by the injector
+        }
+    }
+
+    /// Types single-line text as key codes, for the lock screen's password field, which
+    /// ignores Unicode events. Characters the ABC/US layout cannot type go as Unicode. The
+    /// physical `Pressed` flags are ignored (Command may still be held from the paste
+    /// shortcut), so every event carries only the Shift this character needs.
+    pub fn type_keys(&self, text: &str) {
+        if !system::accessibility_granted() {
+            return;
+        }
+        let _guard = self.lock(); // no other input interleaves with the typing
+        for step in typing::plan_keys(text) {
+            match step {
+                TypeStep::Key { code, shift } => {
+                    let flags = if shift { SHIFT_FLAG } else { 0 };
+                    if shift {
+                        post_modifier(KEY_SHIFT, SHIFT_FLAG);
+                    }
+                    post_key(code, true, flags, false);
+                    post_key(code, false, flags, false);
+                    if shift {
+                        post_modifier(KEY_SHIFT, 0);
+                    }
+                }
+                TypeStep::Tab => {
+                    post_key(KEY_TAB, true, 0, false);
+                    post_key(KEY_TAB, false, 0, false);
+                }
+                TypeStep::Units(units) => post_units(&units, 0),
+                TypeStep::Return => {} // `plan_keys` never makes Return
+            }
         }
     }
 

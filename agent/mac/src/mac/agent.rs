@@ -52,6 +52,9 @@ impl Input for Injector {
     fn release_all(&self) {
         Injector::release_all(self)
     }
+    fn type_keys(&self, text: &str) {
+        Injector::type_keys(self, text)
+    }
 }
 
 struct System {

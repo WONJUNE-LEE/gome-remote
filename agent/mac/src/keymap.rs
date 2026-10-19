@@ -137,6 +137,60 @@ pub fn lookup(code: &str) -> Option<KeyAction> {
     TABLE.iter().find(|(name, _)| *name == code).map(|(_, key)| KeyAction::Code(*key))
 }
 
+/// The physical key and Shift state that type `c` on the ABC/US layout (virtual key code,
+/// Shift), built from `TABLE`. `None` for anything that layout cannot type, which the caller
+/// types as Unicode instead. Used for the lock screen, where a Unicode event is not enough.
+pub fn us_key(c: char) -> Option<(u16, bool)> {
+    let (code, shift): (String, bool) = match c {
+        'a'..='z' => (format!("Key{}", c.to_ascii_uppercase()), false),
+        'A'..='Z' => (format!("Key{c}"), true),
+        '0'..='9' => (format!("Digit{c}"), false),
+        ' ' => ("Space".into(), false),
+        _ => {
+            let (name, shift) = match c {
+                '!' => ("Digit1", true),
+                '@' => ("Digit2", true),
+                '#' => ("Digit3", true),
+                '$' => ("Digit4", true),
+                '%' => ("Digit5", true),
+                '^' => ("Digit6", true),
+                '&' => ("Digit7", true),
+                '*' => ("Digit8", true),
+                '(' => ("Digit9", true),
+                ')' => ("Digit0", true),
+                '-' => ("Minus", false),
+                '_' => ("Minus", true),
+                '=' => ("Equal", false),
+                '+' => ("Equal", true),
+                '[' => ("BracketLeft", false),
+                '{' => ("BracketLeft", true),
+                ']' => ("BracketRight", false),
+                '}' => ("BracketRight", true),
+                '\\' => ("Backslash", false),
+                '|' => ("Backslash", true),
+                ';' => ("Semicolon", false),
+                ':' => ("Semicolon", true),
+                '\'' => ("Quote", false),
+                '"' => ("Quote", true),
+                ',' => ("Comma", false),
+                '<' => ("Comma", true),
+                '.' => ("Period", false),
+                '>' => ("Period", true),
+                '/' => ("Slash", false),
+                '?' => ("Slash", true),
+                '`' => ("Backquote", false),
+                '~' => ("Backquote", true),
+                _ => return None,
+            };
+            (name.into(), shift)
+        }
+    };
+    match lookup(&code) {
+        Some(KeyAction::Code(key)) => Some((key, shift)),
+        _ => None,
+    }
+}
+
 /// Shift, Control, Option, Command and Caps Lock change the flags of every later event.
 pub fn modifier_flag(key: u16) -> Option<u64> {
     match key {
@@ -182,6 +236,40 @@ mod tests {
             ("IntlBackslash", 10),
         ] {
             assert_eq!(lookup(code), Some(KeyAction::Code(key)), "{code}");
+        }
+    }
+
+    #[test]
+    fn us_key_covers_letters_digits_and_symbols_with_shift() {
+        for (c, expect) in [
+            ('a', (0, false)),
+            ('A', (0, true)),
+            ('1', (18, false)),
+            ('!', (18, true)),
+            ('@', (19, true)),
+            ('-', (27, false)),
+            ('_', (27, true)),
+            ('`', (50, false)),
+            ('~', (50, true)),
+            (' ', (49, false)),
+            ('/', (44, false)),
+            ('?', (44, true)),
+            ('\\', (42, false)),
+            ('|', (42, true)),
+            ('\'', (39, false)),
+            ('"', (39, true)),
+        ] {
+            assert_eq!(us_key(c), Some(expect), "{c}");
+        }
+        for c in ['é', '한', '😀', '€'] {
+            assert_eq!(us_key(c), None, "{c}");
+        }
+    }
+
+    #[test]
+    fn every_printable_ascii_character_has_a_key() {
+        for c in ' '..='~' {
+            assert!(us_key(c).is_some(), "{c:?}");
         }
     }
 

@@ -38,6 +38,8 @@ pub trait Capture: Send + Sync + 'static {
 pub trait Input: Send + Sync + 'static {
     fn handle(&self, message: InputMsg);
     fn release_all(&self);
+    /// Types single-line text as key codes (the lock screen), Unicode for what they cannot type.
+    fn type_keys(&self, text: &str);
 }
 
 /// What the system says (permissions, display, lock screen), and the pasteboard (`Board`).
@@ -428,6 +430,9 @@ mod tests {
         }
         fn release_all(&self) {
             self.0.add("release_all");
+        }
+        fn type_keys(&self, text: &str) {
+            self.0.add(format!("type_keys {} chars", text.chars().count()));
         }
     }
 
