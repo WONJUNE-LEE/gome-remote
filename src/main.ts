@@ -4,10 +4,12 @@ import { createAgentSession, type AgentSession } from "./agent";
 import { endText, startFailureReason } from "./agent-messages";
 import { localClipboardFor } from "./clipboard-local";
 import {
+  MAX_CLIPBOARD_BYTES,
   NOTICE_TEXT,
   createClipboardSync,
   type ClipboardSync,
   type NoticeKey,
+  utf8Length,
 } from "./clipboard-sync";
 import { connectFailure, createSessionFlow, errorScreen } from "./flow";
 import { createKeyboardLock, isLockedF11 } from "./keyboard-lock";
@@ -296,6 +298,9 @@ function releaseInput() {
 function stop() {
   generation++;
   releaseInput();
+  // Guacamole: keys and mouse held behind a paste go out (in order, before the connection
+  // closes) so the remote is not left with a key down. The Mac channel drops them instead.
+  if (client) sync?.flush();
   flow.stopped();
   updateKeyboardLock();
   resolution.stopped();
@@ -404,6 +409,58 @@ async function connect(input: ConnectInput) {
       resolution.viewportChanged();
     });
     resizeObserver.observe(el("viewport"));
+    // Only where there is a local clipboard to sync (the app with bridge 4 or later, or a
+    // browser with navigator.clipboard).
+    const local = localClipboardFor();
+    let thisSync: ClipboardSync | undefined;
+    if (local) {
+      thisSync = sync = createClipboardSync({
+        local,
+        remote: {
+          sendClipboard: (text) => {
+            if (current !== generation || client !== connection)
+              return "closed";
+            try {
+              return sendRemoteClipboard(text);
+            } catch {
+              return "closed";
+            }
+          },
+        },
+        target: selected?.platform === "mac" ? "mac" : "other",
+        notify: (key) => {
+          if (current === generation) showNotice(key);
+        },
+        setTimeout: ((callback: () => void, ms?: number) =>
+          setTimeout(callback, ms)) as typeof setTimeout,
+        clearTimeout: ((id?: ReturnType<typeof setTimeout>) =>
+          clearTimeout(id)) as typeof clearTimeout,
+      });
+    }
+    // Everything sent to the remote waits behind a paste in progress (the paste barrier).
+    const gated = (run: () => void) => (thisSync ? thisSync.gate(run) : run());
+    // The remote computer's clipboard text, written to the local clipboard once complete.
+    connection.onclipboard = (stream: any, mimetype: string) => {
+      if (mimetype !== "text/plain") return;
+      const reader = new Guacamole.StringReader(stream);
+      let text = "";
+      let tooLarge = false;
+      reader.ontext = (chunk: string) => {
+        // 64 KiB of UTF-8 is at most that many UTF-16 units: beyond it, stop collecting.
+        if (tooLarge) return;
+        text += chunk;
+        if (text.length > MAX_CLIPBOARD_BYTES) {
+          tooLarge = true;
+          text = "";
+        }
+      };
+      reader.onend = () => {
+        if (current !== generation || !thisSync) return;
+        if (tooLarge || utf8Length(text) > MAX_CLIPBOARD_BYTES)
+          thisSync.remoteSkipped("too-large");
+        else thisSync.remoteClipboard(text, false);
+      };
+    };
     const mouse = new Guacamole.Mouse(display.getElement());
     let mouseState: any;
     mouse.onmousedown =
@@ -414,7 +471,9 @@ async function connect(input: ConnectInput) {
           surface.classList.add("remote-pointer-active");
           mouseState = state;
           surface.focus({ preventScroll: true });
-          connection.sendMouseState(state, true);
+          gated(() => {
+            if (flow.active) connection.sendMouseState(state, true);
+          });
         };
     mouse.onmouseout = () => surface.classList.remove("remote-pointer-active");
     // Guacamole deduplicates moves to the last coordinate, including re-entry.
@@ -423,25 +482,41 @@ async function connect(input: ConnectInput) {
     });
     releaseMouse = () => {
       if (flow.active && mouseState)
-        connection.sendMouseState(
-          {
-            ...mouseState,
-            left: false,
-            middle: false,
-            right: false,
-            up: false,
-            down: false,
-          },
-          true,
-        );
+        gated(() => {
+          if (flow.active)
+            connection.sendMouseState(
+              {
+                ...mouseState,
+                left: false,
+                middle: false,
+                right: false,
+                up: false,
+                down: false,
+              },
+              true,
+            );
+        });
     };
+    // Registered before the Guacamole keyboard's own listener: the paste barrier is open
+    // when that listener sends the V.
+    surface.addEventListener("keydown", (event: KeyboardEvent) => {
+      try {
+        thisSync?.pasteShortcut(event);
+      } catch {
+        // the paste decision failing must not lose the key
+      }
+    });
     keyboard = new Guacamole.Keyboard(surface);
     keyboard.onkeydown = (keysym: number) => {
-      if (flow.active) connection.sendKeyEvent(1, keysym);
+      gated(() => {
+        if (flow.active) connection.sendKeyEvent(1, keysym);
+      });
       return false;
     };
     keyboard.onkeyup = (keysym: number) => {
-      if (flow.active) connection.sendKeyEvent(0, keysym);
+      gated(() => {
+        if (flow.active) connection.sendKeyEvent(0, keysym);
+      });
     };
     surface.addEventListener("blur", releaseInput);
     connection.onerror = () => {
@@ -463,6 +538,8 @@ async function connect(input: ConnectInput) {
         el<HTMLButtonElement>("text-input").disabled = false;
         surface.focus();
         fit();
+        // Session start pushes nothing: the clipboard is not read.
+        updateSyncFocus({ read: false });
       } else if (state === 5) flow.ended();
     };
     connection.connect(`ticket=${encodeURIComponent(result.ticket)}`);
@@ -474,6 +551,20 @@ async function connect(input: ConnectInput) {
       showFailure(kind);
     } else flow.ended();
   }
+}
+// Puts text on the remote computer's clipboard (the Guacamole clipboard stream).
+function sendRemoteClipboard(text: string): "sent" {
+  const writer = new Guacamole.StringWriter(
+    client.createClipboardStream("text/plain"),
+  );
+  writer.sendText(text);
+  writer.sendEnd();
+  return "sent";
+}
+// The keys that paste on the remote computer: Command (Meta) on a Mac, Control elsewhere,
+// then V.
+function pasteKeysFor(platform: string | undefined): [number, number] {
+  return [platform === "mac" ? 0xffe7 : 0xffe3, 0x76];
 }
 // A Mac (agent) session: WebRTC video and input straight to the Mac, set up through the
 // gateway (src/agent.ts). The flow, the overlay, the menu and the fullscreen handling are
@@ -624,16 +715,15 @@ el<HTMLFormElement>("text-form").onsubmit = (event) => {
       // The agent types the characters itself; the Mac clipboard is never touched.
       agent.sendText(text);
     } else if (text) {
-      const writer = new Guacamole.StringWriter(
-        client.createClipboardStream("text/plain"),
-      );
-      writer.sendText(text);
-      writer.sendEnd();
+      sendRemoteClipboard(text);
+      // The remote clipboard now holds this text, not what the sync last sent: the next
+      // paste must send the local clipboard again.
+      sync?.invalidate();
       // Clipboard transfer supports characters absent from the remote keyboard layout.
-      const modifier = selected?.platform === "mac" ? 0xffe7 : 0xffe3;
+      const [modifier, v] = pasteKeysFor(selected?.platform);
       client.sendKeyEvent(1, modifier);
-      client.sendKeyEvent(1, 0x76);
-      client.sendKeyEvent(0, 0x76);
+      client.sendKeyEvent(1, v);
+      client.sendKeyEvent(0, v);
       client.sendKeyEvent(0, modifier);
     }
   }

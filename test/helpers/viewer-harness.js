@@ -329,6 +329,10 @@ export async function viewer({
       this.connected = [];
       this.disconnected = 0;
       this.sizes = [];
+      // Everything the page sends the remote, in order: ["mouse", state], ["key", down,
+      // keysym] and ["clipboard", mimetype, text] (a finished clipboard stream).
+      this.log = [];
+      this.onclipboard = null;
       this.display = {
         getCursorLayer: () => new FakeElement("canvas"),
         getElement: () => new FakeElement("div"),
@@ -347,12 +351,23 @@ export async function viewer({
     disconnect() {
       this.disconnected++;
     }
-    sendMouseState() {}
-    sendKeyEvent() {}
+    sendMouseState(state) {
+      this.log.push(["mouse", state]);
+    }
+    sendKeyEvent(down, keysym) {
+      this.log.push(["key", down, keysym]);
+    }
+    createClipboardStream(mimetype) {
+      return { client: this, mimetype, text: "" };
+    }
     sendSize(width, height) {
       this.sizes.push([width, height]);
     }
   }
+  // The pointer, keyboard and clipboard stream classes record themselves like the clients.
+  const mice = [];
+  const keyboards = [];
+  const readers = [];
   // The Mac (agent) session is replaced by a recorder: src/agent.ts has its own tests with
   // a fake RTCPeerConnection. Here only main.ts's wiring is under test. By default `start`
   // relays a fake offer through the page's own signalling function, as the real one does.
@@ -409,11 +424,62 @@ export async function viewer({
   const Guacamole = {
     WebSocketTunnel: Tunnel,
     Client,
-    Mouse: class {},
-    Keyboard: class {
-      reset() {}
+    Mouse: class {
+      constructor(element) {
+        this.element = element;
+        mice.push(this);
+      }
     },
-    StringWriter: class {},
+    // Like the real one, it listens for keydown on the element it is given, so the order
+    // of listeners on that element is what the test sees. `modifiers` is its own state.
+    Keyboard: class {
+      constructor(element) {
+        this.element = element;
+        this.modifiers = {};
+        this.pressed = new Set();
+        keyboards.push(this);
+        element.addEventListener("keydown", (event) => {
+          if (event.keysym === undefined) return;
+          this.pressed.add(event.keysym);
+          if (this.onkeydown?.(event.keysym) === false)
+            event.preventDefault?.();
+        });
+        element.addEventListener("keyup", (event) => {
+          if (event.keysym === undefined) return;
+          this.pressed.delete(event.keysym);
+          this.onkeyup?.(event.keysym);
+        });
+      }
+      reset() {
+        for (const keysym of [...this.pressed]) {
+          this.pressed.delete(keysym);
+          this.onkeyup?.(keysym);
+        }
+      }
+    },
+    StringWriter: class {
+      constructor(stream) {
+        this.stream = stream;
+      }
+      sendText(text) {
+        this.stream.text += text;
+      }
+      sendEnd() {
+        this.stream.client.log.push([
+          "clipboard",
+          this.stream.mimetype,
+          this.stream.text,
+        ]);
+      }
+    },
+    StringReader: class {
+      constructor(stream) {
+        this.stream = stream;
+        this.ontext = null;
+        this.onend = null;
+        readers.push(this);
+      }
+    },
   };
 
   const tiles = await loadTs("tiles.ts");
@@ -518,6 +584,9 @@ export async function viewer({
     clients,
     tunnels,
     agents,
+    mice,
+    keyboards,
+    readers,
     rig,
     body,
     measureUse,

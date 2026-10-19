@@ -730,7 +730,8 @@ for (const protocol of ["rdp", "vnc"])
           "암호🔑",
           "false",
           protocol === "rdp" ? "false" : "",
-          "true",
+          // Clipboard sync needs guacd's clipboard instructions on every target.
+          "false",
           protocol === "rdp" ? "true" : "",
           // VNC draws the real local pointer; RDP leaves the cursor to the server.
           protocol === "rdp" ? "" : "local",
