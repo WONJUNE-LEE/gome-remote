@@ -652,3 +652,59 @@ node --test test/public-hygiene.test.js && git commit -m "Document clipboard syn
 - **Placeholders:** none intended; Task 2 uses the existing `Call` harness (`peer.rs:787-960`).
 - **Type consistency:** `SkipReason` strings (Task 1) = `NoticeKey` subset (Task 9) = `remoteSkipped` argument (Task 10). `PasteKeyEvent` (Task 9) is a subset of `KeyboardEvent` used in Tasks 10-11. `Board`/`ClipState` names are the same in Tasks 3, 5, 6. Bridge result shapes (Task 7) are what `bridgeClipboard` (Task 9) maps.
 - **Proportion:** signatures, pinned values and test names/assertions only; bodies appear nowhere.
+
+---
+
+### Task 14: Windows-only in-window key lock (spec revision 3, D4/G4)
+
+Added after the owner rejected full-screen-only capture (2026-10-19). Spec D4 "Decisions
+(revision 3 ...)" is the requirement; this task replaces Task 8's HTML-full-screen F11 path.
+
+**Files:**
+- Modify: `desktop/main.cjs` (webPreferences `disableHtmlFullscreenWindowResize: true`; F11 / menu /
+  `remote:fullscreen` back to plain native `win.setFullScreen` with the existing serialisation and
+  `remote:fullscreen-state` publishing; drop the `window.__gomeFsLock` HTML-full-screen entry and its
+  2 s enter/exit guards from the F11 path; new IPC `remote:key-lock`; `showSetup` and session end
+  release the page lock), `desktop/preload.cjs` (bridge stays version 4 — unreleased; add
+  `keyLockSupported: boolean` = `process.platform === "win32"` and `keyLock(on: boolean)`),
+  `src/types.d.ts`, `src/keyboard-lock.ts`, `src/main.ts` (lock glue, notices, F11 forward), `src/api.ts`
+  if the bridge typing lives there.
+- Test: `test/desktop.test.js`, `test/preload.test.js`, `test/keyboard-lock.test.js`,
+  `test/viewer-agent.test.js` (and any viewer test that asserted the revision-2 F11 behaviour).
+- Docs: `README.md` (keys section: Windows app captures the Windows key while the remote view is
+  focused, windowed or full screen; leave with the mouse or hold Escape ~1.5 s; click to re-take;
+  Mac/Linux apps unchanged), `docs/mac-agent-spec.md` bridge-4 note, `docs/verification.md` device
+  list items 4/4b/5 to match spec §6.
+
+**Interfaces:**
+- Bridge: `window.desktop.keyLockSupported: boolean`; `window.desktop.keyLock(on: boolean): Promise<boolean>`
+  → IPC `remote:key-lock` handled with `handle("gateway", ...)`; main refuses (`false`) unless
+  `process.platform === "win32"`, and for `on === true` unless `window.isFocused()`; `on` runs
+  `executeJavaScript("document.documentElement.requestFullscreen().then(() => true)", true)` with a
+  2000 ms guard (guard or rejection → `false`); `off` runs
+  `executeJavaScript("document.fullscreenElement ? document.exitFullscreen().then(() => true) : true", true)`
+  with the same guard. Native full screen is never touched by `remote:key-lock`.
+- `src/keyboard-lock.ts`: `createKeyLock(deps: { supported: boolean; enterHtml(): Promise<boolean>; exitHtml(): Promise<boolean>; lock(): Promise<void>; unlock(): void; isHtmlFullscreen(): boolean; notify(key: "key-lock-on" | "key-lock-released"): void; log(reason: string): void; setTimeout; clearTimeout })` returning
+  `{ update(want: { session: boolean; focused: boolean }): void; click(): void; fullscreenChanged(): void; end(): void; readonly held: boolean }`.
+  Rules: want = supported && session && focused && !releasedByUser. Take: enterHtml → lock (2000 ms
+  timeout after enterHtml resolved true; refusal/timeout → exitHtml + `log(reason)`, no notice).
+  Release on want=false: unlock + exitHtml. `click()` clears releasedByUser and re-evaluates.
+  `fullscreenChanged()` with no fullscreen element while held and not caused by our own exit →
+  hold-Escape: releasedByUser = true, unlock, `notify("key-lock-released")`. First successful take in
+  a session → `notify("key-lock-on")` (once per session; `end()` resets). Serialise: never two
+  enter/exit in flight; the latest want wins.
+- Notices (Korean copy exact, shown through the existing `#notice`, 4 s): `key-lock-on`
+  "Windows 키가 Mac으로 갑니다 · Esc를 길게 누르면 풀립니다"; `key-lock-released`
+  "키 잡기를 풀었습니다 · 화면을 클릭하면 다시 잡습니다".
+- Page wiring: session = an agent or Guacamole session view is shown (first frame / connected);
+  focused = window focus; triggers: first frame, window focus/blur, `mousedown` on the remote surface
+  (→ `click()`), `fullscreenchange`, session end (`end()`). While `held`, an F11 key-down (not repeat)
+  calls the existing native full-screen toggle through the bridge and is not sent to the remote.
+  Browsers and bridges without `keyLockSupported` never create the lock.
+
+- [ ] Steps: failing tests first for main (native F11 restored, `remote:key-lock` guards: non-win32,
+  origin, unfocused, user-gesture script, 2 s guard, never touches native), preload, the
+  `createKeyLock` rules (each rule above incl. hold-Escape detection, serialisation, notices once,
+  refusal → exit + log), viewer glue (Mac/Linux bridge never locks; blur releases; focus re-takes;
+  click after hold-Escape re-takes; F11 forwarded while held); implement; `npm test`,
+  `npm run check`, Linux Electron smoke; docs; commit.
