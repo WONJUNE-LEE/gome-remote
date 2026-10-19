@@ -312,6 +312,7 @@ focused, windowed or full screen):
      hold-Escape releases the lock (notice shown) and a click on the remote view takes it again;
      negative: after clicking another app, after minimising the window, and after hold-Escape,
      Win / Alt+Tab / Win+D work in Windows as usual; Win+L locks Windows (expected).
+     After clicking back into the app window, Win+V reaches the Mac again (focus re-lock).
   4b. Mac client app: Cmd+Q / Cmd+W / Cmd+H act on the local app as in
      0.3.2 (no lock on Mac clients).
   5. 클립보드 붙여넣기 pastes on the Mac (windowed, and after hold-Escape).
