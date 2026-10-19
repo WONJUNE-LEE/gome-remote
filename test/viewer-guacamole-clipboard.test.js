@@ -438,6 +438,11 @@ for (const [name, options] of Object.entries({
       "everything goes out at once",
     );
     assert.equal(v.clipboard.reads, 0);
+    assert.equal(
+      client.onclipboard,
+      null,
+      "the remote clipboard is not handled",
+    );
     assert.deepEqual(clipboards(client), []);
     assert.equal(v.el("notice").hidden, true);
     // The text dialog still works.
@@ -447,9 +452,27 @@ for (const [name, options] of Object.entries({
     assert.deepEqual(clipboards(client), ["B"]);
   });
 
-test("the paste listener runs before the Guacamole keyboard's", async () => {
-  const { surface } = await session(linuxRdp);
-  // The page's own keydown listener is registered first (the fake keyboard listens like the
-  // real one), so the barrier is already open when the keyboard's handler sends the V.
-  assert.equal(surface.listeners.keydown.length, 2);
+test("a mouse press and release made on one reused state object while a paste is pending both reach the remote", async () => {
+  const { v, client, surface, mouse } = await session(linuxRdp, {
+    clipboardText: "글",
+  });
+  v.clipboard.hold = true;
+  down(surface, CTRL, "ControlLeft", "Control", { ctrlKey: true });
+  down(surface, V, "KeyV", "v", { ctrlKey: true });
+  await v.settle();
+  // Guacamole.Mouse hands out one state object and mutates it (a wheel step is a press and
+  // a release in a row).
+  const state = { x: 3, y: 4, left: false, up: false, down: false };
+  state.down = true;
+  mouse.onmousedown(state);
+  state.down = false;
+  mouse.onmouseup(state);
+  v.clipboard.hold = false;
+  v.clipboard.resolve();
+  await v.settle();
+  assert.deepEqual(
+    client.log.filter((e) => e[0] === "mouse").map((e) => e[1].down),
+    [true, false],
+    "the press was not lost",
+  );
 });

@@ -180,6 +180,24 @@ test("remote_text_becomes_the_baseline_so_it_is_not_echoed_back", async () => {
   assert.equal(r.sent.length, 0);
 });
 
+test("a_remote_text_equal_to_the_baseline_does_not_rewrite_the_local_clipboard", async () => {
+  const r = rig();
+  r.s.setViewFocused(true);
+  await r.answer("mine");
+  r.s.remoteClipboard("mine", false);
+  await tick();
+  assert.deepEqual(r.writes, [], "what was just sent is not written back");
+  r.s.remoteClipboard("from mac", false);
+  await tick();
+  r.s.remoteClipboard("from mac", false);
+  await tick();
+  assert.deepEqual(
+    r.writes,
+    [["from mac", false]],
+    "a re-announcement is ignored",
+  );
+});
+
 test("a_failed_local_write_restores_the_previous_baseline", async () => {
   const r = rig();
   r.s.setViewFocused(true);

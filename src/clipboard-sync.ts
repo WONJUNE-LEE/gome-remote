@@ -261,6 +261,8 @@ export function createClipboardSync(deps: SyncDeps): ClipboardSync {
       if (!focused) return;
       const normalised = normaliseNewlines(text);
       if (normalised === "") return;
+      // The remote announcing what is already in sync must not overwrite the local clipboard.
+      if (normalised === lastSynced) return;
       epoch++;
       const before = lastSynced;
       lastSynced = normalised;

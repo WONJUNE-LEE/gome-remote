@@ -440,27 +440,29 @@ async function connect(input: ConnectInput) {
     // Everything sent to the remote waits behind a paste in progress (the paste barrier).
     const gated = (run: () => void) => (thisSync ? thisSync.gate(run) : run());
     // The remote computer's clipboard text, written to the local clipboard once complete.
-    connection.onclipboard = (stream: any, mimetype: string) => {
-      if (mimetype !== "text/plain") return;
-      const reader = new Guacamole.StringReader(stream);
-      let text = "";
-      let tooLarge = false;
-      reader.ontext = (chunk: string) => {
-        // 64 KiB of UTF-8 is at most that many UTF-16 units: beyond it, stop collecting.
-        if (tooLarge) return;
-        text += chunk;
-        if (text.length > MAX_CLIPBOARD_BYTES) {
-          tooLarge = true;
-          text = "";
-        }
+    // Without a local clipboard (old app, no permission) the remote clipboard is not handled.
+    if (thisSync)
+      connection.onclipboard = (stream: any, mimetype: string) => {
+        if (mimetype !== "text/plain") return;
+        const reader = new Guacamole.StringReader(stream);
+        let text = "";
+        let tooLarge = false;
+        reader.ontext = (chunk: string) => {
+          // 64 KiB of UTF-8 is at most that many UTF-16 units: beyond it, stop collecting.
+          if (tooLarge) return;
+          text += chunk;
+          if (text.length > MAX_CLIPBOARD_BYTES) {
+            tooLarge = true;
+            text = "";
+          }
+        };
+        reader.onend = () => {
+          if (current !== generation || !thisSync) return;
+          if (tooLarge || utf8Length(text) > MAX_CLIPBOARD_BYTES)
+            thisSync.remoteSkipped("too-large");
+          else thisSync.remoteClipboard(text, false);
+        };
       };
-      reader.onend = () => {
-        if (current !== generation || !thisSync) return;
-        if (tooLarge || utf8Length(text) > MAX_CLIPBOARD_BYTES)
-          thisSync.remoteSkipped("too-large");
-        else thisSync.remoteClipboard(text, false);
-      };
-    };
     const mouse = new Guacamole.Mouse(display.getElement());
     let mouseState: any;
     mouse.onmousedown =
@@ -471,8 +473,11 @@ async function connect(input: ConnectInput) {
           surface.classList.add("remote-pointer-active");
           mouseState = state;
           surface.focus({ preventScroll: true });
+          // Guacamole.Mouse reuses and mutates one state object (a wheel step presses and
+          // releases in one go): a held event must keep the state it had.
+          const snapshot = { ...state };
           gated(() => {
-            if (flow.active) connection.sendMouseState(state, true);
+            if (flow.active) connection.sendMouseState(snapshot, true);
           });
         };
     mouse.onmouseout = () => surface.classList.remove("remote-pointer-active");
