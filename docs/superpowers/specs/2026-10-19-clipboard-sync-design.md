@@ -181,7 +181,7 @@ Decisions:
 - Outbound `{"type":"clipboard","text":...}` on a pasteboard change while watch is on (poll
   `changeCount` about every 300 ms; ignore changes the agent made itself), and
   `{"type":"clipboard-skipped","reason":...}` for D8 cases (too large, read denied, lock-screen
-  multi-line).
+  multi-line, nothing to type), and `{"type":"lock","locked":bool}` (D5).
 - Writes use `prepareForNewContents(with: .currentHostOnly)` (exists since macOS 10.12, checked in
   the macOS 27 SDK) so Universal Clipboard does not carry the text to other Apple devices.
 - macOS paste privacy: the SDK header says the general pasteboard defaults to asking on
