@@ -81,10 +81,40 @@ pub(crate) struct FakeBoard {
     locked: std::sync::atomic::AtomicBool,
     writes: std::sync::Mutex<Vec<(String, bool)>>,
     reads: std::sync::atomic::AtomicUsize,
+    gate: std::sync::Mutex<ReadGate>,
+    gate_changed: std::sync::Condvar,
+}
+
+/// What a test does to `FakeBoard::read` to make it block like a macOS paste-privacy alert.
+#[cfg(test)]
+#[derive(Default)]
+struct ReadGate {
+    /// Reads wait here until `release_reads`.
+    held: bool,
+    /// A read is waiting at the gate.
+    waiting: bool,
 }
 
 #[cfg(test)]
 impl FakeBoard {
+    /// Makes every `read` block until `release_reads` (a pasteboard alert waiting for an answer).
+    pub(crate) fn hold_reads(&self) {
+        self.gate.lock().unwrap().held = true;
+    }
+    /// Lets the blocked reads (and later ones) through.
+    pub(crate) fn release_reads(&self) {
+        self.gate.lock().unwrap().held = false;
+        self.gate_changed.notify_all();
+    }
+    /// Waits (up to 3 s) until a `read` is blocked at the gate; whether one is.
+    pub(crate) fn wait_for_blocked_read(&self) -> bool {
+        let guard = self.gate.lock().unwrap();
+        let (guard, _) = self
+            .gate_changed
+            .wait_timeout_while(guard, std::time::Duration::from_secs(3), |gate| !gate.waiting)
+            .unwrap();
+        guard.waiting
+    }
     /// Pretends another program copied: the change count advances.
     pub(crate) fn bump(&self) -> i64 {
         self.count.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1
@@ -118,7 +148,15 @@ impl Board for FakeBoard {
     }
     fn read(&self) -> PasteRead {
         self.reads.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        self.read.lock().unwrap().clone().unwrap_or(PasteRead::NoText)
+        let result = self.read.lock().unwrap().clone().unwrap_or(PasteRead::NoText);
+        let mut gate = self.gate.lock().unwrap();
+        if gate.held {
+            gate.waiting = true;
+            self.gate_changed.notify_all();
+            gate = self.gate_changed.wait_while(gate, |gate| gate.held).unwrap();
+            gate.waiting = false;
+        }
+        result
     }
     fn write(&self, text: &str, concealed: bool) -> i64 {
         self.writes.lock().unwrap().push((text.to_string(), concealed));
@@ -180,6 +218,21 @@ pub struct ClipState {
     /// A Command+V found nothing held on the locked console and told the page so; the autorepeat
     /// downs of that V (which are still posted) do not tell it again before V comes up.
     told_empty: bool,
+    /// Advances whenever a read in flight stops being current: the page turned watching on or
+    /// off, or the page's text was written to the pasteboard.
+    generation: u64,
+}
+
+/// What the first half of a poll decided: the messages to send now, and whether the pasteboard
+/// text is to be read (outside every lock, since a macOS paste-privacy alert can hold the read).
+pub struct TickStep {
+    pub texts: Vec<String>,
+    pub read: Option<ReadTicket>,
+}
+
+/// Proof that `tick_begin` asked for a read; `tick_finish` takes the result back with it.
+pub struct ReadTicket {
+    generation: u64,
 }
 
 impl ClipState {
@@ -193,20 +246,38 @@ impl ClipState {
         if on && !self.watching {
             self.baseline = board.change_count();
         }
+        if on != self.watching {
+            self.generation += 1;
+        }
         self.watching = on;
     }
 
-    /// One poll. The messages for the page, in order: the lock change, then the clipboard.
+    /// One poll, whole. The messages for the page, in order: the lock change, then the clipboard.
+    /// The session does this in three steps instead (`tick_begin`, `read_for_page`, `tick_finish`)
+    /// so the read runs outside its locks.
     pub fn tick(&mut self, board: &dyn Board) -> Vec<String> {
-        let mut out = Vec::new();
+        let TickStep { mut texts, read } = self.tick_begin(board);
+        if let Some(ticket) = read {
+            let message = Self::read_for_page(board);
+            texts.extend(self.tick_finish(ticket, message));
+        }
+        texts
+    }
+
+    /// The first half of a poll: the lock change, and whether the pasteboard changed under a
+    /// watching page (then `read` asks the caller to run `read_for_page` and hand the result to
+    /// `tick_finish`). Reads nothing from the pasteboard itself.
+    pub fn tick_begin(&mut self, board: &dyn Board) -> TickStep {
+        let mut texts = Vec::new();
         let locked = board.console_locked();
         if self.last_lock != Some(locked) {
             self.last_lock = Some(locked);
             if !locked {
                 self.held = None;
             }
-            out.push(protocol::lock_notice(locked));
+            texts.push(protocol::lock_notice(locked));
         }
+        let mut read = None;
         if self.watching {
             let count = board.change_count();
             if count != self.baseline {
@@ -214,14 +285,26 @@ impl ClipState {
                 if self.own_write == Some(count) {
                     self.own_write = None;
                 } else {
-                    out.extend(Self::read_for_page(board));
+                    read = Some(ReadTicket { generation: self.generation });
                 }
             }
         }
-        out
+        TickStep { texts, read }
     }
 
-    fn read_for_page(board: &dyn Board) -> Option<String> {
+    /// The second half: the message for the page from a finished `read_for_page`. A read that
+    /// began before the page turned watching off or on, or before the page's text was written
+    /// to the pasteboard, is stale and says nothing.
+    pub fn tick_finish(&mut self, ticket: ReadTicket, message: Option<String>) -> Option<String> {
+        if !self.watching || ticket.generation != self.generation {
+            return None;
+        }
+        message
+    }
+
+    /// Reads the pasteboard for the page (this may block on a system alert): the message to send,
+    /// if any. Touches no state, so it belongs outside the session's locks.
+    pub fn read_for_page(board: &dyn Board) -> Option<String> {
         let skipped = |reason: protocol::SkipReason, len: Option<usize>| {
             match len {
                 Some(len) => eprintln!("[clipboard] not sent: {} ({len} bytes)", reason.as_str()),
@@ -250,6 +333,7 @@ impl ClipState {
         } else {
             self.held = None;
             self.own_write = Some(board.write(text, concealed));
+            self.generation += 1;
         }
     }
 
@@ -490,6 +574,45 @@ mod tests {
         board.set_read(text("user copy"));
         board.bump(); // 10
         assert_eq!(state.tick(&board), vec![protocol::clipboard_notice("user copy", false)]);
+    }
+
+    #[test]
+    fn a_split_tick_reads_between_its_halves_and_a_stale_read_is_dropped() {
+        // The two halves send what the whole tick would.
+        let board = FakeBoard::default();
+        let mut state = ClipState::new();
+        state.tick(&board);
+        state.watch(&board, true);
+        board.set_read(text("fresh"));
+        board.bump();
+        let step = state.tick_begin(&board);
+        assert!(step.texts.is_empty());
+        assert_eq!(board.reads(), 0, "the first half reads nothing");
+        let ticket = step.read.expect("a change under a watching page asks for a read");
+        let message = ClipState::read_for_page(&board);
+        assert_eq!(state.tick_finish(ticket, message), Some(protocol::clipboard_notice("fresh", false)));
+
+        // The page turned watching off, or wrote its text, while the read was out: stale.
+        for stop in ["watch off", "page wrote", "watch off and on"] {
+            board.bump();
+            let ticket = state.tick_begin(&board).read.expect(stop);
+            let message = ClipState::read_for_page(&board);
+            match stop {
+                "watch off" => state.watch(&board, false),
+                "page wrote" => state.inbound(&board, "theirs", false),
+                _ => {
+                    state.watch(&board, false);
+                    state.watch(&board, true);
+                }
+            }
+            assert_eq!(state.tick_finish(ticket, message), None, "{stop}");
+            state.watch(&board, true);
+        }
+        // The page's own write is still not sent back, and the next user copy is.
+        assert!(state.tick(&board).is_empty());
+        board.set_read(text("later"));
+        board.bump();
+        assert_eq!(state.tick(&board), vec![protocol::clipboard_notice("later", false)]);
     }
 
     #[test]

@@ -206,18 +206,34 @@ impl Hooks {
 
     /// One poll of the lock and the pasteboard. False when this session is over (replaced,
     /// ended, or its peer gone), which ends the ticker.
+    ///
+    /// The pasteboard read runs between two short stretches under the slot's and the clip
+    /// state's locks: a macOS paste-privacy alert can hold the read until the user answers it
+    /// through the very view whose input needs those locks.
     fn tick(&self) -> bool {
-        let alive = self.peer.get().is_some_and(PeerHandle::is_alive);
-        alive
-            && self
-                .core
-                .slot
-                .with_current(self.id(), || {
-                    let mut clip = self.clip();
-                    let texts = clip.tick(&self.core.board());
-                    self.send(&mut clip, texts);
-                })
-                .is_some()
+        if !self.peer.get().is_some_and(PeerHandle::is_alive) {
+            return false;
+        }
+        let Some(read) = self.core.slot.with_current(self.id(), || {
+            let mut clip = self.clip();
+            let step = clip.tick_begin(&self.core.board());
+            self.send(&mut clip, step.texts);
+            step.read
+        }) else {
+            return false;
+        };
+        let Some(ticket) = read else { return true };
+        let message = ClipState::read_for_page(&self.core.board());
+        // The session may have been replaced meanwhile; the state may have moved on (a stale
+        // read is dropped by `tick_finish`).
+        self.core
+            .slot
+            .with_current(self.id(), || {
+                let mut clip = self.clip();
+                let message = clip.tick_finish(ticket, message);
+                self.send(&mut clip, message.into_iter().collect());
+            })
+            .is_some()
     }
 }
 
@@ -296,12 +312,8 @@ impl PeerHooks for Hooks {
     fn channel_open(&self) {
         // The channel is open now: the first tick's `lock` notice is the first thing the page
         // hears (a text sent before this would have been dropped). A reopened channel is told again.
-        self.core.slot.with_current(self.id(), || {
-            let mut clip = self.clip();
-            clip.forget_lock();
-            let texts = clip.tick(&self.core.board());
-            self.send(&mut clip, texts);
-        });
+        self.core.slot.with_current(self.id(), || self.clip().forget_lock());
+        self.tick();
         if !self.ticking.swap(true, Relaxed) {
             let (hooks, poll) = (self.me.clone(), self.core.poll);
             std::thread::spawn(move || run_ticker(hooks, poll));
@@ -1324,6 +1336,61 @@ mod tests {
         rig.platform.board.bump();
         assert!(texts_after_a_while(&rig, 0).is_empty());
         assert_eq!(rig.platform.board.reads(), reads, "no read while the page is not watching");
+    }
+
+    /// Runs `f` on another thread and says whether it finished within 2 s (so a deadlock fails the
+    /// test instead of hanging it).
+    fn finishes_quickly(f: impl FnOnce() + Send + 'static) -> bool {
+        let (done, finished) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            f();
+            let _ = done.send(());
+        });
+        finished.recv_timeout(Duration::from_secs(2)).is_ok()
+    }
+
+    #[test]
+    fn a_pasteboard_read_stuck_on_an_alert_does_not_block_input() {
+        let rig = rig_polling();
+        let (hooks, _peer) = rig.open();
+        hooks.channel_open();
+        rig.texts(0);
+        hooks.input(br#"{"type":"clipboard-watch","on":true}"#);
+        rig.platform.board.set_read(PasteRead::Text { text: "after the alert".into(), concealed: false });
+        rig.platform.board.hold_reads();
+        rig.platform.board.bump();
+        assert!(rig.platform.board.wait_for_blocked_read(), "the ticker never reached the read");
+        // The user answers the alert through the very view this input comes from.
+        let typed = Arc::clone(&hooks);
+        assert!(finishes_quickly(move || typed.input(V_DOWN)), "input is stuck behind the blocked pasteboard read");
+        assert_eq!(injected_vs(&rig.log), 1);
+        rig.platform.board.release_reads();
+        let seen = texts_until(&rig, 0, |seen| !seen.is_empty());
+        assert_eq!(seen, vec![protocol::clipboard_notice("after the alert", false)]);
+    }
+
+    #[test]
+    fn a_read_finished_after_the_page_wrote_or_stopped_watching_is_dropped() {
+        for stop in ["page wrote", "watch off"] {
+            let rig = rig_polling();
+            let (hooks, _peer) = rig.open();
+            hooks.channel_open();
+            rig.texts(0);
+            hooks.input(br#"{"type":"clipboard-watch","on":true}"#);
+            rig.platform.board.set_read(PasteRead::Text { text: "stale".into(), concealed: false });
+            rig.platform.board.hold_reads();
+            rig.platform.board.bump();
+            assert!(rig.platform.board.wait_for_blocked_read(), "{stop}");
+            let same = Arc::clone(&hooks);
+            let acted = if stop == "page wrote" {
+                finishes_quickly(move || same.input(&clipboard_message("from the page")))
+            } else {
+                finishes_quickly(move || same.input(br#"{"type":"clipboard-watch","on":false}"#))
+            };
+            assert!(acted, "{stop}");
+            rig.platform.board.release_reads();
+            assert!(texts_after_a_while(&rig, 0).is_empty(), "{stop}: the old text must not be sent");
+        }
     }
 
     #[test]
