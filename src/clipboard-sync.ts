@@ -15,7 +15,7 @@ export type NoticeKey =
   SkipReason | "bridge-refused" | "read-timeout" | "unsupported-chars";
 
 export const NOTICE_TEXT: Record<NoticeKey, string> = {
-  "too-large": "클립보드가 너무 커서(64 KiB 초과) 보내지 못했습니다",
+  "too-large": "클립보드가 너무 커서(64 KiB 초과) 동기화하지 못했습니다",
   "read-denied": "Mac이 클립보드 읽기를 허용하지 않았습니다",
   "locked-multiline": "잠금 화면에는 여러 줄을 붙여넣을 수 없습니다",
   "locked-empty": "입력할 텍스트가 없습니다",
@@ -292,7 +292,7 @@ export function createClipboardSync(deps: SyncDeps): ClipboardSync {
       const failed = () => {
         if (lastSynced === normalised) lastSynced = before;
       };
-      let write: Promise<{ ok: boolean }>;
+      let write: Promise<Awaited<ReturnType<LocalClipboard["write"]>>>;
       try {
         write = Promise.resolve(local.write(normalised, concealed));
       } catch {
@@ -300,7 +300,10 @@ export function createClipboardSync(deps: SyncDeps): ClipboardSync {
         return;
       }
       write.then((r) => {
-        if (!r.ok) failed();
+        if (r.ok) return;
+        failed();
+        // Only the browser's own permission refusal is silent (D8).
+        if (r.reason !== "denied") deps.notify("bridge-refused");
       }, failed);
     },
     remoteSkipped(reason) {

@@ -29,7 +29,7 @@ const ok = (text, concealed = false) => ({ ok: true, text, concealed });
 
 // A scripted local clipboard: every read() is a deferred the test settles by hand; the
 // timers are fake and only move when the test advances them.
-function rig({ target = "other", latin1Only = false } = {}) {
+function rig({ target = "other", latin1Only = false, writeResult } = {}) {
   const reads = [];
   const writes = [];
   const sent = [];
@@ -49,7 +49,7 @@ function rig({ target = "other", latin1Only = false } = {}) {
     },
     async write(text, concealed) {
       writes.push([text, concealed]);
-      return { ok: true };
+      return writeResult ?? { ok: true };
     },
   };
   const remote = {
@@ -232,6 +232,22 @@ test("a_failed_local_write_restores_the_previous_baseline", async () => {
   reads[1](ok("mine"));
   await tick();
   assert.deepEqual(sent, ["mine"]);
+});
+
+test("a_remote_text_the_bridge_refuses_to_write_notifies_but_a_browser_permission_refusal_is_silent", async () => {
+  for (const [reason, expected] of [
+    ["failed", ["bridge-refused"]],
+    ["unfocused", ["bridge-refused"]],
+    ["denied", []],
+  ]) {
+    const r = rig({ writeResult: { ok: false, reason } });
+    r.s.setViewFocused(true);
+    await r.answer("");
+    r.s.remoteClipboard("from mac", false);
+    await tick();
+    assert.deepEqual(r.writes, [["from mac", false]], reason);
+    assert.deepEqual(r.notices, expected, reason);
+  }
 });
 
 test("a_focus_read_overtaken_by_remote_text_is_not_sent_back", async () => {
@@ -812,7 +828,7 @@ test("notice_text_is_the_approved_korean_copy", () => {
   assert.deepEqual(
     { ...NOTICE_TEXT },
     {
-      "too-large": "클립보드가 너무 커서(64 KiB 초과) 보내지 못했습니다",
+      "too-large": "클립보드가 너무 커서(64 KiB 초과) 동기화하지 못했습니다",
       "read-denied": "Mac이 클립보드 읽기를 허용하지 않았습니다",
       "locked-multiline": "잠금 화면에는 여러 줄을 붙여넣을 수 없습니다",
       "locked-empty": "입력할 텍스트가 없습니다",

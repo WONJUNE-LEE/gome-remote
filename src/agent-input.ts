@@ -233,7 +233,8 @@ const SKIP_REASONS: readonly string[] = [
   "locked-empty",
 ];
 export function parseAgentMessage(data: unknown): AgentMessage | undefined {
-  // `length` counts UTF-16 units: a cheap upper bound on the bytes, checked before parsing.
+  // `length` counts UTF-16 units: a cheap lower bound on the UTF-8 bytes, so a string over
+  // the limit here is over it in bytes too. Checked before parsing.
   if (typeof data !== "string" || data.length > MAX_CLIPBOARD_MESSAGE_BYTES)
     return undefined;
   let value: unknown;
