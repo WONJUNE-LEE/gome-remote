@@ -274,6 +274,73 @@ mod tests {
     }
 
     #[test]
+    fn every_printable_ascii_character_types_with_the_us_layouts_key_and_shift() {
+        // Written out by hand from the ANSI keyboard (kVK_ANSI_* values), not derived from TABLE:
+        // (unshifted, shifted, virtual key code) per physical key.
+        let keys: &[(char, char, u16)] = &[
+            ('a', 'A', 0),
+            ('s', 'S', 1),
+            ('d', 'D', 2),
+            ('f', 'F', 3),
+            ('h', 'H', 4),
+            ('g', 'G', 5),
+            ('z', 'Z', 6),
+            ('x', 'X', 7),
+            ('c', 'C', 8),
+            ('v', 'V', 9),
+            ('b', 'B', 11),
+            ('q', 'Q', 12),
+            ('w', 'W', 13),
+            ('e', 'E', 14),
+            ('r', 'R', 15),
+            ('y', 'Y', 16),
+            ('t', 'T', 17),
+            ('1', '!', 18),
+            ('2', '@', 19),
+            ('3', '#', 20),
+            ('4', '$', 21),
+            ('6', '^', 22),
+            ('5', '%', 23),
+            ('=', '+', 24),
+            ('9', '(', 25),
+            ('7', '&', 26),
+            ('-', '_', 27),
+            ('8', '*', 28),
+            ('0', ')', 29),
+            (']', '}', 30),
+            ('o', 'O', 31),
+            ('u', 'U', 32),
+            ('[', '{', 33),
+            ('i', 'I', 34),
+            ('p', 'P', 35),
+            ('l', 'L', 37),
+            ('j', 'J', 38),
+            ('\'', '"', 39),
+            ('k', 'K', 40),
+            (';', ':', 41),
+            ('\\', '|', 42),
+            (',', '<', 43),
+            ('/', '?', 44),
+            ('n', 'N', 45),
+            ('m', 'M', 46),
+            ('.', '>', 47),
+            (' ', ' ', 49),
+            ('`', '~', 50),
+        ];
+        let mut seen = HashSet::new();
+        for &(plain, shifted, code) in keys {
+            assert_eq!(us_key(plain), Some((code, false)), "{plain:?}");
+            seen.insert(plain);
+            if shifted != plain {
+                assert_eq!(us_key(shifted), Some((code, true)), "{shifted:?}");
+                seen.insert(shifted);
+            }
+        }
+        let printable: HashSet<char> = (' '..='~').collect();
+        assert_eq!(seen, printable, "the table covers every printable ASCII character, and no other");
+    }
+
+    #[test]
     fn modifiers_keep_their_physical_positions() {
         assert_eq!(lookup("ControlLeft"), Some(KeyAction::Code(59)));
         assert_eq!(lookup("AltLeft"), Some(KeyAction::Code(58)), "Alt is Option");

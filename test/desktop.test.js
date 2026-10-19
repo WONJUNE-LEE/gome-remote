@@ -1578,6 +1578,22 @@ test("the permission handler grants fullscreen and keyboardLock only for the gat
   assert.equal(f.permissions.check({}, "automatic-fullscreen", GATEWAY), false);
 });
 
+test("with no gateway configured the permission handler grants nothing, not even to an empty requestingUrl", async (t) => {
+  const f = await desktop({ stored: "" }, t);
+  const ask = (permission, requestingUrl) =>
+    new Promise((r) =>
+      f.permissions.request({}, permission, r, { requestingUrl }),
+    );
+  for (const p of ["fullscreen", "keyboardLock"])
+    for (const u of ["", undefined, SETUP, `${GATEWAY}/`])
+      assert.equal(await ask(p, u), false, `${p} ${u}`);
+  assert.equal(
+    await new Promise((r) => f.permissions.request({}, "fullscreen", r)),
+    false,
+    "and no details at all",
+  );
+});
+
 test("showing the address page while windowed does not touch fullscreen", async (t) => {
   const f = await desktop({}, t);
   f.menu.getMenuItemById("change-server").click();
