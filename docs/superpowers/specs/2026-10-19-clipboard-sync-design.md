@@ -3,6 +3,8 @@
 Status: owner approved the direction in chat on 2026-10-19 (grade F); owner decisions from the
 design review are recorded in §4 (marked "owner, 2026-10-19"). Revision 2 after design review
 round 1.
+Implemented on branch `feat/clipboard-sync` (not merged, not released); rehearsal pending
+(device checks in `docs/verification.md`).
 
 ## 1. Why
 

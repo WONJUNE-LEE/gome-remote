@@ -199,10 +199,16 @@
 ### D4. 입력
 
 - data channel `input` 하나(순서 보장·신뢰 전송). JSON 메시지, 메시지당 512바이트 이하
-  (`text`만 8 KiB 이하), 범위를 벗어난 값은 버린다.
+  (`text`만 8 KiB 이하, `clipboard`만 256 KiB 이하), 범위를 벗어난 값은 버린다.
   - `pointer {x,y}` 0..1 정규화(표시된 영상 내용 영역 기준), `button {b:0|1|2, down, x, y}`,
     `wheel {dx, dy}`(픽셀, 자름), `key {code, down}`(`KeyboardEvent.code`), `text {s}`,
     `release {}`(눌린 키·버튼 모두 놓기), `size {w,h}`.
+  - 클립보드(2026-10-19, 에이전트 0.2.0): `clipboard {text, concealed?}`(`text`는 비어 있지 않고
+    UTF-8 64 KiB 이하; 이 메시지만 `text`처럼 512바이트 한도의 예외이며 메시지 전체는 256 KiB 이하)와
+    `clipboard-watch {on}`. 잠금이 아니면 `clipboard`를 NSPasteboard에 쓰고(`currentHostOnly`,
+    `concealed`이면 `org.nspasteboard.ConcealedType` 표시), 잠겨 있으면 메모리에만 들고 있는다.
+    `clipboard-watch`가 켜져 있는 동안만 약 300 ms마다 `changeCount`를 보고, 켤 때의 값을 읽지 않고
+    기준으로 삼는다. 0.1.0 에이전트는 모르는 type이라 버린다.
 - 포인터: **내 기기 포인터**(오너 결정 2026-10-14). 캡처에 커서를 넣지 않고 페이지는 영상 위에
   기본 화살표를 보인다. 에이전트는 포인터 이동마다 Mac 커서를 실제로 옮긴다(호버 동작 유지).
   Mac의 포인터 모양 변화(I자 등)는 보이지 않는다.
@@ -212,13 +218,23 @@
   한 번(한/A 전환)으로 보낸다(O3). 모르는 `code`는 버린다. OS가 가로채는 조합(Alt+Tab 등)은
   범위 밖이다.
 - 텍스트 입력 창: `agent`는 `text`로 보내 에이전트가 유니코드 문자 입력 이벤트로 직접 친다(Mac
-  클립보드를 건드리지 않는다). Guacamole 경로는 지금 그대로.
+  클립보드를 건드리지 않는다). 클립보드 동기화(`clipboard`)와는 별개의 경로다. Guacamole 경로는 지금 그대로.
 - 끼임 방지: 페이지는 blur·전체 화면 전환·대화 상자·세션 종료 때 `release`를 보낸다. 에이전트는
   data channel이 닫히거나 세션이 바뀌면 눌린 키·버튼을 모두 놓는다. 또 세션의 상대에게서 패킷이
   하나도 오지 않은 지 3초가 되면(브라우저가 강제 종료되거나 네트워크가 끊긴 경우) 눌린 키·버튼을
   모두 놓는다. 이때 세션은 닫지 않는다(10초 무수신 종료는 그대로). 패킷이 다시 오면 다음 3초
   침묵 때 또 놓는다.
-- 에이전트가 페이지로 보내는 data channel 메시지는 `{"type":"replaced"}` 하나뿐이다(D5).
+- 에이전트가 페이지로 보내는 data channel 메시지(0.2.0부터 넷):
+  `{"type":"replaced"}`(D5), `{"type":"lock","locked":bool}`(세션 시작 때와 잠금 신호가 바뀔 때마다.
+  신호는 `CGSSessionScreenIsLocked`가 아니라 콘솔 잠금 `IOConsoleLocked`; 화면만 꺼진 상태는 잠금이
+  아니다), `{"type":"clipboard","text":...,"concealed":bool}`(감시 중 Mac 클립보드가 바뀌었을 때),
+  `{"type":"clipboard-skipped","reason":...}`(`too-large`, `read-denied`, `locked-multiline`,
+  `locked-empty`). 오래된 페이지는 `replaced`만 읽고 나머지는 무시한다. 클립보드 본문은 로그에
+  남기지 않는다(이유와 바이트 수만).
+- 잠금 화면 붙여넣기: 잠겨 있을 때 Command만 누른 V를 주입하지 않고 들고 있던 클라이언트 텍스트를
+  키코드로 친다(ABC 자판에 없는 문자는 유니코드 입력으로 대체). 들고 있던 텍스트는 Mac 클립보드에
+  쓰지 않으며 잠금 해제와 세션 종료 때 버린다. 끝의 줄바꿈 하나는 지우고, 그래도 줄바꿈이 남으면
+  치지 않고 `locked-multiline`을 알린다. 들고 있는 텍스트가 없으면 `locked-empty`를 알린다.
 
 ### D5. 세션 수명과 상태
 
@@ -432,6 +448,6 @@ Serve `:8450`)는 5단계 전까지 건드리지 않는다.
 
 ## 11. 범위 밖
 
-소리, 파일 전송, 양방향 클립보드 동기화, 여러 디스플레이, Mac 포인터 모양 표시, 잠금 해제
-자동화, 앱 서명·공증·자동 업데이트, Apple 지속 캡처 entitlement, Windows/Linux용 에이전트(Ubuntu는
+소리, 파일 전송, 이미지·파일 클립보드(텍스트 동기화는 D4), 여러 디스플레이, Mac 포인터 모양 표시,
+잠금 해제 자동화(붙여넣기 한 번을 키코드로 치는 것만 D4에 있고, 그 밖의 잠금 화면 조작은 없다), 앱 서명·공증·자동 업데이트, Apple 지속 캡처 entitlement, Windows/Linux용 에이전트(Ubuntu는
 guacd 유지), 휴대폰 입력 최적화, 재부팅 후 무인 로그인, TURN 중계(P2가 요구하지 않는 한).
