@@ -177,6 +177,9 @@ pub struct ClipState {
     modifiers: u64,
     /// A Command+V was decided and not yet released: repeats and the up of V are swallowed.
     swallowed_v: bool,
+    /// A Command+V found nothing held on the locked console and told the page so; the autorepeat
+    /// downs of that V (which are still posted) do not tell it again before V comes up.
+    told_empty: bool,
 }
 
 impl ClipState {
@@ -272,6 +275,10 @@ impl ClipState {
             }
             return KeyDecision::swallow();
         }
+        if self.told_empty {
+            self.told_empty = down;
+            return KeyDecision::inject();
+        }
         if !down || self.modifiers != COMMAND_ONLY {
             return KeyDecision::inject();
         }
@@ -286,6 +293,7 @@ impl ClipState {
             .or_else(|| held.strip_suffix('\r'))
             .unwrap_or(held);
         if text.is_empty() {
+            self.told_empty = true;
             return KeyDecision {
                 act: KeyAct::Inject,
                 notice: Some(protocol::skipped_notice(protocol::SkipReason::LockedEmpty)),
@@ -306,6 +314,7 @@ impl ClipState {
     pub fn release(&mut self) {
         self.modifiers = 0;
         self.swallowed_v = false;
+        self.told_empty = false;
     }
 
     /// The session is over: the held text goes.
@@ -660,6 +669,26 @@ mod tests {
             d,
             KeyDecision { act: KeyAct::Inject, notice: Some(protocol::skipped_notice(SkipReason::LockedEmpty)) }
         );
+    }
+
+    #[test]
+    fn the_locked_empty_notice_is_sent_on_the_first_down_of_v_only() {
+        let notice =
+            KeyDecision { act: KeyAct::Inject, notice: Some(protocol::skipped_notice(SkipReason::LockedEmpty)) };
+        let plain = KeyDecision { act: KeyAct::Inject, notice: None };
+        let board = FakeBoard::default();
+        board.set_locked(true);
+        let mut state = ClipState::new();
+        key(&mut state, &board, CMD, true);
+        assert_eq!(key(&mut state, &board, KEY_V, true), notice);
+        assert_eq!(key(&mut state, &board, KEY_V, true), plain, "autorepeat still injects, silently");
+        assert_eq!(key(&mut state, &board, KEY_V, true), plain);
+        assert_eq!(key(&mut state, &board, KEY_V, false), plain);
+        assert_eq!(key(&mut state, &board, KEY_V, true), notice, "the next press tells the page again");
+        // A release (channel closed) forgets it too.
+        state.release();
+        key(&mut state, &board, CMD, true);
+        assert_eq!(key(&mut state, &board, KEY_V, true), notice);
     }
 
     #[test]
