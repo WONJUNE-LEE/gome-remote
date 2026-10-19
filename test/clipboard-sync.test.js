@@ -336,6 +336,19 @@ test("size_cap_counts_utf8_bytes", async () => {
   assert.equal(r.sent.length, 1);
 });
 
+test("size_cap_is_exact_at_65536_bytes", async () => {
+  const r = rig();
+  r.s.setViewFocused(true);
+  await r.answer("a".repeat(65_536));
+  assert.equal(r.sent.length, 1, "exactly 64 KiB is sent");
+  assert.deepEqual(r.notices, []);
+  r.s.setViewFocused(false);
+  r.s.setViewFocused(true);
+  await r.answer("a".repeat(65_537));
+  assert.equal(r.sent.length, 1, "one byte more is not");
+  assert.deepEqual(r.notices, ["too-large"]);
+});
+
 test("a_too_large_answer_from_the_channel_notices_the_same", async () => {
   const r = rig();
   r.setSendResult("too-large");

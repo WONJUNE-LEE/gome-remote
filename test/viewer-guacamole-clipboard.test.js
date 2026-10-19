@@ -239,6 +239,24 @@ test("a remote text over 64 KiB is not written and the user is told", async () =
   assert.equal(v.clipboard.writes.length, 1);
 });
 
+test("a remote text of exactly 64 KiB is written and one byte more is not", async () => {
+  const { v, client } = await session(linuxRdp);
+  client.onclipboard({ id: 1 }, "text/plain");
+  const exact = v.readers.at(-1);
+  exact.ontext("a".repeat(65_536));
+  exact.onend();
+  await v.settle();
+  assert.equal(v.clipboard.writes.length, 1, "64 KiB exactly is written");
+  assert.equal(v.clipboard.writes[0][0].length, 65_536);
+  client.onclipboard({ id: 2 }, "text/plain");
+  const over = v.readers.at(-1);
+  over.ontext("a".repeat(65_537));
+  over.onend();
+  await v.settle();
+  assert.equal(v.clipboard.writes.length, 1, "one byte more is not");
+  assert.equal(v.el("notice").textContent, NOTICES["too-large"]);
+});
+
 test("the_text_dialog_invalidates_the_baseline", async () => {
   const { v, client, surface } = await session(linuxRdp, {
     clipboardText: "A",

@@ -772,15 +772,23 @@ test("sendClipboard sends the message; text over 256 KiB once encoded is too lar
     h.session.sendClipboard("\u0001".repeat(65_536), false),
     "too-large",
   );
-  // The message length counts bytes, not UTF-16 units: this text is under 256 KiB in
-  // units but over it in bytes.
+  // The limit counts UTF-8 bytes of the encoded message, not UTF-16 units. 40 000 control
+  // characters (6 bytes escaped) and 8 512 Hangul (3 bytes each) are 64 KiB of text; the
+  // message is under 256 KiB in UTF-16 units and over it in UTF-8 bytes.
+  const mixed = "\u0001".repeat(40_000) + "가".repeat(8_512);
+  const encoded = JSON.stringify({
+    type: "clipboard",
+    text: mixed,
+    concealed: false,
+  });
   assert.equal(
-    h.session.sendClipboard(
-      "\u0001".repeat(42_000) + "가".repeat(23_536),
-      false,
-    ),
-    "too-large",
+    new TextEncoder().encode(mixed).length,
+    65_536,
+    "the text is 64 KiB",
   );
+  assert.ok(encoded.length <= 262_144, `units ${encoded.length}`);
+  assert.ok(new TextEncoder().encode(encoded).length > 262_144, "bytes");
+  assert.equal(h.session.sendClipboard(mixed, false), "too-large");
   assert.equal(h.channel().sent.length, before + 1, "nothing else went out");
   // A text near the limit still goes: 64 KiB of plain text.
   assert.equal(h.session.sendClipboard("a".repeat(65_536), false), "sent");

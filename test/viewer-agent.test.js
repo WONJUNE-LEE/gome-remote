@@ -693,6 +693,31 @@ const keysOf = (channel) =>
     .filter((m) => m.type === "key")
     .map((m) => `${m.code}:${m.down ? "down" : "up"}`);
 
+test("a watch asked for before the channel opened goes out once, when it opens", async () => {
+  const v = await opened({ realAgent: true, clipboardText: "" });
+  const pc = v.rig.peers.at(-1);
+  const channel = pc.channels[0];
+  pc.setState("connected");
+  await v.settle();
+  const surface = v.el("display").children.at(-1);
+  pc.track({ id: "stream" });
+  surface.children[0].showFrame(1); // the first picture, with the channel still closed
+  await v.settle();
+  assert.equal(channel.readyState, "connecting");
+  assert.deepEqual(
+    channel.sent,
+    [],
+    "nothing can be sent before the channel is open",
+  );
+  channel.open();
+  await v.settle();
+  assert.deepEqual(
+    channel.messages().filter((m) => m.type.startsWith("clipboard")),
+    [{ type: "clipboard-watch", on: true }],
+    "the watch is said again on open, exactly once",
+  );
+});
+
 test("copy then Cmd+V reaches the channel in order: the text first, then the held keys", async () => {
   const { v, channel, surface } = await syncing({ clipboardText: "" });
   assert.deepEqual(
