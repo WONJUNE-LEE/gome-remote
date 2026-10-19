@@ -145,14 +145,23 @@ Decisions:
   remote-control docs; NSSecureTextField). The agent knows the lock state
   (`CGSSessionScreenIsLocked`), but on 2026-10-19 its status said `locked:true` while the Mac's display
   was only asleep and the session was not locked (lock delay 300 s; `IOConsoleLocked` false). The
-  lock-screen paste decision must use a signal that means the session is really locked; the
-  builder picks and tests it (the display-asleep case must count as unlocked).
+  lock-screen paste decision must use a signal that means the session is really locked: the
+  console lock (`IOConsoleLocked`, or an equivalent the builder shows to agree with it), so the
+  display-asleep and screen-saver-within-grace cases count as unlocked.
+- The agent tells the page the lock state: `{"type":"lock","locked":bool}` when the session
+  opens and on every change of that signal. On every lock change the page forgets its last sent
+  and received text (so the next trigger sends again), and while the Mac is locked the paste
+  barrier always sends the client text even if unchanged. So text synced before the lock is sent
+  again and held for a lock-screen paste, and after unlock the next paste writes the client text
+  to the pasteboard (no stale paste). An old agent sends no lock notice; the page then behaves as
+  without lock handling.
 - While the screen is locked, clipboard text from the client is held in the agent's memory only
   and is NOT written to NSPasteboard (nothing of a lock-screen password stays on the Mac). The
   held text is dropped on unlock and at session end.
 - While locked, V key-down with Command held and no other modifier is not injected. If held text
   exists, the agent types it through the existing typing path and treats V as released; if none
-  exists, the key is injected as usual (a no-op at the lock screen).
+  exists (the client clipboard was empty or not text), the key is injected as usual (a no-op at
+  the lock screen) and D8 tells the user there was nothing to type.
 - Line breaks at the lock screen: one trailing CR/LF/CRLF is stripped; text that still contains
   a line break is not typed and D8 tells the user (a multi-line paste would submit several wrong
   passwords).
@@ -210,7 +219,11 @@ Decisions:
 
 - The viewer shows a short non-blocking notice (not the error dialog) when text exists but was
   not synced or typed: too large (either direction), the Mac refused the pasteboard read, a
-  multi-line lock-screen paste, the bridge refused (window not focused at that instant).
+  multi-line lock-screen paste, nothing to type at the lock screen, the bridge refused (window
+  not focused at that instant).
+- Known limit, accepted: a Mac copy made in the last few hundred milliseconds before the remote
+  view loses focus may not reach the client (the watch stops on focus loss); copying again with
+  the view focused fixes it. README states it.
 - The agent and the app log one line per skip with the reason and byte length.
 - A browser permission refusal is the only silent case.
 
@@ -224,6 +237,9 @@ Decisions:
      of the PR (build.yml makes a Windows .exe, not published) on the owner's Windows PC,
      pointed at :8451.
    - Run the §6 device checks there and record them in docs/verification.md.
+   - At the end of the rehearsal (pass or withdraw) the owner's app is pointed back at :8450
+     (서버 주소 바꾸기) and, if the rehearsal build is not released, reinstalled from the current
+     release; the :8451 candidate is stopped.
    - Withdraw criteria: if the Windows key is not captured in full screen, D4's full-screen
      changes are removed from the release (G5 and G1–G3 still ship) and the owner decides on a
      follow-up; if lock-screen typing fails, G3 is dropped (VNC tile stays the fallback); if
@@ -250,7 +266,10 @@ Decisions:
   2. Mac: Cmd+C in TextEdit → Ctrl+V in Notepad pastes it; a Mac-side change while the app is
      in the background does not change the Windows clipboard.
   3. Mac locked: dummy text first, then the real password, via Cmd+V and via 클립보드 붙여넣기;
-     the Mac pasteboard does not contain it afterwards.
+     the Mac pasteboard does not contain it afterwards. Both cases: text copied after the lock,
+     and text already synced before the lock. Negative: with only the display asleep (within the
+     lock delay) Cmd+V pastes normally and types nothing; right after unlock, pasting the same
+     text again pastes it (not the older pasteboard content).
   4. Windows full screen: Win+V / Win+C / Win+A reach the Mac; a bare Win tap does not open
      Start; F11 leaves full screen while locked; hold-Escape leaves full screen; Win+L locks
      Windows (expected).
