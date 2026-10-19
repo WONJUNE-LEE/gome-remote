@@ -12,6 +12,8 @@ const {
   message,
   preferredCodecs,
   MAX_WHEEL,
+  MAX_CLIPBOARD_MESSAGE_BYTES,
+  parseAgentMessage,
 } = await loadTs("agent-input.ts");
 
 const wide = { left: 10, top: 20, width: 1000, height: 1000 }; // a square element
@@ -382,4 +384,42 @@ test("a browser that offers no H.264 gets a list without it, which the session r
     ["video/rtx"],
   );
   assert.deepEqual(plain(preferredCodecs([])), []);
+});
+
+test("parseAgentMessage rejects malformed, unknown and oversized messages", () => {
+  for (const bad of [
+    '{"type":"lock"}',
+    '{"type":"lock","locked":"yes"}',
+    '{"type":"clipboard","text":1,"concealed":false}',
+    '{"type":"clipboard","text":"x"}',
+    '{"type":"clipboard-skipped","reason":"nope"}',
+    "[]",
+    "x",
+    "",
+  ])
+    assert.equal(parseAgentMessage(bad), undefined, bad);
+  const big = JSON.stringify({
+    type: "clipboard",
+    text: "a".repeat(MAX_CLIPBOARD_MESSAGE_BYTES),
+    concealed: false,
+  });
+  assert.equal(parseAgentMessage(big), undefined);
+  assert.equal(
+    parseAgentMessage(
+      JSON.stringify({ type: "lock", locked: true, pad: " ".repeat(300) }),
+    ),
+    undefined,
+    "small messages stay small",
+  );
+});
+
+test("the clipboard builders write exactly the contract and keep Korean and escapes intact", () => {
+  assert.equal(
+    message.clipboard("a\n한", true),
+    '{"type":"clipboard","text":"a\\n한","concealed":true}',
+  );
+  assert.equal(
+    message.clipboardWatch(false),
+    '{"type":"clipboard-watch","on":false}',
+  );
 });

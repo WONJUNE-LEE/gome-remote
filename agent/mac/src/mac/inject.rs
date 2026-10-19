@@ -219,6 +219,7 @@ impl Injector {
             }
             InputMsg::Release => self.release_locked(&mut s),
             InputMsg::Size(_) => {} // handled by the session, not by the injector
+            InputMsg::Clipboard { .. } | InputMsg::ClipboardWatch(_) => {} // handled by the session, not by the injector
         }
     }
 

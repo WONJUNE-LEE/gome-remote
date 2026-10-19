@@ -172,7 +172,17 @@ export const message = {
   text: (s: string) => JSON.stringify({ type: "text", s }),
   release: () => JSON.stringify({ type: "release" }),
   size: (w: number, h: number) => JSON.stringify({ type: "size", w, h }),
+  clipboard: (text: string, concealed: boolean) =>
+    JSON.stringify({ type: "clipboard", text, concealed }),
+  clipboardWatch: (on: boolean) =>
+    JSON.stringify({ type: "clipboard-watch", on }),
 };
+
+// Clipboard limits, the same as agent/mac/src/protocol.rs: 64 KiB of UTF-8 text, and the
+// whole encoded message at most 256 KiB (the data channel's limit; JSON escaping can make
+// control characters take up to six times their size).
+export const MAX_CLIPBOARD_TEXT_BYTES = 64 * 1024;
+export const MAX_CLIPBOARD_MESSAGE_BYTES = 256 * 1024;
 
 // What the agent may send back over the same channel. Only `replaced`: another device took
 // the session over and the agent is about to close this connection. Anything else (other
@@ -187,6 +197,52 @@ export function parseNotice(data: unknown): Notice | undefined {
   } catch {
     return undefined;
   }
+}
+
+// Every message the agent may send back, text frames only. A message that is malformed,
+// unknown, binary or too long is `undefined`: dropped, never guessed at.
+export type SkipReason =
+  "too-large" | "read-denied" | "locked-multiline" | "locked-empty";
+export type AgentMessage =
+  | { type: "replaced" }
+  | { type: "lock"; locked: boolean }
+  | { type: "clipboard"; text: string; concealed: boolean }
+  | { type: "clipboard-skipped"; reason: SkipReason };
+const SKIP_REASONS: readonly string[] = [
+  "too-large",
+  "read-denied",
+  "locked-multiline",
+  "locked-empty",
+];
+export function parseAgentMessage(data: unknown): AgentMessage | undefined {
+  // `length` counts UTF-16 units: a cheap upper bound on the bytes, checked before parsing.
+  if (typeof data !== "string" || data.length > MAX_CLIPBOARD_MESSAGE_BYTES)
+    return undefined;
+  let value: unknown;
+  try {
+    value = JSON.parse(data);
+  } catch {
+    return undefined;
+  }
+  if (typeof value !== "object" || value === null || Array.isArray(value))
+    return undefined;
+  const m = value as Record<string, unknown>;
+  if (m.type === "clipboard") {
+    if (typeof m.text !== "string" || typeof m.concealed !== "boolean")
+      return undefined;
+    return { type: "clipboard", text: m.text, concealed: m.concealed };
+  }
+  if (data.length > 256) return undefined;
+  if (m.type === "replaced") return { type: "replaced" };
+  if (m.type === "lock")
+    return typeof m.locked === "boolean"
+      ? { type: "lock", locked: m.locked }
+      : undefined;
+  if (m.type === "clipboard-skipped")
+    return typeof m.reason === "string" && SKIP_REASONS.includes(m.reason)
+      ? { type: "clipboard-skipped", reason: m.reason as SkipReason }
+      : undefined;
+  return undefined;
 }
 
 // The codecs the page offers, in order: H.264 only (the Mac encodes in hardware), with
