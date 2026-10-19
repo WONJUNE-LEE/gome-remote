@@ -415,9 +415,10 @@ address) when it is run. Do not edit an entry to say "pass" without that evidenc
 
 ## Clipboard sync and Command key capture: device checks (not yet run)
 
-The code is on branch `feat/clipboard-sync`; its automated tests ran on Linux and the Mac
-parts on a macOS runner (see "Automated checks"). Nothing below has been run on a real
-Windows PC or Mac. The design is `docs/superpowers/specs/2026-10-19-clipboard-sync-design.md`
+The code is on branch `feat/clipboard-sync`; its automated tests ran on Linux, and the Mac
+build loop (tests, `--features dev-install`, fmt, clippy) ran on the owner's Mac; there has been
+no CI run for this branch yet (see "Automated checks"). None of the checks below has been run on a
+real Windows PC or against a real Mac session. The design is `docs/superpowers/specs/2026-10-19-clipboard-sync-design.md`
 (§5 rehearsal, §6 list). Each entry is filled in with its date and evidence (numbers and
 words, no tailnet login, device name or address) when it is run; do not edit an entry to say
 "pass" without that evidence. Rehearsal setup: agent 0.2.0 installed by the owner with
