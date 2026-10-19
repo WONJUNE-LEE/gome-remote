@@ -188,7 +188,7 @@ Decisions:
   the macOS 27 SDK) so Universal Clipboard does not carry the text to other Apple devices.
 - macOS paste privacy: the SDK header says the general pasteboard defaults to asking on
   programmatic content reads (`accessBehavior`, macOS 15.4+), and `changeCount`/`types` never
-  ask. A probe on the Mac (macOS 27.0.1, ad-hoc signed, run in the GUI session) reported
+  ask. A probe on the owner's Mac (macOS 27.0.1, ad-hoc signed, run in the GUI session) reported
   `accessBehavior = alwaysAllow`; content reads were not tested. So: the agent reads content only
   after a change while watch is on (the user is looking at the Mac, so a one-time macOS alert is
   visible and answerable through the remote view); `alwaysDeny` means no read and a
