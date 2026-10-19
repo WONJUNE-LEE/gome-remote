@@ -87,7 +87,12 @@ export interface ClipboardSync {
   pasteFromMenu(press: () => void): void;
   gate(run: () => void): void;
   flush(): void;
+  // The lock changed or the remote clipboard was replaced by something unknown: forget what
+  // was last in sync.
   invalidate(): void;
+  // The remote clipboard now holds exactly this text (the page put it there): it becomes the
+  // baseline, so the remote announcing it back is not written to the local clipboard.
+  markSynced(text: string): void;
   end(): void;
 }
 
@@ -325,6 +330,9 @@ export function createClipboardSync(deps: SyncDeps): ClipboardSync {
     invalidate() {
       lastSynced = undefined;
       refused = undefined;
+    },
+    markSynced(text) {
+      lastSynced = normaliseNewlines(text);
     },
     end() {
       closeBarrier();

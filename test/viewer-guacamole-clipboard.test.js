@@ -257,7 +257,7 @@ test("a remote text of exactly 64 KiB is written and one byte more is not", asyn
   assert.equal(v.el("notice").textContent, NOTICES["too-large"]);
 });
 
-test("the_text_dialog_invalidates_the_baseline", async () => {
+test("the_text_dialog_marks_the_baseline", async () => {
   const { v, client, surface } = await session(linuxRdp, {
     clipboardText: "A",
   });
@@ -284,6 +284,31 @@ test("the_text_dialog_invalidates_the_baseline", async () => {
   paste(surface);
   await v.settle();
   assert.deepEqual(clipboards(client), ["A", "B", "A"]);
+});
+
+test("a text typed in the dialog that the remote echoes back is not written to the local clipboard", async () => {
+  const { v, client, surface } = await session(linuxRdp, {
+    clipboardText: "A",
+  });
+  v.action("text-input");
+  v.el("remote-text").value = "hunter2";
+  v.el("text-form").onsubmit({ preventDefault() {} });
+  assert.deepEqual(clipboards(client), ["hunter2"]);
+  // The remote announces what it now holds: the typed text, possibly a password.
+  client.onclipboard({ id: 1 }, "text/plain");
+  const echo = v.readers.at(-1);
+  echo.ontext("hunter2");
+  echo.onend();
+  await v.settle();
+  assert.deepEqual(
+    v.clipboard.writes,
+    [],
+    "it never reaches the Windows clipboard",
+  );
+  // The local clipboard ("A") differs from the dialog text: the next paste still sends it.
+  pastes["Ctrl+V on an RDP target"].press(surface);
+  await v.settle();
+  assert.deepEqual(clipboards(client), ["hunter2", "A"]);
 });
 
 test("the text dialog uses Command on a Mac target", async () => {

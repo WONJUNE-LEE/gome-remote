@@ -791,6 +791,35 @@ test("invalidate_forgets_the_baseline", async () => {
   assert.equal(r.sent.length, 2);
 });
 
+test("mark_synced_records_the_text_as_the_baseline_so_its_echo_is_ignored", async () => {
+  const r = rig();
+  r.s.setViewFocused(true, { read: false });
+  r.s.markSynced("a\r\nb");
+  r.s.remoteClipboard("a\nb", false);
+  r.s.remoteClipboard("a\r\nb", false);
+  await tick();
+  assert.deepEqual(
+    r.writes,
+    [],
+    "the echo is not written to the local clipboard",
+  );
+  r.s.remoteClipboard("other", false);
+  await tick();
+  assert.deepEqual(
+    r.writes,
+    [["other", false]],
+    "a different remote text still is",
+  );
+  // The local clipboard holding the marked text is not sent back; a different one is.
+  r.s.markSynced("B");
+  r.s.pasteShortcut(key({ ctrlKey: true }));
+  await r.answer("B");
+  assert.equal(r.sent.length, 0);
+  r.s.pasteShortcut(key({ ctrlKey: true }));
+  await r.answer("A");
+  assert.deepEqual(r.sent, [["A", false]]);
+});
+
 test("remote_skips_become_notices_and_end_resets_everything", async () => {
   const r = rig();
   for (const k of [

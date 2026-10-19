@@ -758,9 +758,10 @@ el<HTMLFormElement>("text-form").onsubmit = (event) => {
       agent.sendText(text);
     } else if (text) {
       sendRemoteClipboard(text);
-      // The remote clipboard now holds this text, not what the sync last sent: the next
-      // paste must send the local clipboard again.
-      sync?.invalidate();
+      // The remote clipboard now holds this text, not what the sync last sent. It is the
+      // baseline: the remote announcing it back (it may be a password) is not written to
+      // the local clipboard, and a different local clipboard is still sent at the next paste.
+      sync?.markSynced(text);
       // Clipboard transfer supports characters absent from the remote keyboard layout.
       const [modifier, v] = pasteKeysFor(selected?.platform);
       client.sendKeyEvent(1, modifier);
