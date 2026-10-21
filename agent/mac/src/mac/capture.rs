@@ -32,8 +32,9 @@ pub struct CaptureConfig {
 
 pub type FrameFn = Arc<dyn Fn(CVPixelBufferRef, Instant) + Send + Sync>;
 
-/// Called when the system stops the stream by itself (display sleep, permission revoked, the
-/// periodic re-check, "Stop sharing"): never for a stop this code asked for.
+/// Called when the system stops the stream by itself (display sleep, a display mode change,
+/// permission revoked, the periodic re-check, "Stop sharing"): never for a stop this code asked
+/// for. The session then restarts the capture (up to 3 times in 60 s) or, when it cannot, ends.
 pub type StopFn = Arc<dyn Fn() + Send + Sync>;
 
 struct Ivars {

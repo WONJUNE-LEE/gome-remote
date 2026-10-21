@@ -337,7 +337,9 @@ address) when it is run. Do not edit an entry to say "pass" without that evidenc
   Terminal may find Homebrew's OpenSSL 3, whose default PKCS#12 macOS cannot import; fixed in
   affe39b.
 - Agent P4. The 30-day screen-recording reconfirmation (scheduled for 2026-11-12): whether capture
-  continues and whether the Mac (VNC) tile can click the confirmation window.
+  continues and whether the Mac (VNC) tile can click the confirmation window. A stop at the
+  confirmation now makes a live session restart its capture: record both the `restarting` and any
+  `giving up` lines (see "Capture restart" below).
 - Agent V1. The agent tile measured from the gateway server's Chrome against S2, S3 and S4.
   Partial results, 2026-10-16, development install of the agent behind the parallel gateway,
   headless Chrome on the gateway server, 30 clicks per run, each run a fresh session:
@@ -522,8 +524,9 @@ a transient mode (1920x1080), then moved to its real mode (3840x2160) and Screen
 the stream (`[capture] stopped by the system: ... code -3815`). The session now restarts the capture
 for the same peer (`[session] the system stopped the capture; restarting at WxH (n/3)`) and ends only
 after more than three stops within 60 s, a failed restart, or a lost screen recording permission
-(`... giving up: ...`). The logic is covered by the `session` tests on any host; these need the Mac,
-at an hour the owner is not using it:
+(`... giving up: ...`). The `session` tests cover the decisions on any host with a fake capture
+(restart size and bitrate, the three-in-a-minute limit, a failed restart, the session ending or being
+replaced during the restart); what only the Mac shows is below, at an hour the owner is not using it:
 
 - Sleep the display, open the tile at once, and see the session survive the mode change: the log shows
   the -3815 line and one restart line at the new size, the picture returns within about a second at
@@ -532,3 +535,6 @@ at an hour the owner is not using it:
 - Repeat five times (the failure was seen 5 of 5 times on a display wake).
 - A session that is ended by hand during the restart leaves nothing capturing
   (`[session] ended; capture stopped`).
+- Any other system stop restarts too, so the user's "Stop sharing" and the 30-day re-confirmation
+  (P4) no longer end a session by themselves: record the `restarting` line and any `giving up` line
+  in each case.

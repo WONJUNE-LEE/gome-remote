@@ -683,6 +683,9 @@ mod tests {
         }
         fn resize(&self, size: Size, cap: u32) -> Result<(), String> {
             self.log.add(format!("resize {}x{} {cap}", size.w, size.h));
+            if let Some(running) = self.running.lock().unwrap().as_mut() {
+                *running = size; // the running stream follows
+            }
             Ok(())
         }
         fn stop(&self) {
@@ -722,8 +725,8 @@ mod tests {
         screen: AtomicBool,
         accessibility: AtomicBool,
         locked: AtomicBool,
-        /// What the display's current mode is, in pixels.
-        native: Mutex<Size>,
+        /// What the display's current mode is, in pixels; `None` when the system cannot say.
+        native: Mutex<Option<Size>>,
         wakes_held: Arc<AtomicUsize>,
         board: FakeBoard,
     }
@@ -764,7 +767,7 @@ mod tests {
             self.locked.load(SeqCst)
         }
         fn native_pixels(&self) -> Option<Size> {
-            Some(*self.native.lock().unwrap())
+            *self.native.lock().unwrap()
         }
         fn wake_display(&self) -> Box<dyn Any + Send> {
             self.wakes_held.fetch_add(1, SeqCst);
@@ -778,7 +781,7 @@ mod tests {
             screen: AtomicBool::new(true),
             accessibility: AtomicBool::new(true),
             locked: AtomicBool::new(false),
-            native: Mutex::new(Size { w: 2560, h: 1440 }),
+            native: Mutex::new(Some(Size { w: 2560, h: 1440 })),
             wakes_held: Arc::new(AtomicUsize::new(0)),
             board: FakeBoard::default(),
         });
@@ -838,7 +841,7 @@ mod tests {
             screen: AtomicBool::new(true),
             accessibility: AtomicBool::new(true),
             locked: AtomicBool::new(false),
-            native: Mutex::new(Size { w: 2560, h: 1440 }),
+            native: Mutex::new(Some(Size { w: 2560, h: 1440 })),
             wakes_held: Arc::new(AtomicUsize::new(0)),
             board: FakeBoard::default(),
         });
@@ -1394,9 +1397,27 @@ mod tests {
             let target = self.capture.target.lock().unwrap().clone().expect("the capture was given a target");
             target.stream_stopped();
         }
-        /// Gives the threads a restart may be running on time to (wrongly) act.
+        /// Gives the threads a restart may be running on time to (wrongly) act. A restart that
+        /// decides to do nothing leaves no trace to wait for, so an absence can only be shown by
+        /// waiting; the tests that use this also show the same stop does restart when it should.
         fn quiet(&self) {
             std::thread::sleep(Duration::from_millis(150));
+        }
+        /// Waits until a capture start is under way (the fake's start delay is then running).
+        fn settle_starting(&self) {
+            let deadline = Instant::now() + Duration::from_secs(3);
+            while self.capture.busy.load(SeqCst) == 0 && Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            assert_eq!(self.capture.busy.load(SeqCst), 1, "no capture start is under way: {:?}", self.log.all());
+        }
+        /// Makes the next capture start take `delay`, and the stream stop under a started session;
+        /// returns once the restart's start is under way, with later starts instant again.
+        fn stop_with_slow_restart(&self, delay: Duration) {
+            *self.capture.start_delay.lock().unwrap() = delay;
+            self.stopped_by_the_system();
+            self.settle_starting();
+            *self.capture.start_delay.lock().unwrap() = Duration::ZERO;
         }
     }
 
@@ -1407,7 +1428,7 @@ mod tests {
         rig.settle(|log| log.count("start") == 1);
         assert!(rig.log.all().contains(&"start 2560x1440 20000000".to_string()), "{:?}", rig.log.all());
         // The display came up in a transient mode and has now moved to its real one.
-        *rig.platform.native.lock().unwrap() = Size { w: 3840, h: 2160 };
+        *rig.platform.native.lock().unwrap() = Some(Size { w: 3840, h: 2160 });
         rig.stopped_by_the_system();
         rig.settle(|log| log.count("start") == 2);
         rig.settle(|log| log.all().last().is_some_and(|l| l == "keyframe"));
@@ -1429,11 +1450,11 @@ mod tests {
         let (hooks, peer) = rig.open_wide();
         rig.settle(|log| log.count("start") == 1);
         hooks.input(br#"{"type":"size","w":1920,"h":1080}"#);
-        *rig.platform.native.lock().unwrap() = Size { w: 1280, h: 720 };
+        *rig.platform.native.lock().unwrap() = Some(Size { w: 1280, h: 720 });
         rig.stopped_by_the_system();
         rig.settle(|log| log.count("start") == 2);
         assert!(rig.log.all().contains(&"start 1280x720 20000000".to_string()), "{:?}", rig.log.all());
-        *rig.platform.native.lock().unwrap() = Size { w: 3840, h: 2160 };
+        *rig.platform.native.lock().unwrap() = Some(Size { w: 3840, h: 2160 });
         rig.stopped_by_the_system();
         rig.settle(|log| log.count("start") == 3);
         assert!(
@@ -1525,6 +1546,122 @@ mod tests {
         assert!(!first.is_alive() && second.is_alive(), "the new session is untouched");
         assert_eq!(rig.log.count("stop"), 0);
         assert!(rig.capture.running.lock().unwrap().is_some());
+    }
+
+    #[test]
+    fn a_page_resize_that_arrives_while_the_restart_starts_is_applied_after_it() {
+        let rig = rig();
+        let (hooks, peer) = rig.open_wide();
+        rig.settle(|log| log.count("start") == 1);
+        *rig.platform.native.lock().unwrap() = Some(Size { w: 3840, h: 2160 });
+        rig.stop_with_slow_restart(Duration::from_millis(500));
+        hooks.input(br#"{"type":"size","w":1920,"h":1080}"#);
+        rig.settle(|log| log.count("start") == 2);
+        rig.settle(|log| log.all().last().is_some_and(|l| l == "keyframe"));
+        let log = rig.log.all();
+        let started = log.iter().rposition(|l| l.starts_with("start 3840x2160")).expect("the restart");
+        assert_eq!(
+            log.iter().rposition(|l| l.starts_with("resize")).map(|at| (at > started, log[at].as_str())),
+            Some((true, "resize 1920x1080 20000000")),
+            "the page's latest size is applied after the restart's start: {log:?}"
+        );
+        assert_eq!(*rig.capture.running.lock().unwrap(), Some(Size { w: 1920, h: 1080 }));
+        assert!(peer.is_alive());
+    }
+
+    #[test]
+    fn a_session_that_ends_while_the_restart_starts_leaves_nothing_capturing() {
+        let rig = rig();
+        let (hooks, peer) = rig.open();
+        rig.settle(|log| log.count("start") == 1);
+        rig.stop_with_slow_restart(Duration::from_millis(500));
+        peer.close();
+        hooks.closed(); // waits behind the restart's start, which stops what it started
+        assert_eq!(rig.log.count("stop"), 1, "{:?}", rig.log.all());
+        assert_eq!(*rig.capture.running.lock().unwrap(), None);
+        assert!(!rig.capture.overlapped.load(SeqCst));
+        assert!(rig.agent.core.slot.is_empty());
+        assert_eq!(rig.log.count("keyframe"), 0, "no keyframe for a session that is over: {:?}", rig.log.all());
+        assert_eq!(rig.platform.wakes_held.load(SeqCst), 0);
+    }
+
+    #[test]
+    fn a_takeover_while_the_restart_starts_leaves_only_the_new_sessions_capture() {
+        let rig = rig();
+        let (_first_hooks, first) = rig.open_wide();
+        rig.settle(|log| log.count("start") == 1);
+        rig.stop_with_slow_restart(Duration::from_millis(500));
+        let (_second_hooks, second) = rig.open(); // 1280x720; its start waits behind the restart's
+        rig.settle(|log| log.count("start") == 3);
+        let log = rig.log.all();
+        assert_eq!(log.last().map(String::as_str), Some("start 1280x720 20000000"), "{log:?}");
+        assert_eq!(*rig.capture.running.lock().unwrap(), Some(Size { w: 1280, h: 720 }));
+        assert_eq!(rig.log.count("stop"), 0, "the capture is re-targeted, not stopped: {log:?}");
+        assert_eq!(rig.log.count("keyframe"), 0, "the replaced session asks for no keyframe: {log:?}");
+        assert!(!rig.capture.overlapped.load(SeqCst));
+        assert!(!first.is_alive() && second.is_alive());
+        let target = rig.capture.target.lock().unwrap().clone().unwrap();
+        let frame = EncodedFrame { data: vec![7], key: true, submitted: Instant::now() };
+        assert!(target.send_frame(frame), "frames go to the new session's peer");
+        assert_eq!(rig.queues.lock().unwrap()[1].frames(), vec![vec![7u8]]);
+    }
+
+    #[test]
+    fn a_restart_lowers_the_bitrate_ceiling_with_the_stream() {
+        let rig = rig();
+        *rig.platform.native.lock().unwrap() = Some(Size { w: 3840, h: 2160 });
+        rig.open_wide();
+        rig.settle(|log| log.count("start") == 1);
+        assert!(rig.log.all().contains(&"start 3840x2160 35000000".to_string()), "{:?}", rig.log.all());
+        *rig.platform.native.lock().unwrap() = Some(Size { w: 1280, h: 720 });
+        rig.stopped_by_the_system();
+        rig.settle(|log| log.count("start") == 2);
+        assert!(rig.log.all().contains(&"start 1280x720 20000000".to_string()), "{:?}", rig.log.all());
+    }
+
+    #[test]
+    fn a_display_that_cannot_be_read_at_the_restart_keeps_the_size_it_had() {
+        let rig = rig();
+        let (_hooks, peer) = rig.open_wide();
+        rig.settle(|log| log.count("start") == 1);
+        *rig.platform.native.lock().unwrap() = None;
+        rig.stopped_by_the_system();
+        rig.settle(|log| log.count("start") == 2);
+        // Not the 3840x2160 that an unreadable display means at the start of a session.
+        assert_eq!(rig.log.all().iter().rev().find(|l| l.starts_with("start")).unwrap(), "start 2560x1440 20000000");
+        assert!(peer.is_alive());
+    }
+
+    #[test]
+    fn a_session_the_slot_no_longer_holds_is_not_restarted_even_with_its_peer_alive() {
+        let rig = rig();
+        let (_hooks, peer) = rig.open();
+        rig.settle(|log| log.count("start") == 1);
+        assert!(rig.agent.core.slot.finished(1), "the slot lets go of the session; its peer is not closed");
+        assert!(peer.is_alive());
+        rig.stopped_by_the_system();
+        rig.quiet();
+        assert_eq!(rig.log.count("start"), 1, "{:?}", rig.log.all());
+    }
+
+    #[test]
+    fn a_session_whose_peer_is_dead_is_not_restarted_even_while_the_slot_holds_it() {
+        let rig = rig();
+        let (_hooks, peer) = rig.open();
+        rig.settle(|log| log.count("start") == 1);
+        peer.close(); // the peer thread's `closed()` has not run yet
+        assert!(rig.agent.core.slot.is_current(1));
+        rig.stopped_by_the_system();
+        rig.quiet();
+        assert_eq!(rig.log.count("start"), 1, "{:?}", rig.log.all());
+    }
+
+    #[test]
+    fn a_target_without_its_session_closes_the_peer() {
+        let target = SessionTarget { peer: PeerHandle::detached(), hooks: Weak::new() };
+        assert!(target.peer.is_alive());
+        target.stream_stopped();
+        assert!(!target.peer.is_alive(), "the session's hooks are gone: the stop ends the peer, as it always did");
     }
 
     #[test]
