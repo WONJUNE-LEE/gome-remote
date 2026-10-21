@@ -175,7 +175,9 @@ impl Pipeline {
 
     /// The system stopped the stream of run `epoch` by itself (not through `stop`): the picture
     /// would freeze while the keepalive repeated the last frame, so the pipeline fails, the
-    /// session's peer is closed (the page shows its ended card) and the status learns of it.
+    /// status learns of it and the target is told. The session restarts the capture for the same
+    /// peer (a new run, through `start`) or, when it cannot, closes the peer (the page shows its
+    /// ended card).
     fn on_stream_stopped(&self, epoch: u64) {
         let inner = &self.inner;
         if inner.epoch.load(Relaxed) != epoch || !inner.running.swap(false, Relaxed) {
