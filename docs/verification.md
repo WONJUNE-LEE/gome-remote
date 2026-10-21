@@ -514,3 +514,21 @@ Rehearsal checks added by the implementation (all not yet run):
 
 Known limits stated to the user in README: a Mac copy in the last few hundred milliseconds
 before focus loss may not arrive; a browser refusing the clipboard permission is silent.
+
+## Capture restart when the system stops the stream (not yet run on a Mac)
+
+A session that starts while the Mac's display sleeps used to end about 10 s in: the display woke in
+a transient mode (1920x1080), then moved to its real mode (3840x2160) and ScreenCaptureKit stopped
+the stream (`[capture] stopped by the system: ... code -3815`). The session now restarts the capture
+for the same peer (`[session] the system stopped the capture; restarting at WxH (n/3)`) and ends only
+after more than three stops within 60 s, a failed restart, or a lost screen recording permission
+(`... giving up: ...`). The logic is covered by the `session` tests on any host; these need the Mac,
+at an hour the owner is not using it:
+
+- Sleep the display, open the tile at once, and see the session survive the mode change: the log shows
+  the -3815 line and one restart line at the new size, the picture returns within about a second at
+  the new size, and pointer clicks land where the pointer is (they are normalised by the video's
+  own size, `src/agent.ts`).
+- Repeat five times (the failure was seen 5 of 5 times on a display wake).
+- A session that is ended by hand during the restart leaves nothing capturing
+  (`[session] ended; capture stopped`).

@@ -4,7 +4,7 @@
 //! input and system calls into it.
 use crate::bitrate::BitrateController;
 use crate::clipboard::{self, Access, Board, ClipState, KeyAct, PasteRead};
-use crate::frame::FrameTarget;
+use crate::frame::{EncodedFrame, FrameTarget};
 use crate::http::{Backend, SessionFailure, SessionRequest};
 use crate::peer::{PeerHandle, PeerHooks, PeerParams};
 use crate::protocol::{self, InputMsg};
@@ -12,14 +12,19 @@ use crate::size::{bitrate_cap, fit_to_display, Size};
 use crate::slot::{Closer, Slot};
 use crate::status::{screen_of, Accessibility, DisplayState, Status, REFUSE_WHEN_LOCKED};
 use std::any::Any;
+use std::collections::VecDeque;
 use std::net::IpAddr;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering::Relaxed};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, Weak};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 /// Used when the display's size cannot be read.
 const FALLBACK_DISPLAY: Size = Size { w: 3840, h: 2160 };
+/// How many times a session's capture is restarted after the system stopped it, within
+/// `RESTARTS_WITHIN`. One more and the session ends: something keeps stopping the stream.
+const RESTARTS_MAX: usize = 3;
+const RESTARTS_WITHIN: Duration = Duration::from_secs(60);
 
 /// Capture, encoder and sender (`mac::pipeline::Pipeline`).
 pub trait Capture: Send + Sync + 'static {
@@ -162,9 +167,15 @@ struct Hooks {
     /// The slot's number for this session; 0 until it is installed (nothing is current then).
     id: AtomicU64,
     controller: Mutex<BitrateController>,
-    display_px: Size,
-    /// The stream size the page last asked for, for a capture that starts after the request.
+    /// The display's pixels now: read when the session starts and again whenever the system
+    /// stops the stream (a display that wakes up may change its mode a few seconds later).
+    display_px: Mutex<Size>,
+    /// The size the page last asked for, before it is fitted to the display.
+    requested: Mutex<Size>,
+    /// The stream size that request comes to on the display, for a capture that starts after the request.
     size: Mutex<Size>,
+    /// When the capture was restarted after the system stopped it.
+    restarts: Mutex<RestartBudget>,
     /// The clipboard sync's state. Only touched inside the slot's lock (or after the session is over).
     clip: Mutex<ClipState>,
     /// Set once the accepted peer is known, before the session is installed.
@@ -266,7 +277,8 @@ impl PeerHooks for Hooks {
         // for this message, so a replaced session cannot leave a key down behind its release.
         self.core.slot.with_current(self.id(), || match protocol::parse(data) {
             Some(InputMsg::Size(requested)) => {
-                let size = fit_to_display(requested, self.display_px);
+                *self.requested.lock().unwrap() = requested;
+                let size = fit_to_display(requested, *self.display_px.lock().unwrap());
                 let cap = bitrate_cap(size);
                 *self.size.lock().unwrap() = size;
                 if let Some(next) = self.controller.lock().unwrap().set_cap(cap) {
@@ -385,49 +397,163 @@ fn begin_capture(core: &Core, hooks: &Hooks, id: u64, peer: &PeerHandle) {
     let (size, bitrate) = match plan {
         Plan::Skip => return,
         Plan::Dead => {
-            let ended = {
-                let _life = core.lifecycle();
-                core.slot.finished(id)
-            };
-            if ended {
-                hooks.clip().end();
-                core.parts.input.release_all();
-            }
-            stop_if_idle(core, &mut on);
+            end_session(core, hooks, id, &mut on);
             return;
         }
         Plan::Go(size, bitrate) => (size, bitrate),
     };
     *on = true;
-    let result = core.parts.capture.start(size, bitrate, Arc::new(peer.clone()));
+    let result = core.parts.capture.start(size, bitrate, hooks.target(peer));
     if let Err(e) = result {
         eprintln!("[session] capture did not start: {e}");
         peer.close();
-        let ended = {
-            let _life = core.lifecycle();
-            core.slot.finished(id)
-        };
-        if ended {
-            hooks.clip().end();
-            core.parts.input.release_all();
-        }
-        // Nothing may keep capturing without a session.
-        stop_if_idle(core, &mut on);
+        end_session(core, hooks, id, &mut on);
         return;
     }
+    after_start(core, hooks, id, (size, bitrate), &mut on);
+}
+
+/// Session `id` is over for want of a capture (or a peer): finishes it, releases what it held and
+/// stops the capture. Caller holds `capture_on`.
+fn end_session(core: &Core, hooks: &Hooks, id: u64, on: &mut bool) {
+    let ended = {
+        let _life = core.lifecycle();
+        core.slot.finished(id)
+    };
+    if ended {
+        hooks.clip().end();
+        core.parts.input.release_all();
+    }
+    // Nothing may keep capturing without a session.
+    stop_if_idle(core, on);
+}
+
+/// What follows a capture start for session `id` that began with `started` (size, bitrate).
+/// Caller holds `capture_on`.
+fn after_start(core: &Core, hooks: &Hooks, id: u64, started: (Size, u32), on: &mut bool) {
     if core.slot.is_current(id) {
         // The page may have resized or the estimate moved while the capture was starting.
         let (latest, current) = (*hooks.size.lock().unwrap(), hooks.controller.lock().unwrap().current());
-        if latest != size {
+        if latest != started.0 {
             core.parts.capture.resize(latest, bitrate_cap(latest)).unwrap_or_else(|e| eprintln!("[session] {e}"));
         }
-        if current != bitrate {
+        if current != started.1 {
             core.parts.capture.set_bitrate(current);
         }
     } else {
         // Superseded or ended while starting: a replacement's own start re-targets this
         // capture when it gets its turn; with no replacement the capture goes at once.
-        stop_if_idle(core, &mut on);
+        stop_if_idle(core, on);
+    }
+}
+
+/// What `restart_capture` found when it looked at its session.
+enum Restart {
+    /// Replaced, ended or its peer gone: whoever ended it stops the capture.
+    Skip,
+    /// The permission is gone, or the stream keeps being stopped: the session ends.
+    GiveUp(&'static str),
+    Go(Size, u32, usize),
+}
+
+/// The system stopped the capture stream under session `hooks` (a display that changes its mode
+/// does that): restarts the capture for the same peer at the display's size now, so the session
+/// survives. Runs on its own thread, started from ScreenCaptureKit's delegate callback, which a
+/// capture start must not block. A session whose stream keeps being stopped, or whose restart
+/// fails, ends as it did before restarts existed.
+fn restart_capture(hooks: &Hooks) {
+    let core = &hooks.core;
+    let (id, Some(peer)) = (hooks.id(), hooks.peer.get()) else { return };
+    let mut on = core.capture_on.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let granted = core.parts.platform.screen_recording_granted();
+    let display = core.parts.platform.native_pixels();
+    let plan = core
+        .slot
+        .with_current(id, || {
+            if !peer.is_alive() {
+                return Restart::Skip;
+            }
+            if !granted {
+                return Restart::GiveUp("the screen recording permission is gone");
+            }
+            let Some(n) = hooks.restarts.lock().unwrap().take(Instant::now()) else {
+                return Restart::GiveUp("the stream keeps being stopped");
+            };
+            // Under the slot's lock, like the page's `size` message, which uses the same values.
+            let mut display_px = hooks.display_px.lock().unwrap();
+            *display_px = display.unwrap_or(*display_px);
+            let size = fit_to_display(*hooks.requested.lock().unwrap(), *display_px);
+            *hooks.size.lock().unwrap() = size;
+            let mut controller = hooks.controller.lock().unwrap();
+            controller.set_cap(bitrate_cap(size));
+            Restart::Go(size, controller.current(), n)
+        })
+        .unwrap_or(Restart::Skip);
+    let (size, bitrate, n) = match plan {
+        Restart::Skip => return,
+        Restart::GiveUp(why) => {
+            eprintln!("[session] the system stopped the capture; giving up: {why}");
+            peer.close();
+            end_session(core, hooks, id, &mut on);
+            return;
+        }
+        Restart::Go(size, bitrate, n) => (size, bitrate, n),
+    };
+    println!("[session] the system stopped the capture; restarting at {}x{} ({n}/{RESTARTS_MAX})", size.w, size.h);
+    *on = true;
+    if let Err(e) = core.parts.capture.start(size, bitrate, hooks.target(peer)) {
+        eprintln!("[session] the system stopped the capture; giving up: it did not restart: {e}");
+        peer.close();
+        end_session(core, hooks, id, &mut on);
+        return;
+    }
+    after_start(core, hooks, id, (size, bitrate), &mut on);
+    // The picture is of another size now: the page needs a keyframe of it at once.
+    if core.slot.is_current(id) {
+        core.parts.capture.request_keyframe();
+    }
+}
+
+/// When a session's capture was restarted after the system stopped it.
+#[derive(Default)]
+struct RestartBudget(VecDeque<Instant>);
+impl RestartBudget {
+    /// Counts a restart at `now`: its number among those of the last `RESTARTS_WITHIN`, or
+    /// `None` (nothing counted) when that would be more than `RESTARTS_MAX`.
+    fn take(&mut self, now: Instant) -> Option<usize> {
+        self.0.retain(|&at| now.saturating_duration_since(at) < RESTARTS_WITHIN);
+        if self.0.len() >= RESTARTS_MAX {
+            return None;
+        }
+        self.0.push_back(now);
+        Some(self.0.len())
+    }
+}
+
+/// Where a session's capture sends its frames: to its peer, which the session also asks what
+/// to do when the system stops the stream.
+struct SessionTarget {
+    peer: PeerHandle,
+    hooks: Weak<Hooks>,
+}
+impl FrameTarget for SessionTarget {
+    fn send_frame(&self, frame: EncodedFrame) -> bool {
+        self.peer.send_frame(frame)
+    }
+    fn stream_stopped(&self) {
+        // Called on ScreenCaptureKit's delegate thread: the restart gets a thread of its own.
+        match self.hooks.upgrade() {
+            Some(hooks) => {
+                std::thread::spawn(move || restart_capture(&hooks));
+            }
+            None => self.peer.close(),
+        }
+    }
+}
+
+impl Hooks {
+    fn target(&self, peer: &PeerHandle) -> Arc<dyn FrameTarget> {
+        Arc::new(SessionTarget { peer: peer.clone(), hooks: self.me.clone() })
     }
 }
 
@@ -464,8 +590,10 @@ impl Backend for Sessions {
             core: core.clone(),
             id: AtomicU64::new(0),
             controller: Mutex::new(controller),
-            display_px,
+            display_px: Mutex::new(display_px),
+            requested: Mutex::new(request.size),
             size: Mutex::new(size),
+            restarts: Mutex::new(RestartBudget::default()),
             clip: Mutex::new(ClipState::new()),
             peer: OnceLock::new(),
             me: me.clone(),
@@ -594,6 +722,8 @@ mod tests {
         screen: AtomicBool,
         accessibility: AtomicBool,
         locked: AtomicBool,
+        /// What the display's current mode is, in pixels.
+        native: Mutex<Size>,
         wakes_held: Arc<AtomicUsize>,
         board: FakeBoard,
     }
@@ -634,7 +764,7 @@ mod tests {
             self.locked.load(SeqCst)
         }
         fn native_pixels(&self) -> Option<Size> {
-            Some(Size { w: 2560, h: 1440 })
+            Some(*self.native.lock().unwrap())
         }
         fn wake_display(&self) -> Box<dyn Any + Send> {
             self.wakes_held.fetch_add(1, SeqCst);
@@ -648,6 +778,7 @@ mod tests {
             screen: AtomicBool::new(true),
             accessibility: AtomicBool::new(true),
             locked: AtomicBool::new(false),
+            native: Mutex::new(Size { w: 2560, h: 1440 }),
             wakes_held: Arc::new(AtomicUsize::new(0)),
             board: FakeBoard::default(),
         });
@@ -707,6 +838,7 @@ mod tests {
             screen: AtomicBool::new(true),
             accessibility: AtomicBool::new(true),
             locked: AtomicBool::new(false),
+            native: Mutex::new(Size { w: 2560, h: 1440 }),
             wakes_held: Arc::new(AtomicUsize::new(0)),
             board: FakeBoard::default(),
         });
@@ -952,8 +1084,10 @@ mod tests {
             core: rig.agent.core.clone(),
             id: AtomicU64::new(0),
             controller: Mutex::new(BitrateController::new(12_000_000)),
-            display_px: Size { w: 2560, h: 1440 },
+            display_px: Mutex::new(Size { w: 2560, h: 1440 }),
+            requested: Mutex::new(Size { w: 1280, h: 720 }),
             size: Mutex::new(Size { w: 1280, h: 720 }),
+            restarts: Mutex::new(RestartBudget::default()),
             clip: Mutex::new(ClipState::new()),
             peer: OnceLock::new(),
             me: Weak::new(),
@@ -1110,8 +1244,10 @@ mod tests {
             core: core.clone(),
             id: AtomicU64::new(1),
             controller: Mutex::new(BitrateController::new(12_000_000)),
-            display_px: Size { w: 2560, h: 1440 },
+            display_px: Mutex::new(Size { w: 2560, h: 1440 }),
+            requested: Mutex::new(Size { w: 1280, h: 720 }),
             size: Mutex::new(Size { w: 1280, h: 720 }),
+            restarts: Mutex::new(RestartBudget::default()),
             clip: Mutex::new(ClipState::new()),
             peer: OnceLock::new(),
             me: Weak::new(),
@@ -1245,6 +1381,163 @@ mod tests {
         assert!(queues[0].frames().is_empty());
     }
 
+    // ---- the system stops the capture stream ----
+
+    impl Rig {
+        /// A session asking for 4K, on the 2560x1440 display the fake platform starts with.
+        fn open_wide(&self) -> (Arc<dyn PeerHooks>, PeerHandle) {
+            assert!(self.agent.start_session(self.offer_of_width(3840)).is_ok(), "the session was refused");
+            self.peers.lock().unwrap().last().cloned().map(|(hooks, peer, _)| (hooks, peer)).unwrap()
+        }
+        /// The system stops the stream, as the pipeline tells whatever target the capture holds.
+        fn stopped_by_the_system(&self) {
+            let target = self.capture.target.lock().unwrap().clone().expect("the capture was given a target");
+            target.stream_stopped();
+        }
+        /// Gives the threads a restart may be running on time to (wrongly) act.
+        fn quiet(&self) {
+            std::thread::sleep(Duration::from_millis(150));
+        }
+    }
+
+    #[test]
+    fn a_stream_the_system_stopped_restarts_at_the_displays_new_size_and_the_session_stays() {
+        let rig = rig();
+        let (hooks, peer) = rig.open_wide();
+        rig.settle(|log| log.count("start") == 1);
+        assert!(rig.log.all().contains(&"start 2560x1440 20000000".to_string()), "{:?}", rig.log.all());
+        // The display came up in a transient mode and has now moved to its real one.
+        *rig.platform.native.lock().unwrap() = Size { w: 3840, h: 2160 };
+        rig.stopped_by_the_system();
+        rig.settle(|log| log.count("start") == 2);
+        rig.settle(|log| log.all().last().is_some_and(|l| l == "keyframe"));
+        let log = rig.log.all();
+        assert_eq!(log.iter().filter(|l| l.starts_with("start 3840x2160 ")).count(), 1, "{log:?}");
+        assert_eq!(rig.log.count("stop"), 0, "the capture is restarted, not stopped: {log:?}");
+        assert!(peer.is_alive(), "the session stays");
+        assert!(rig.agent.core.slot.is_current(1));
+        assert_eq!(*rig.capture.running.lock().unwrap(), Some(Size { w: 3840, h: 2160 }));
+        assert_eq!(rig.platform.wakes_held.load(SeqCst), 1, "the display stays awake for the session");
+        // The page's next size message is fitted to the new display, not the one at session start.
+        hooks.input(br#"{"type":"size","w":3840,"h":2160}"#);
+        assert!(rig.log.all().contains(&"resize 3840x2160 35000000".to_string()), "{:?}", rig.log.all());
+    }
+
+    #[test]
+    fn a_restart_follows_a_display_that_got_smaller_and_what_the_page_asked_for() {
+        let rig = rig();
+        let (hooks, peer) = rig.open_wide();
+        rig.settle(|log| log.count("start") == 1);
+        hooks.input(br#"{"type":"size","w":1920,"h":1080}"#);
+        *rig.platform.native.lock().unwrap() = Size { w: 1280, h: 720 };
+        rig.stopped_by_the_system();
+        rig.settle(|log| log.count("start") == 2);
+        assert!(rig.log.all().contains(&"start 1280x720 20000000".to_string()), "{:?}", rig.log.all());
+        *rig.platform.native.lock().unwrap() = Size { w: 3840, h: 2160 };
+        rig.stopped_by_the_system();
+        rig.settle(|log| log.count("start") == 3);
+        assert!(
+            rig.log.all().contains(&"start 1920x1080 20000000".to_string()),
+            "the page's request, not the smaller display, sets the size once the display is big again: {:?}",
+            rig.log.all()
+        );
+        assert!(peer.is_alive());
+    }
+
+    #[test]
+    fn more_than_three_stops_in_a_minute_end_the_session_as_before() {
+        let rig = rig();
+        let (hooks, peer) = rig.open();
+        rig.settle(|log| log.count("start") == 1);
+        for n in 2..=4 {
+            rig.stopped_by_the_system();
+            rig.settle(|log| log.count("start") == n);
+            assert!(peer.is_alive(), "restart {} of 3 keeps the session", n - 1);
+        }
+        rig.stopped_by_the_system();
+        rig.settle(|log| log.count("stop") == 1);
+        assert!(!peer.is_alive(), "the fourth stop closes the peer");
+        assert_eq!(rig.log.count("start"), 4, "no fifth start");
+        assert!(rig.agent.core.slot.is_empty(), "the session is finished");
+        assert_eq!(*rig.capture.running.lock().unwrap(), None, "nothing is left capturing");
+        assert!(rig.log.count("release_all") >= 2, "{:?}", rig.log.all());
+        hooks.closed(); // the peer thread's own end changes nothing more
+        assert_eq!(rig.log.count("stop"), 1);
+        assert_eq!(rig.platform.wakes_held.load(SeqCst), 0);
+    }
+
+    #[test]
+    fn a_restart_that_fails_ends_the_session_and_leaves_nothing_capturing() {
+        let rig = rig();
+        let (_hooks, peer) = rig.open();
+        rig.settle(|log| log.count("start") == 1);
+        rig.capture.fail_start.store(true, SeqCst);
+        rig.stopped_by_the_system();
+        rig.settle(|log| log.count("stop") == 1);
+        assert!(!peer.is_alive());
+        assert!(rig.agent.core.slot.is_empty());
+        assert_eq!(*rig.capture.running.lock().unwrap(), None);
+        assert_eq!(rig.log.count("start"), 2, "one failed restart and no retry");
+        assert_eq!(rig.platform.wakes_held.load(SeqCst), 0);
+        assert!(!rig.capture.overlapped.load(SeqCst));
+    }
+
+    #[test]
+    fn with_the_permission_gone_a_stopped_stream_ends_the_session_without_a_restart() {
+        let rig = rig();
+        let (_hooks, peer) = rig.open();
+        rig.settle(|log| log.count("start") == 1);
+        rig.platform.screen.store(false, SeqCst);
+        rig.stopped_by_the_system();
+        rig.settle(|log| log.count("stop") == 1);
+        assert!(!peer.is_alive());
+        assert_eq!(rig.log.count("start"), 1);
+        assert!(rig.agent.core.slot.is_empty());
+        assert_eq!(*rig.capture.running.lock().unwrap(), None);
+    }
+
+    #[test]
+    fn a_stop_that_comes_after_the_session_ended_starts_no_capture() {
+        let rig = rig();
+        let (hooks, peer) = rig.open();
+        rig.settle(|log| log.count("start") == 1);
+        let target = rig.capture.target.lock().unwrap().clone().unwrap();
+        peer.close();
+        hooks.closed(); // the peer thread's end: the session is finished and the capture stopped
+        assert_eq!(rig.log.count("stop"), 1);
+        target.stream_stopped();
+        rig.quiet();
+        assert_eq!(rig.log.count("start"), 1, "{:?}", rig.log.all());
+        assert_eq!(*rig.capture.running.lock().unwrap(), None);
+    }
+
+    #[test]
+    fn a_stop_of_a_replaced_sessions_stream_restarts_nothing_for_it() {
+        let rig = rig();
+        let (_first_hooks, first) = rig.open();
+        rig.settle(|log| log.count("start") == 1);
+        let old_target = rig.capture.target.lock().unwrap().clone().unwrap();
+        let (_second_hooks, second) = rig.open();
+        rig.settle(|log| log.count("start") == 2);
+        old_target.stream_stopped();
+        rig.quiet();
+        assert_eq!(rig.log.count("start"), 2, "{:?}", rig.log.all());
+        assert!(!first.is_alive() && second.is_alive(), "the new session is untouched");
+        assert_eq!(rig.log.count("stop"), 0);
+        assert!(rig.capture.running.lock().unwrap().is_some());
+    }
+
+    #[test]
+    fn the_restart_budget_allows_three_in_a_minute_and_counts_only_the_last_minute() {
+        let mut budget = RestartBudget::default();
+        let t0 = Instant::now();
+        assert_eq!(budget.take(t0), Some(1));
+        assert_eq!(budget.take(t0 + Duration::from_secs(20)), Some(2));
+        assert_eq!(budget.take(t0 + Duration::from_secs(59)), Some(3));
+        assert_eq!(budget.take(t0 + Duration::from_secs(59)), None, "the fourth within a minute");
+        assert_eq!(budget.take(t0 + Duration::from_secs(60)), Some(3), "the first has aged out");
+    }
+
     // ---- clipboard sync and lock notices ----
 
     const CMD_DOWN: &[u8] = br#"{"type":"key","code":"MetaLeft","down":true}"#;
@@ -1310,8 +1603,10 @@ mod tests {
             core: rig.agent.core.clone(),
             id: AtomicU64::new(0),
             controller: Mutex::new(BitrateController::new(12_000_000)),
-            display_px: Size { w: 2560, h: 1440 },
+            display_px: Mutex::new(Size { w: 2560, h: 1440 }),
+            requested: Mutex::new(Size { w: 1280, h: 720 }),
             size: Mutex::new(Size { w: 1280, h: 720 }),
+            restarts: Mutex::new(RestartBudget::default()),
             clip: Mutex::new(ClipState::new()),
             peer: OnceLock::new(),
             me: Weak::new(),

@@ -375,8 +375,9 @@ gui/$(id -u)/net.gome.remote-agent` on the Mac). **권한 필요**: allow the tw
   tile still opens, and the agent shows the lock screen and takes keys, so the Mac is
   unlocked through the agent (spec P1, 2026-10-16); Mac (VNC) stays as the fallback. **권한 필요(의심)**: the screen
   returned only black pictures for a few seconds, or the system stopped the capture while the
-  permission still reads as granted; the tile still opens (the mark clears at the next
-  session), and if the picture stays black the permission is the first thing to check. After a token change on the Mac
+  permission still reads as granted and the session could not restart it (the agent restarts
+  the capture itself, up to three times a minute, when a display changes its mode); the tile
+  still opens (the mark clears at the next session), and if the picture stays black the permission is the first thing to check. After a token change on the Mac
   (delete `token` and run `install.sh`), run
   `node scripts/set-credential.mjs <gateway.json> <id> --agent-token` again; the
   gateway log says when a token was refused ("did not accept the gateway token").
