@@ -410,7 +410,7 @@ npm start         # the desktop app (Electron)
 ```
 
 CI also starts the real Electron on the local address page (`electron . --smoke-test`,
-Linux runner) and fails unless the page and the bridge, version 3, are as expected. The
+Linux runner) and fails unless the page and the bridge, version 4, are as expected. The
 updater is off in that run.
 
 ### Releasing the desktop app
