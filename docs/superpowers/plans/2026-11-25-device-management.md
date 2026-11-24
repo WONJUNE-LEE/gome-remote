@@ -49,7 +49,7 @@
 
 - [ ] **Step 1: Write failing tests** in `test/targets.test.js`:
   - `targetForKind("ubuntu-local", {name:" 서버 "}, "t-00000001")` deep-equals the exact shape in Global Constraints with `name:"서버"`, `id:"t-00000001"`.
-  - `targetForKind("mac-agent", {name:"Mac", hostname:"100.64.0.10"}, id)` → `{id, name:"Mac", platform:"mac", protocol:"agent", hostname:"100.64.0.2"}` (no port key; the default applies).
+  - `targetForKind("mac-agent", {name:"Mac", hostname:"100.64.0.10"}, id)` → `{id, name:"Mac", platform:"mac", protocol:"agent", hostname:"100.64.0.10"}` (no port key; the default applies).
   - `newTargetId(new Set(["t-aaaaaaaa"]), stub)` where the stub returns bytes for `aaaaaaaa` first, then `bbbbbbbb` → `"t-bbbbbbbb"`.
   - `applyTargetOp` add of ubuntu-local onto a list holding a gnome-remote-login target throws status 409; delete of the only target throws 409; rename of an unknown id throws 404; rename returns new objects (`!==` the input objects) with the input array unchanged.
   - `koreanConfigError(new Error("Invalid target name."))` → status 400 with the mapped text.
