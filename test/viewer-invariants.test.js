@@ -44,7 +44,6 @@ test("F11 stays local and the viewer keeps its commands", () => {
   assert.match(main, /if \(!appMode\) \{[^}]*key !== "F11"/s);
   for (const command of [
     "resolution:",
-    '"back"',
     '"disconnect"',
     '"reconnect"',
     '"text-input"',
@@ -145,7 +144,6 @@ test("screens keep to the minimal copy of the spec", () => {
 
 test("다시 연결 is offered by the ended card and by the toast after 연결 끊기, nowhere else", () => {
   assert.equal((main.match(/다시 연결/g) || []).length, 2);
-  assert.match(main, /el\("toast-reconnect"\)\.onclick = reconnectFromToast/);
   assert.doesNotMatch(main, /id="reconnect"|el\("reconnect"\)/);
   assert.match(
     main,

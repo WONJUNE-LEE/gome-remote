@@ -130,8 +130,7 @@ function applyViewerState(state) {
   applyTitleBarOverlay();
   const menu = Menu.getApplicationMenu();
   if (!menu) return;
-  for (const id of ["back", "disconnect"])
-    menu.getMenuItemById(id).enabled = state.open;
+  menu.getMenuItemById("disconnect").enabled = state.open;
   menu.getMenuItemById("reconnect").enabled = state.open && !state.connected;
   menu.getMenuItemById("text-input").enabled = state.open && state.connected;
   menu.getMenuItemById("paste-clipboard").enabled =
@@ -177,8 +176,6 @@ function buildMenu() {
     {
       label: "원격",
       submenu: [
-        command("back", "서버 목록"),
-        { type: "separator" },
         {
           id: "resolution",
           label: "해상도",

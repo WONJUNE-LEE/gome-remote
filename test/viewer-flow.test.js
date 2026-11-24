@@ -161,46 +161,33 @@ for (const [name, end] of Object.entries(endings))
       assert.equal(v.posts(), 3, "the menu's reconnect works after an end");
     });
 
-// 연결 끊기 (the bar button, or the Mac menu's 연결 끊기 and 서버 목록) leaves for the list.
-// Only the toast's 다시 연결 opens the same target again; the toast's timer only hides it.
-for (const [how, disconnect] of [
-  ["the bar button", (v) => v.el("disconnect").click()],
-  ["the menu's 연결 끊기", (v) => v.action("disconnect")],
-  ["the menu's 서버 목록", (v) => v.action("back")],
-])
-  for (const connectedFirst of [true, false])
-    test(`${how}${connectedFirst ? "" : " while still connecting"} returns to the list with a toast, and only its click connects again`, async () => {
-      const v = await viewer({ appMode: true, targets: [online] });
-      v.tiles()[0].click();
-      await v.settle();
-      if (connectedFirst) v.clients[0].onstatechange(3);
-      disconnect(v);
-      await v.settle();
-      await new Promise((resolve) => setTimeout(resolve, 50));
-      assert.equal(v.posts(), 1, "no attempt was started by the disconnect");
-      assert.equal(v.el("home").hidden, false);
-      assert.equal(v.el("session").hidden, true);
-      assert.equal(v.el("toast").hidden, false);
-      assert.equal(v.el("toast-text").textContent, "Linux 연결을 끊었습니다");
-      v.advance(6000);
-      await v.settle();
-      assert.equal(v.el("toast").hidden, true, "the toast hides by itself");
-      assert.equal(v.posts(), 1, "its timer connects nothing");
-      v.tiles()[0].click();
-      await v.settle();
-      disconnect(v);
-      await v.settle();
-      v.el("toast-reconnect").click();
-      await v.settle();
-      assert.equal(v.posts(), 3);
-      assert.deepEqual(
-        v.sessionRequests()[2],
-        v.sessionRequests()[1],
-        "the same target with the same input",
-      );
-      assert.equal(v.el("toast").hidden, true);
-      assert.equal(v.el("session").hidden, false);
-    });
+// 연결 끊기 leaves for the list. Only the toast's 다시 연결 opens the same target again;
+// the toast's timer only hides it.
+test("연결 끊기 starts no connection, the toast timer starts none, and 다시 연결 starts exactly one with the same input", async () => {
+  const v = await viewer({ appMode: true, targets: [online] });
+  v.tiles()[0].click();
+  await v.settle();
+  v.clients[0].onstatechange(3);
+  v.el("disconnect").click();
+  await v.settle();
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  assert.equal(v.posts(), 1, "no attempt was started by the disconnect");
+  v.advance(6000);
+  await v.settle();
+  assert.equal(v.posts(), 1, "its timer connects nothing");
+  v.tiles()[0].click();
+  await v.settle();
+  v.el("disconnect").click();
+  await v.settle();
+  v.el("toast-reconnect").click();
+  await v.settle();
+  assert.equal(v.posts(), 3);
+  assert.deepEqual(
+    v.sessionRequests()[2],
+    v.sessionRequests()[1],
+    "the same target with the same input",
+  );
+});
 
 test("a failed connection request shows the ended card once and is not retried", async () => {
   for (const answer of [

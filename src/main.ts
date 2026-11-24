@@ -246,7 +246,7 @@ function syncViewerMenu() {
       resolution: el<HTMLSelectElement>("resolution").value,
     })
     .catch(() =>
-      showViewerError("원격 메뉴를 갱신하지 못했습니다. 앱을 다시 열어주세요."),
+      showViewerError("창 상태를 갱신하지 못했습니다. 앱을 다시 열어주세요."),
     );
 }
 function showViewerError(message: string) {
@@ -815,7 +815,7 @@ function disconnect() {
 function reconnectFromToast() {
   const last = toastReconnect;
   hideToast();
-  if (!last || !el("session").hidden) return;
+  if (!last) return;
   // The list may have been refreshed since: open the target as it is listed now.
   const target = targets.find((t) => t.id === last.target.id);
   if (!target || !tileEnabled(target)) return;
@@ -944,7 +944,7 @@ api.onViewerAction((action) => {
       return;
     select.value = size;
     select.dispatchEvent(new Event("change"));
-  } else if (action === "back" || action === "disconnect") disconnect();
+  } else if (action === "disconnect") disconnect();
   else if (action === "reconnect") flow.reconnect();
   else if (action === "text-input") openTextDialog();
   else if (action === "paste-clipboard") pasteClipboard();

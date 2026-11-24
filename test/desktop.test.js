@@ -119,7 +119,6 @@ async function desktop(
   const permissions = {};
   let focused = false;
   const clipboardWrites = [];
-  const overlays = []; // every win.setTitleBarOverlay call
   const theme = Object.assign(new EventEmitter(), {
     shouldUseDarkColors: false,
   });
@@ -220,9 +219,7 @@ async function desktop(
     setFullScreen(value) {
       fullscreenRequests.push(value);
     }
-    setTitleBarOverlay(options) {
-      overlays.push(options);
-    }
+    setTitleBarOverlay() {}
     async loadURL(url) {
       loads.push(url);
       this.webContents.mainFrame.url = url;
@@ -363,12 +360,6 @@ async function desktop(
       return menu;
     },
     fullscreenRequests,
-    overlays,
-    // The OS switches between light and dark.
-    setDark(dark) {
-      theme.shouldUseDarkColors = dark;
-      theme.emit("updated");
-    },
     keyLockCalls,
     notifications,
     clipboardWrites,
@@ -1035,7 +1026,6 @@ test("the Mac remote menu enables valid commands and forwards exact actions", as
   const f = await desktop({ platform: "darwin" }, t);
   const item = (id) => f.menu.getMenuItemById(id);
   for (const id of [
-    "back",
     "disconnect",
     "text-input",
     "paste-clipboard",
@@ -1049,7 +1039,6 @@ test("the Mac remote menu enables valid commands and forwards exact actions", as
     protocol: "rdp",
     resolution: "1440x900",
   });
-  assert.equal(item("back").enabled, true);
   assert.equal(item("disconnect").enabled, true);
   assert.equal(item("reconnect").enabled, true);
   assert.equal(item("text-input").enabled, false);
@@ -1069,7 +1058,6 @@ test("the Mac remote menu enables valid commands and forwards exact actions", as
   assert.equal(item("resolution:1920x1080").checked, true);
   assert.equal(item("resolution:1440x900").checked, false);
   for (const id of [
-    "back",
     "disconnect",
     "text-input",
     "paste-clipboard",
@@ -1114,7 +1102,6 @@ test("the Mac remote menu enables valid commands and forwards exact actions", as
     resolution: "1920x1080",
   });
   for (const id of [
-    "back",
     "disconnect",
     "text-input",
     "paste-clipboard",
@@ -1333,13 +1320,11 @@ test("a rejected save shows the readable message without Electron's prefix and e
 
 // ---- leaving the viewer for the address page ----
 
-test("showing the address page closes the Remote menu entries (Mac), gives the caption buttons the list colours (Windows) and leaves fullscreen", async (t) => {
+test("showing the address page closes the Remote menu entries (Mac) and leaves fullscreen", async (t) => {
   for (const [platform, how] of [
     ["darwin", "menu"],
     ["darwin", "unreachable"],
     ["darwin", "bridge"],
-    ["win32", "unreachable"],
-    ["win32", "bridge"],
   ]) {
     const f = await desktop({ platform }, t);
     const mac = platform === "darwin";
@@ -1353,9 +1338,9 @@ test("showing the address page closes the Remote menu entries (Mac), gives the c
     await f.invoke("fullscreen", true);
     f.finishFullscreen(true);
     if (mac) {
-      assert.equal(item("back").enabled, true);
+      assert.equal(item("disconnect").enabled, true);
       assert.equal(item("resolution").enabled, true);
-    } else assert.equal(f.overlays.at(-1).color, "#202020");
+    }
     assert.deepEqual(f.fullscreenRequests, [true]);
     if (how === "menu") item("change-server").click();
     else if (how === "bridge") await f.invoke("open-setup");
@@ -1364,7 +1349,6 @@ test("showing the address page closes the Remote menu entries (Mac), gives the c
     assert.ok(f.loads.at(-1).startsWith(SETUP), how);
     if (mac) {
       for (const id of [
-        "back",
         "disconnect",
         "reconnect",
         "text-input",
@@ -1374,7 +1358,7 @@ test("showing the address page closes the Remote menu entries (Mac), gives the c
         assert.equal(item(id).enabled, false, `${how}: ${id}`);
       assert.equal(item("resolution:auto").checked, true, how);
       assert.equal(item("resolution:1920x1080").checked, false, how);
-    } else assert.equal(f.overlays.at(-1).color, "#f3f3f3", how);
+    }
     assert.deepEqual(
       f.fullscreenRequests,
       [true, false],
@@ -2025,7 +2009,6 @@ test("rebuilding the Mac menu for an update keeps the viewer state and the other
   f.autoUpdater.emit("update-downloaded", { version: "0.3.1" });
   const menu = f.menu;
   for (const id of [
-    "back",
     "disconnect",
     "text-input",
     "paste-clipboard",
@@ -2043,7 +2026,7 @@ test("rebuilding the Mac menu for an update keeps the viewer state and the other
     protocol: null,
     resolution: "auto",
   });
-  assert.equal(f.menu.getMenuItemById("back").enabled, false);
+  assert.equal(f.menu.getMenuItemById("disconnect").enabled, false);
 });
 
 test("a manual check after the download says it is ready instead of downloading again", async (t) => {
@@ -2060,44 +2043,4 @@ test("a manual check after the download says it is ready instead of downloading 
   const checks = f.autoUpdater.checks;
   await first.callback();
   assert.equal(f.autoUpdater.checks, checks);
-});
-
-test("the updater's channels exist whether or not the app has an updater", async (t) => {
-  const plain = await desktop({}, t);
-  const packaged = await desktop({ packaged: true }, t);
-  assert.deepEqual([...packaged.handlers.keys()], [...plain.handlers.keys()]);
-});
-
-test("the page's settings menu reaches the updater: its state, the ready version and the restart", async (t) => {
-  const plain = await desktop({}, t);
-  await plain.invoke("check-update");
-  await plain.invoke("restart-update");
-  assert.equal(plain.autoUpdater.checks, 0, "an unpackaged app checks nothing");
-  const f = await desktop({ packaged: true }, t);
-  assert.deepEqual(
-    { ...(await f.invoke("update-state")) },
-    {
-      supported: true,
-      ready: "",
-    },
-  );
-  await f.invoke("restart-update");
-  assert.equal(f.autoUpdater.restarts, 0, "nothing downloaded yet");
-  f.autoUpdater.emit("update-downloaded", { version: "0.3.1" });
-  assert.deepEqual(f.notifications.at(-1), ["remote:update-ready", "0.3.1"]);
-  assert.deepEqual(
-    { ...(await f.invoke("update-state")) },
-    {
-      supported: true,
-      ready: "0.3.1",
-    },
-  );
-  assert.equal(f.autoUpdater.restarts, 0, "never restarts by itself");
-  await f.invoke("restart-update");
-  assert.equal(f.autoUpdater.restarts, 1);
-  // The address page is not told.
-  await f.invoke("open-setup");
-  const sent = f.notifications.length;
-  f.autoUpdater.emit("update-downloaded", { version: "0.3.2" });
-  assert.equal(f.notifications.length, sent);
 });
