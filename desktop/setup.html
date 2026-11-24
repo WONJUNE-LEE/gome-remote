@@ -49,8 +49,9 @@
           "Noto Sans KR",
           sans-serif;
       }
-      /* The window's title bar on Windows and Linux (the OS draws the caption buttons
-         over its right end); a plain bar on the Mac. */
+      /* The window's title bar on Windows and Linux, where the OS draws the caption
+         buttons over its right end (the window controls overlay, class "wco"); a plain
+         bar on the Mac. */
       header {
         flex-shrink: 0;
         height: 40px;
@@ -63,6 +64,8 @@
         );
         font-size: 12px;
         user-select: none;
+      }
+      .wco header {
         -webkit-app-region: drag;
       }
       .mark {
@@ -179,6 +182,12 @@
     </main>
     <script>
       const $ = (id) => document.getElementById(id);
+      if (
+        typeof navigator === "object" &&
+        navigator.windowControlsOverlay &&
+        navigator.windowControlsOverlay.visible
+      )
+        document.body.classList.add("wco");
       const setup = window.desktopSetup;
       const readable = (error) =>
         String((error && error.message) || error).replace(

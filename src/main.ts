@@ -258,7 +258,7 @@ function showViewerError(message: string) {
 function fullscreenChanged(enabled: boolean) {
   releaseInput();
   fullscreen = enabled;
-  // In full screen only the remote picture shows: the session bar hides (F11 leaves).
+  // In the app's native full screen only the remote picture shows: the bar hides (F11 leaves).
   document.body.classList.toggle("fullscreen", enabled);
   el("fullscreen-label").textContent = enabled
     ? "전체 화면 나가기"

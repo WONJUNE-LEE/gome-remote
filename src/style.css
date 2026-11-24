@@ -181,8 +181,9 @@ svg {
   background: var(--bar);
   color: var(--bar-ink);
 }
-/* Full screen shows only the remote picture; F11 brings the bar back. */
-.viewing.fullscreen .topbar {
+/* The app's native full screen shows only the remote picture; F11 brings the bar back.
+   A browser keeps the bar in full screen. */
+.app-mode.viewing.fullscreen .topbar {
   display: none;
 }
 .bar-session {

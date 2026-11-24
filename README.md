@@ -338,6 +338,9 @@ Open the same address in a browser for the identical screen.
   with the browser's own clipboard permission; a refused permission is silent. An app older
   than bridge version 4 (0.3.2 and earlier) has no clipboard sync and no menu item; the
   update arrives with the next desktop release tag.
+  On the Mac, while the app still loads an old gateway page, or after the gateway is rolled
+  back to an older page, the **클립보드 붙여넣기** menu item is shown but does nothing: the
+  page has no clipboard sync to answer it. Update the gateway to bring it back.
 - Mac (agent) clipboard writes are current-host-only (Universal Clipboard does not carry
   them to other Apple devices). Text the Mac marks as concealed (password managers) is passed on
   with the matching mark where the system allows it. If Windows Clipboard History still keeps
