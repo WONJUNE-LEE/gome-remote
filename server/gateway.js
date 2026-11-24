@@ -5,6 +5,7 @@ import { readFile } from "node:fs/promises";
 import { resolve, extname } from "node:path";
 import { WebSocketServer } from "ws";
 import { bridge } from "./tunnel.js";
+import { ManageError } from "./targets.js";
 import { AgentError, createAgentClient } from "./agent-client.js";
 
 export const FORBIDDEN_LOGIN_MESSAGE =
@@ -146,6 +147,7 @@ export function createGateway(
   config,
   {
     credentials,
+    manager,
     probe = reachable,
     dist = resolve("dist"),
     now = Date.now,
@@ -198,11 +200,64 @@ export function createGateway(
       name: t.name,
       platform: t.platform,
       protocol: t.protocol,
+      hostname: t.hostname,
       persistent: false,
       online: status !== undefined,
       ready: credential !== undefined,
       ...(status ? { agent: status } : {}),
     };
+  };
+  const plain = (value) =>
+    value && typeof value === "object" && !Array.isArray(value);
+  const named = (value) => typeof value === "string" && value.trim() !== "";
+  const BAD_INPUT = "입력값을 확인하세요.";
+  // The public shape of a target in a write reply: no credential, no probe.
+  const publicTarget = (t) => ({
+    id: t.id,
+    name: t.name,
+    platform: t.platform,
+    protocol: t.protocol,
+    ...(t.profile ? { profile: t.profile } : {}),
+    hostname: t.hostname,
+  });
+  // Device management (spec D1). The body is shape-checked here; the manager
+  // validates the values. Request bodies are never logged.
+  const manage = async (req, res, login, managed) => {
+    const bad = () => json(res, 400, { error: BAD_INPUT });
+    const noContent = () => {
+      res.writeHead(204, { "Cache-Control": "no-store" });
+      res.end();
+    };
+    if (req.method === "DELETE") {
+      await manager.remove(login, managed[1]);
+      return noContent();
+    }
+    if (!req.headers["content-type"]?.startsWith("application/json"))
+      return json(res, 415, { error: "JSON required." });
+    const input = await body(req);
+    if (!plain(input)) return bad();
+    if (req.method === "PUT") {
+      await manager.setCredential(login, managed[1], input);
+      return noContent();
+    }
+    const keys = Object.keys(input);
+    if (!named(input.name)) return bad();
+    if (req.method === "PATCH") {
+      if (keys.some((k) => k !== "name")) return bad();
+      const target = await manager.rename(login, managed[1], input.name.trim());
+      return json(res, 200, { target: publicTarget(target) });
+    }
+    if (
+      keys.some(
+        (k) => !["name", "kind", "hostname", "credential"].includes(k),
+      ) ||
+      typeof input.kind !== "string" ||
+      (input.hostname !== undefined && typeof input.hostname !== "string") ||
+      (input.credential !== undefined && !plain(input.credential))
+    )
+      return bad();
+    const target = await manager.add(login, input);
+    return json(res, 201, { target: publicTarget(target) });
   };
   const server = http.createServer(async (req, res) => {
     res.setHeader("Content-Security-Policy", csp);
@@ -221,6 +276,29 @@ export function createGateway(
           });
         if (req.headers.origin && req.headers.origin !== config.publicOrigin)
           return json(res, 403, { error: "Origin rejected.", code: "origin" });
+        const managed = url.pathname.match(
+          /^\/api\/targets\/([a-z0-9-]{1,64})(\/credential)?$/,
+        );
+        const write =
+          (req.method === "POST" && url.pathname === "/api/targets") ||
+          (managed &&
+            (managed[2]
+              ? req.method === "PUT"
+              : req.method === "PATCH" || req.method === "DELETE"));
+        if (write) {
+          if (req.headers.origin !== config.publicOrigin)
+            return json(res, 403, {
+              error: "Origin rejected.",
+              code: "origin",
+            });
+          try {
+            return await manage(req, res, login, managed);
+          } catch (error) {
+            if (error instanceof ManageError)
+              return json(res, error.status, { error: error.message });
+            throw error;
+          }
+        }
         if (req.method === "GET" && url.pathname === "/api/targets") {
           const targets = await Promise.all(
             config.targets.map(async (t) => {
@@ -234,6 +312,7 @@ export function createGateway(
                 name: t.name,
                 platform: t.platform,
                 protocol: t.protocol,
+                hostname: t.hostname,
                 ...(t.profile ? { profile: t.profile } : {}),
                 persistent: t.persistent === true,
                 online,

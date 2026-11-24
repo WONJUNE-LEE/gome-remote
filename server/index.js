@@ -1,12 +1,12 @@
 import { loadConfig } from "./config.js";
 import { CredentialStore } from "./credentials.js";
+import { createManager } from "./manage.js";
 import { createGateway } from "./gateway.js";
 import { forwardLoopback, listenOnSocket, removeSocket } from "./listen.js";
 
 async function start() {
-  const config = await loadConfig(
-    process.env.GOME_REMOTE_CONFIG || "config.local.json",
-  );
+  const configPath = process.env.GOME_REMOTE_CONFIG || "config.local.json";
+  const config = await loadConfig(configPath);
   const credentials = new CredentialStore(config.credentialsFile, {
     targets: config.targets,
   });
@@ -17,7 +17,8 @@ async function start() {
   );
   if (unknown.length)
     console.warn(`Credentials exist for unconfigured targets: ${unknown}`);
-  const gateway = createGateway(config, { credentials });
+  const manager = createManager({ configPath, config, credentials });
+  const gateway = createGateway(config, { credentials, manager });
   await listenOnSocket(gateway.server, config.socketPath);
   let relay;
   if (config.devLogin) {
