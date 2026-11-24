@@ -20,7 +20,7 @@
 - Delete removes the credential entry first, then the target. Deleting the last target → 409 "마지막 기기는 지울 수 없습니다."
 - A failed file write → 500 "서버에 저장하지 못했습니다." plus one log line. Every management write logs one line: `manage <action> <targetId> by <login>: ok|failed at <step>`.
 - Session routes keep refusing credential fields with 400 (unchanged).
-- Public repo: no owner identifiers (tailnet login, real device names, tailnet IPs) in code, tests or docs; tests use `100.64.0.x` and placeholder names.
+- Public repo: no owner identifiers (tailnet login, real device names, tailnet IPs) in code, tests or docs; tests use the documented placeholder addresses `100.64.0.10` and `100.64.0.20` (test/public-hygiene.test.js allows only those and a few range-edge probes) and placeholder names.
 - Test scope: only the pure logic and the security-relevant write sequence named in the tasks; no tests for markup, CSS or UI wiring.
 
 ## Review Focus
@@ -49,7 +49,7 @@
 
 - [ ] **Step 1: Write failing tests** in `test/targets.test.js`:
   - `targetForKind("ubuntu-local", {name:" 서버 "}, "t-00000001")` deep-equals the exact shape in Global Constraints with `name:"서버"`, `id:"t-00000001"`.
-  - `targetForKind("mac-agent", {name:"Mac", hostname:"100.64.0.2"}, id)` → `{id, name:"Mac", platform:"mac", protocol:"agent", hostname:"100.64.0.2"}` (no port key; the default applies).
+  - `targetForKind("mac-agent", {name:"Mac", hostname:"100.64.0.10"}, id)` → `{id, name:"Mac", platform:"mac", protocol:"agent", hostname:"100.64.0.2"}` (no port key; the default applies).
   - `newTargetId(new Set(["t-aaaaaaaa"]), stub)` where the stub returns bytes for `aaaaaaaa` first, then `bbbbbbbb` → `"t-bbbbbbbb"`.
   - `applyTargetOp` add of ubuntu-local onto a list holding a gnome-remote-login target throws status 409; delete of the only target throws 409; rename of an unknown id throws 404; rename returns new objects (`!==` the input objects) with the input array unchanged.
   - `koreanConfigError(new Error("Invalid target name."))` → status 400 with the mapped text.
