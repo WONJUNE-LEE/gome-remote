@@ -25,7 +25,7 @@ const mac = {
   name: "Mac",
   platform: "mac",
   protocol: "agent",
-  hostname: "100.64.0.2",
+  hostname: "100.64.0.10",
 };
 
 test("targetForKind builds the ubuntu-local target", () => {
@@ -39,7 +39,7 @@ test("targetForKind builds a mac-agent target without a port", () => {
   assert.deepEqual(
     targetForKind(
       "mac-agent",
-      { name: "Mac", hostname: "100.64.0.2" },
+      { name: "Mac", hostname: "100.64.0.10" },
       "t-00000002",
     ),
     mac,
