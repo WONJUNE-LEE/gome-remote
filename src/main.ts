@@ -58,6 +58,19 @@ const fullscreenIcon = svg(
   15,
   1.7,
 );
+const plusIcon = svg('<path d="M12 5v14M5 12h14"/>', 16, 1.8);
+const moreIcon = svg(
+  '<circle cx="5" cy="12" r="1.6" fill="currentColor" stroke="none"/><circle cx="12" cy="12" r="1.6" fill="currentColor" stroke="none"/><circle cx="19" cy="12" r="1.6" fill="currentColor" stroke="none"/>',
+  18,
+);
+const backIcon = svg('<path d="M15 6l-6 6 6 6"/>', 16, 1.8);
+// The Mac agent's install guide, opened in the OS browser (the app sends links there).
+const INSTALL_GUIDE =
+  "https://github.com/WONJUNE-LEE/gome-remote#the-mac-agent";
+const KEY_HELP =
+  "설치 마지막에 한 번 표시된 43자 키를 붙여 넣으세요. 키는 서버에만 저장되고 다시 보여 주지 않습니다.";
+const LOGIN_HELP =
+  "시스템 원격 로그인 값입니다(데스크톱 계정 비밀번호가 아닙니다).";
 const powerIcon = svg(
   '<path d="M12 3v9"/><path d="M6.3 7.5a8 8 0 1 0 11.4 0"/>',
   14,
@@ -85,6 +98,8 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
           <h1>기기</h1>
           <p class="muted">한 번에 한 기기에만 연결됩니다. 다른 기기로 가려면 먼저 연결을 끊으세요.</p>
         </div>
+        <div class="home-tools">
+        <button id="add-device" class="add-button">${plusIcon}<span>기기 추가</span></button>
         <div class="menu-wrap">
           <button id="menu-button" class="icon-button" aria-label="설정" aria-haspopup="menu" aria-expanded="false">${settingsIcon}</button>
           <div id="menu" class="menu" role="menu" hidden>
@@ -94,8 +109,35 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
             <button id="menu-restart" role="menuitem" hidden></button>
           </div>
         </div>
+        </div>
       </div>
       <div id="devices" class="device-list"></div>
+    </div>
+  </section>
+  <section id="device" class="device-page" hidden>
+    <div class="device-page-inner">
+      <button id="device-back" class="back-link">${backIcon}<span>기기</span></button>
+      <div id="device-head" class="device-head">
+        <span id="device-icon" class="device-icon page-icon"></span>
+        <div class="device-heading"><h1 id="device-title"></h1><span class="device-state"><span class="dot"></span><span id="device-word"></span></span></div>
+      </div>
+      <form id="device-form" class="device-form">
+        <section class="panel" aria-label="기본 정보">
+          <div class="field-row"><label for="device-name">이름</label><input id="device-name" type="text" maxlength="100" required autocomplete="off" /></div>
+          <div class="field-row"><span>종류</span><span id="device-kind" class="muted"></span></div>
+          <div class="field-row"><span>주소</span><span class="field-value"><span id="device-address" class="muted"></span><span class="help">주소가 바뀌었으면 기기를 지우고 다시 추가하세요.</span></span></div>
+        </section>
+        <section class="panel action-row" aria-label="로그인 정보">
+          <div class="action-text"><span id="credential-title" class="action-title"></span><span id="credential-note" class="help"></span></div>
+          <button id="credential-change" type="button">바꾸기</button>
+        </section>
+        <section class="panel action-row" aria-label="기기 삭제">
+          <div class="action-text"><span class="action-title">기기 삭제</span><span class="help">목록과 저장된 로그인 정보를 지웁니다. 기기 자체는 건드리지 않습니다.</span></div>
+          <button id="device-delete" type="button" class="danger-outline">삭제</button>
+        </section>
+        <p id="device-error" class="form-error" role="alert" hidden></p>
+        <div class="page-actions"><button id="device-save" class="primary" type="submit">저장</button></div>
+      </form>
     </div>
   </section>
   <section id="state" class="state">
@@ -132,6 +174,45 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
   </section>
   <div id="toast" class="toast" role="status" hidden><span id="toast-text"></span><button id="toast-reconnect">다시 연결</button></div>
   <dialog id="viewer-error"><p id="viewer-error-text"></p><button data-close="viewer-error">닫기</button></dialog>
+  <dialog id="add-dialog" class="sheet" aria-labelledby="add-title"><form id="add-form">
+    <div class="sheet-head"><h2 id="add-title">기기 추가</h2><span id="add-step" class="muted">1 / 2</span></div>
+    <div id="add-kind" class="sheet-body">
+      <div class="field"><label for="add-name">이름</label><input id="add-name" type="text" maxlength="100" required placeholder="예: 사무실 Mac" autocomplete="off" /></div>
+      <fieldset class="kinds"><legend>종류</legend>
+        <label id="kind-ubuntu" class="kind-card"><input id="kind-ubuntu-radio" type="radio" name="kind" value="ubuntu-local" /><span class="kind-text"><span class="kind-name">Ubuntu / Linux</span><span class="muted">원격 로그인(RDP)으로 연결합니다. 로그인 화면부터 원격으로 다룰 수 있습니다.</span></span></label>
+        <label class="kind-card"><input id="kind-mac-radio" type="radio" name="kind" value="mac-agent" checked /><span class="kind-text"><span class="kind-name">Mac</span><span class="muted">Mac에 Gome 에이전트를 설치하고, 설치 때 나온 연결 키를 붙여 넣습니다.</span></span></label>
+      </fieldset>
+    </div>
+    <fieldset id="add-mac" class="sheet-body" hidden disabled><ol class="steps">
+      <li><span class="step-number">1</span><div class="field"><label for="add-address">Mac의 Tailscale 주소</label><input id="add-address" type="text" required placeholder="예: 100.64.0.20" autocomplete="off" spellcheck="false" /></div></li>
+      <li><span class="step-number">2</span><div class="field"><span class="field-label">Mac에 에이전트 설치</span><span class="help">Mac의 터미널에서 설치하고, 화면 기록과 손쉬운 사용 권한을 허용합니다. <a href="${INSTALL_GUIDE}" target="_blank" rel="noopener noreferrer">설치 안내 보기</a></span></div></li>
+      <li><span class="step-number">3</span><div class="field"><label for="add-key">연결 키</label><span class="help">${KEY_HELP}</span><input id="add-key" type="password" required autocomplete="off" spellcheck="false" /></div></li>
+    </ol></fieldset>
+    <fieldset id="add-ubuntu" class="sheet-body" hidden disabled>
+      <div class="field"><label for="add-username">사용자 이름</label><input id="add-username" type="text" required autocomplete="off" spellcheck="false" /></div>
+      <div class="field"><label for="add-password">비밀번호</label><span class="help">${LOGIN_HELP}</span><input id="add-password" type="password" required autocomplete="new-password" /></div>
+    </fieldset>
+    <p id="add-error" class="form-error" role="alert" hidden></p>
+    <div id="add-footer" class="sheet-foot"><button id="add-back" type="button">취소</button><button id="add-submit" class="primary" type="submit">다음</button></div>
+  </form></dialog>
+  <dialog id="credential-dialog" class="sheet" aria-labelledby="credential-heading"><form id="credential-form">
+    <div class="sheet-head"><h2 id="credential-heading"></h2></div>
+    <fieldset id="credential-key" class="sheet-body">
+      <div class="field"><label for="credential-key-input">연결 키</label><span class="help">${KEY_HELP}</span><input id="credential-key-input" type="password" required autocomplete="off" spellcheck="false" /></div>
+    </fieldset>
+    <fieldset id="credential-login" class="sheet-body">
+      <div class="field"><label for="credential-username">사용자 이름</label><input id="credential-username" type="text" autocomplete="off" spellcheck="false" /></div>
+      <div class="field"><label for="credential-password">비밀번호</label><span id="credential-help" class="help">${LOGIN_HELP}</span><input id="credential-password" type="password" required autocomplete="new-password" /></div>
+    </fieldset>
+    <p id="credential-error" class="form-error" role="alert" hidden></p>
+    <div class="sheet-foot"><button type="button" data-close="credential-dialog">취소</button><button id="credential-submit" class="primary" type="submit">저장</button></div>
+  </form></dialog>
+  <dialog id="delete-dialog" class="sheet" aria-labelledby="delete-heading">
+    <div class="sheet-head"><h2 id="delete-heading"></h2></div>
+    <div class="sheet-body"><p>목록과 저장된 로그인 정보를 지웁니다. 기기 자체는 건드리지 않습니다.</p></div>
+    <p id="delete-error" class="form-error" role="alert" hidden></p>
+    <div class="sheet-foot"><button type="button" data-close="delete-dialog">취소</button><button id="delete-confirm" class="danger">삭제</button></div>
+  </dialog>
   <dialog id="text-dialog"><form id="text-form"><div class="dialog-heading"><h2>원격 화면에 텍스트 입력</h2><button type="button" class="close-button" data-close="text-dialog" aria-label="닫기">×</button></div><p class="muted">원격 앱의 입력 위치를 먼저 선택하세요</p><textarea id="remote-text" rows="5" maxlength="4000" aria-label="보낼 텍스트"></textarea><button class="primary wide" type="submit">입력하기 →</button></form></dialog>
 `;
 function el<T extends HTMLElement = HTMLElement>(id: string) {
@@ -203,9 +284,9 @@ void api
   .catch(() => {});
 api.onUpdateReady(showUpdateReady);
 
-type Screen = "home" | "state" | "session";
+type Screen = "home" | "device" | "state" | "session";
 function showScreen(screen: Screen) {
-  for (const name of ["home", "state", "session"] as Screen[])
+  for (const name of ["home", "device", "state", "session"] as Screen[])
     el(name).hidden = name !== screen;
   el("bar-home").hidden = screen === "session";
   el("bar-session").hidden = screen !== "session";
@@ -361,10 +442,240 @@ function renderTargets() {
     button.setAttribute("aria-label", `${target.name} 연결`);
     button.disabled = !tileEnabled(target);
     button.onclick = () => openTarget(target);
-    row.append(button);
+    const manage = document.createElement("button");
+    manage.className = "icon-button device-manage";
+    manage.innerHTML = moreIcon;
+    manage.setAttribute("aria-label", `${target.name} 관리`);
+    manage.onclick = () => openDevice(target);
+    const actions = document.createElement("div");
+    actions.className = "device-actions";
+    actions.append(button, manage);
+    row.append(actions);
     list.append(row);
   }
 }
+
+// Device management: the add dialog, the device page and its two dialogs. Every write
+// refreshes the list. Secret inputs are cleared after every request and whenever their
+// dialog closes; nothing typed here is stored or logged by the page.
+const field = (id: string) => el<HTMLInputElement>(id);
+const SECRET_INPUTS = [
+  "add-key",
+  "add-password",
+  "credential-key-input",
+  "credential-password",
+];
+function clearSecrets() {
+  for (const id of SECRET_INPUTS) field(id).value = "";
+}
+function showWriteError(id: string, error?: unknown) {
+  el(id).textContent =
+    error === undefined
+      ? ""
+      : error instanceof Error
+        ? error.message
+        : String(error);
+  el(id).hidden = error === undefined;
+}
+// One write: its button is off while it runs, its error shows under the fields.
+// `mayBePartial`: a server failure may have written part of the change (an added device
+// without its key), so the list is read again to show what is really there.
+async function write(
+  button: string,
+  errorId: string,
+  run: () => Promise<unknown>,
+  mayBePartial = false,
+) {
+  el<HTMLButtonElement>(button).disabled = true;
+  showWriteError(errorId);
+  try {
+    await run();
+    return true;
+  } catch (error) {
+    showWriteError(errorId, error);
+    const refused =
+      error instanceof ApiError && error.status >= 400 && error.status < 500;
+    if (mayBePartial && !refused) void refresh();
+    return false;
+  } finally {
+    clearSecrets();
+    el<HTMLButtonElement>(button).disabled = false;
+  }
+}
+function closeDialog(id: string) {
+  el<HTMLDialogElement>(id).close();
+}
+
+// The add dialog. Ubuntu is offered only while no GNOME Remote Login target exists.
+let addStep: 1 | 2 = 1;
+const addKind = (): NewTarget["kind"] =>
+  !el("kind-ubuntu").hidden && field("kind-ubuntu-radio").checked
+    ? "ubuntu-local"
+    : "mac-agent";
+function showAddStep(step: 1 | 2) {
+  addStep = step;
+  const kind = addKind();
+  el("add-kind").hidden = step !== 1;
+  for (const [id, fieldsKind] of [
+    ["add-mac", "mac-agent"],
+    ["add-ubuntu", "ubuntu-local"],
+  ]) {
+    const fields = el<HTMLFieldSetElement>(id);
+    fields.hidden = fields.disabled = step !== 2 || kind !== fieldsKind;
+  }
+  el("add-title").textContent =
+    step === 1 ? "기기 추가" : `${field("add-name").value.trim()} 연결`;
+  el("add-step").textContent = `${step} / 2`;
+  el("add-back").textContent = step === 1 ? "취소" : "뒤로";
+  el("add-submit").textContent = step === 1 ? "다음" : "추가";
+  el("add-footer").classList.toggle("split", step === 2);
+  showWriteError("add-error");
+}
+function openAddDialog() {
+  closeMenu();
+  el("kind-ubuntu").hidden = targets.some(
+    (t) => t.profile === "gnome-remote-login",
+  );
+  for (const id of ["add-name", "add-address", "add-username"])
+    field(id).value = "";
+  clearSecrets();
+  field("kind-mac-radio").checked = true;
+  showAddStep(1);
+  el<HTMLDialogElement>("add-dialog").showModal();
+  field("add-name").focus();
+}
+async function submitAdd() {
+  if (addStep === 1) {
+    showAddStep(2);
+    field(addKind() === "mac-agent" ? "add-address" : "add-username").focus();
+    return;
+  }
+  const name = field("add-name").value.trim();
+  const input: NewTarget =
+    addKind() === "mac-agent"
+      ? {
+          name,
+          kind: "mac-agent",
+          hostname: field("add-address").value.trim(),
+          credential: { agentToken: field("add-key").value.trim() },
+        }
+      : {
+          name,
+          kind: "ubuntu-local",
+          credential: {
+            username: field("add-username").value.trim(),
+            password: field("add-password").value,
+          },
+        };
+  if (
+    await write("add-submit", "add-error", () => api.addTarget(input), true)
+  ) {
+    closeDialog("add-dialog");
+    void refresh();
+  }
+}
+
+// The device page: rename, replace the login, delete. Kind and address are read only.
+let managed: Target | undefined;
+const credentialTitle = (target: Target) =>
+  target.protocol === "agent"
+    ? "연결 키"
+    : target.profile === "gnome-remote-login"
+      ? "원격 로그인 계정"
+      : target.protocol === "vnc"
+        ? "화면 공유 계정"
+        : "로그인 계정";
+function openDevice(target: Target) {
+  if (!targets.includes(target)) return;
+  closeMenu();
+  managed = target;
+  const state = tileState(target);
+  el("device-head").className = `device-head is-${state}`;
+  el("device-icon").innerHTML = platformIcon[target.platform];
+  el("device-title").textContent = target.name;
+  el("device-word").textContent = stateText(target, state);
+  field("device-name").value = target.name;
+  el("device-kind").textContent = metaText(target);
+  el("device-address").textContent =
+    target.profile === "gnome-remote-login"
+      ? `이 서버 (${target.hostname})`
+      : target.hostname;
+  el("credential-title").textContent = credentialTitle(target);
+  el("credential-note").textContent = target.ready
+    ? "서버에 저장됨. 저장된 값은 앱에 다시 보여 주지 않습니다."
+    : "아직 저장되지 않았습니다.";
+  showWriteError("device-error");
+  showScreen("device");
+}
+async function saveDevice() {
+  const target = managed;
+  if (!target) return;
+  const name = field("device-name").value.trim();
+  if (name === target.name) return showScreen("home");
+  if (
+    await write("device-save", "device-error", () =>
+      api.renameTarget(target.id, name),
+    )
+  )
+    void refresh();
+}
+function openCredentialDialog() {
+  const target = managed;
+  if (!target) return;
+  const agentKind = target.protocol === "agent";
+  const key = el<HTMLFieldSetElement>("credential-key");
+  const login = el<HTMLFieldSetElement>("credential-login");
+  key.hidden = key.disabled = !agentKind;
+  login.hidden = login.disabled = agentKind;
+  // A VNC login may have no user name; RDP needs one.
+  field("credential-username").required = target.protocol !== "vnc";
+  field("credential-username").value = "";
+  clearSecrets();
+  el("credential-help").hidden = target.profile !== "gnome-remote-login";
+  el("credential-heading").textContent = `${credentialTitle(target)} 바꾸기`;
+  showWriteError("credential-error");
+  el<HTMLDialogElement>("credential-dialog").showModal();
+  field(agentKind ? "credential-key-input" : "credential-username").focus();
+}
+async function submitCredential() {
+  const target = managed;
+  if (!target) return;
+  const username = field("credential-username").value.trim();
+  const credential: TargetCredential =
+    target.protocol === "agent"
+      ? { agentToken: field("credential-key-input").value.trim() }
+      : {
+          ...(username ? { username } : {}),
+          password: field("credential-password").value,
+        };
+  if (
+    await write("credential-submit", "credential-error", () =>
+      api.setCredential(target.id, credential),
+    )
+  ) {
+    closeDialog("credential-dialog");
+    void refresh();
+  }
+}
+function openDeleteDialog() {
+  if (!managed) return;
+  el("delete-heading").textContent = `${managed.name} 삭제`;
+  showWriteError("delete-error");
+  el<HTMLDialogElement>("delete-dialog").showModal();
+}
+async function confirmDelete() {
+  const target = managed;
+  if (!target) return;
+  if (
+    await write("delete-confirm", "delete-error", () =>
+      api.deleteTarget(target.id),
+    )
+  ) {
+    closeDialog("delete-dialog");
+    void refresh();
+  }
+}
+
 function openTarget(target: Target) {
   if (!targets.includes(target) || !tileEnabled(target)) return;
   selected = target;
@@ -864,6 +1175,30 @@ document.addEventListener("keydown", (event) => {
   if (event.key === "Escape") closeMenu();
 });
 el("menu-refresh").onclick = () => void refresh();
+el("add-device").onclick = (event) => {
+  event.stopPropagation();
+  openAddDialog();
+};
+el("add-back").onclick = () =>
+  addStep === 1 ? closeDialog("add-dialog") : showAddStep(1);
+el<HTMLFormElement>("add-form").onsubmit = (event) => {
+  event.preventDefault();
+  void submitAdd();
+};
+el("device-back").onclick = () => showScreen("home");
+el<HTMLFormElement>("device-form").onsubmit = (event) => {
+  event.preventDefault();
+  void saveDevice();
+};
+el("credential-change").onclick = openCredentialDialog;
+el<HTMLFormElement>("credential-form").onsubmit = (event) => {
+  event.preventDefault();
+  void submitCredential();
+};
+el("device-delete").onclick = openDeleteDialog;
+el("delete-confirm").onclick = () => void confirmDelete();
+for (const id of ["add-dialog", "credential-dialog"])
+  el(id).addEventListener("close", clearSecrets);
 el("menu-address").onclick = el("state-address").onclick = () => {
   closeMenu();
   void api.openSetup();

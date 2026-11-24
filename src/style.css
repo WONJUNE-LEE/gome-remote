@@ -16,6 +16,8 @@
   --setup: #b25e00;
   --danger: #c42b1c;
   --danger-hover: #a92316;
+  --danger-ink: #b3261e;
+  --accent-soft: #fff7f3;
   --viewport: #161616;
   --shadow: 0 8px 24px rgba(0, 0, 0, 0.14);
   /* The session bar is dark in both themes. */
@@ -54,6 +56,8 @@
     --on: #6ccb5f;
     --off: #8a8a8a;
     --setup: #f0a830;
+    --danger-ink: #ff8a80;
+    --accent-soft: #3a2a22;
     --shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
   }
 }
@@ -111,6 +115,22 @@ select:focus-visible,
 textarea:focus-visible {
   outline: 2px solid var(--ink);
   outline-offset: 2px;
+}
+input[type="text"],
+input[type="password"] {
+  height: 36px;
+  min-width: 0;
+  padding: 0 12px;
+  border: 1px solid var(--control);
+  border-radius: 6px;
+  background: var(--surface);
+}
+/* Text fields mark focus with an accent underline. */
+input[type="text"]:focus,
+input[type="password"]:focus {
+  outline: none;
+  border-bottom-color: var(--accent);
+  box-shadow: inset 0 -1px 0 var(--accent);
 }
 select,
 textarea {
@@ -318,6 +338,17 @@ svg {
 .home-heading p {
   margin: 0;
 }
+.home-tools {
+  display: flex;
+  gap: 8px;
+}
+.add-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 14px 0 10px;
+  white-space: nowrap;
+}
 .menu-wrap {
   position: relative;
 }
@@ -411,6 +442,15 @@ svg {
 }
 .device-connect {
   padding: 0 22px;
+}
+.device-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.device-manage {
+  border-color: transparent;
+  background: transparent;
 }
 .dot {
   width: 8px;
@@ -698,4 +738,278 @@ dialog::backdrop {
 }
 .wide {
   width: 100%;
+}
+
+/* The device page */
+.device-page {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 32px 32px 48px;
+}
+.device-page-inner {
+  max-width: 760px;
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+.back-link {
+  align-self: flex-start;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 12px 0 6px;
+  border-color: transparent;
+  background: transparent;
+}
+.device-head {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+.device-icon.page-icon {
+  width: 48px;
+  height: 48px;
+  border: 1px solid var(--line);
+  background: var(--surface);
+}
+.device-heading {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.device-heading h1 {
+  margin: 0;
+  font-size: 24px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.device-heading .device-state {
+  color: var(--muted);
+  font-size: 13px;
+}
+.device-form {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+.panel {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+}
+.field-row {
+  display: grid;
+  grid-template-columns: 200px minmax(0, 1fr);
+  gap: 16px;
+  align-items: center;
+  padding: 14px 20px;
+  border-bottom: 1px solid var(--line-soft);
+}
+.field-row:last-child {
+  border-bottom: 0;
+}
+.field-row input {
+  width: 100%;
+  max-width: 320px;
+}
+.field-value,
+.action-text {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+.help {
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.5;
+}
+.help a {
+  color: var(--ink);
+}
+.action-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 16px;
+  align-items: center;
+  padding: 16px 20px;
+}
+.action-title {
+  font-weight: 600;
+}
+button.danger-outline {
+  border-color: var(--danger);
+  color: var(--danger-ink);
+}
+button.danger {
+  border-color: var(--danger);
+  background: var(--danger);
+  color: #ffffff;
+  font-weight: 600;
+}
+button.danger:hover {
+  border-color: var(--danger-hover);
+  background: var(--danger-hover);
+}
+button.danger:disabled {
+  opacity: 0.6;
+}
+.page-actions {
+  display: flex;
+  justify-content: flex-end;
+}
+.page-actions .primary,
+.sheet-foot .primary,
+.sheet-foot .danger {
+  padding: 0 22px;
+}
+.form-error {
+  margin: 0;
+  color: var(--danger-ink);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+/* The add, login and delete dialogs */
+dialog.sheet {
+  width: min(560px, 92vw);
+  max-width: none;
+  padding: 0;
+  border: 0;
+  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.28);
+}
+.sheet form {
+  display: flex;
+  flex-direction: column;
+}
+.sheet-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 24px 28px 0;
+}
+.sheet-head h2 {
+  margin: 0;
+  font-size: 20px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.sheet-head span {
+  font-size: 13px;
+}
+.sheet-body {
+  min-width: 0;
+  margin: 0;
+  padding: 20px 28px 24px;
+  border: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+.sheet-body p {
+  margin: 0;
+}
+.sheet .form-error {
+  margin: -8px 28px 16px;
+}
+.sheet-foot {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 16px 28px;
+  border-top: 1px solid var(--line-soft);
+  border-radius: 0 0 8px 8px;
+  background: var(--note);
+}
+.sheet-foot.split {
+  justify-content: space-between;
+}
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+.field > label,
+.field-label,
+.kinds legend {
+  font-size: 13px;
+  font-weight: 600;
+}
+.steps .field > label,
+.steps .field-label {
+  font-size: 14px;
+}
+.kinds {
+  margin: 0;
+  padding: 0;
+  border: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.kinds legend {
+  padding: 0;
+  margin-bottom: 6px;
+}
+.kind-card {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+  padding: 14px 16px;
+  border: 2px solid var(--line);
+  border-radius: 8px;
+  cursor: pointer;
+}
+.kind-card:has(input:checked) {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+.kind-card input {
+  width: 16px;
+  height: 16px;
+  margin: 3px 0 0;
+  accent-color: var(--accent);
+}
+.kind-text {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.kind-name {
+  font-size: 15px;
+  font-weight: 600;
+}
+.kind-text .muted {
+  font-size: 13px;
+  line-height: 1.5;
+}
+.steps {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 22px;
+}
+.steps li {
+  display: grid;
+  grid-template-columns: 24px minmax(0, 1fr);
+  gap: 12px;
+}
+.step-number {
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: var(--ink);
+  color: var(--surface);
+  font-size: 12px;
+  font-weight: 600;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
 }

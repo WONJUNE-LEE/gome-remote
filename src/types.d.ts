@@ -14,11 +14,22 @@ interface Target {
   platform: "linux" | "mac" | "windows";
   protocol: "rdp" | "vnc" | "agent";
   profile?: "gnome-remote-login";
+  // Not secret: shown read only on the device page.
+  hostname: string;
   persistent: boolean;
   online: boolean;
   ready: boolean;
   // Present for an online agent target only.
   agent?: AgentTargetState;
+}
+// What the add dialog and the 바꾸기 dialog send; never stored in the page.
+type TargetCredential =
+  { agentToken: string } | { username?: string; password: string };
+interface NewTarget {
+  name: string;
+  kind: "mac-agent" | "ubuntu-local";
+  hostname?: string;
+  credential?: TargetCredential;
 }
 interface ConnectInput {
   targetId: string;
