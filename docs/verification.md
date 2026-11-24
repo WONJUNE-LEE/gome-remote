@@ -61,17 +61,21 @@ npm run build     # vite build
   blocking; an unreachable gateway lands on the address page; the address page's own
   script is run against the URL `main.cjs` really loads (unreachable state, retry, a
   rejected save without Electron's error prefix); showing the address page closes the
-  Remote menu and leaves fullscreen; `--smoke-test` checks the page and bridge and
-  cannot hang; fullscreen and F11 serialization; native menu states; `remote:key-lock`
+  Mac Remote menu, resets the caption button colours and leaves fullscreen; `--smoke-test`
+  checks the page and bridge (version 5) and cannot hang; fullscreen and F11 serialization;
+  Mac menu states; on Windows and Linux no application menu, a hidden title bar with a 40px
+  overlay whose colours follow the viewer state and the theme; `remote:key-lock`
   (Windows only, focus, origin, user-gesture scripts, 2 s guard, native full screen untouched).
 - **Desktop auto-update**, `test/desktop.test.js` (updater part) and
   `test/desktop-release.test.js`: against a stand-in `electron-updater`, the updater is off
   when unpackaged and in the smoke test; a packaged app checks once 30 s after start and
   every 6 hours, downloads and installs on quit; background errors are logged, never shown;
-  the manual check reports up to date, a download, null and an error (with the window as
-  parent); the restart entry is hidden until `update-downloaded` and then calls
-  `quitAndInstall` (the menu is rebuilt and keeps the viewer state); a missing or broken
-  `electron-updater` never keeps the app from starting; no IPC channel is added. The release
+  the manual check (from the page's settings menu) reports up to date, a download, null and
+  an error (with the window as parent); the Mac restart entry is hidden until
+  `update-downloaded` and then calls `quitAndInstall` (the menu is rebuilt and keeps the
+  viewer state); the page's `update-state`, `check-update`, `restart-update` and the
+  `remote:update-ready` push; a missing or broken `electron-updater` never keeps the app
+  from starting; the updater's channels exist with or without an updater. The release
   test checks `package.json` (exact pins, draft publish to this repository, `identity: null`,
   `afterSign`), `scripts/mac-sign.cjs` with a recording `codesign` (nothing without the
   variables, one variable alone fails, sign then strict verify then the requirement, a
@@ -82,10 +86,11 @@ npm run build     # vite build
   `test/viewer-flow.test.js`, `test/viewer-invariants.test.js`,
   `test/resolution.test.js` (자동 해상도, 구 앱 호환): same-origin requests
   without token or credentials; error classification; the bridge version gate; browser
-  fullscreen serialization; tile states and labels; which screen each failure shows and
-  that a connection starts only from a click or the menu, never from an error, close or
-  state change (`src/flow.ts`, and `src/main.ts` itself run against a fake page and fake
-  Guacamole); the cursor, overlay and in-flow toolbar rules, the palette and the exact
+  fullscreen serialization; device list states, labels and second lines; which screen each
+  failure shows and that a connection starts only from a click (연결, 다시 연결, the
+  disconnect toast's 다시 연결) or the menu, never from an error, close, state change or the
+  toast's timer (`src/flow.ts`, and `src/main.ts` itself run against a fake page and fake
+  Guacamole); the cursor, overlay and in-flow top bar rules, the palette and the exact
   screen texts (read from the source, as a fake page cannot show them).
 - **Mac agent, gateway side (agent spec D2, D7)**, `test/config-agent.test.js`,
   `test/credentials-agent.test.js`, `test/set-credential-agent.test.js`,
