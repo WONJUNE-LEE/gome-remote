@@ -32,20 +32,24 @@ function load(protocol = "https:", platform = "win32") {
   return { ipc, calls, exposed };
 }
 
-test("the bridge announces version 4 and exposes only the viewer, fullscreen, clipboard and address-page functions", () => {
+test("the bridge announces version 5 and exposes only the viewer, fullscreen, clipboard, updater and address-page functions", () => {
   const { exposed } = load();
   assert.deepEqual([...Object.keys(exposed)], ["desktop"]);
-  assert.equal(exposed.desktop.bridgeVersion, 4);
+  assert.equal(exposed.desktop.bridgeVersion, 5);
   assert.deepEqual([...Object.keys(exposed.desktop)].sort(), [
     "bridgeVersion",
+    "checkUpdate",
     "fullscreen",
     "fullscreenState",
     "keyLock",
     "keyLockSupported",
     "onFullscreenChange",
+    "onUpdateReady",
     "onViewerAction",
     "openSetup",
     "readClipboard",
+    "restartUpdate",
+    "updateState",
     "viewerState",
     "writeClipboard",
   ]);
@@ -60,7 +64,7 @@ test("the bridge announces version 4 and exposes only the viewer, fullscreen, cl
   assert.ok(Object.isFrozen(exposed.desktop));
 });
 
-test("keyLockSupported is true on Windows only, and the bridge stays version 4", () => {
+test("keyLockSupported is true on Windows only, and the bridge is version 5 everywhere", () => {
   for (const [platform, expected] of [
     ["win32", true],
     ["darwin", false],
@@ -68,7 +72,7 @@ test("keyLockSupported is true on Windows only, and the bridge stays version 4",
   ]) {
     const { exposed } = load("https:", platform);
     assert.strictEqual(exposed.desktop.keyLockSupported, expected, platform);
-    assert.equal(exposed.desktop.bridgeVersion, 4, platform);
+    assert.equal(exposed.desktop.bridgeVersion, 5, platform);
     assert.equal(typeof exposed.desktop.keyLock, "function", platform);
   }
 });
@@ -95,6 +99,9 @@ test("preload forwards native menu actions without exposing Electron events", as
   await desktop.writeClipboard("a", { concealed: true });
   await desktop.keyLock(true);
   await desktop.keyLock(false);
+  await desktop.updateState();
+  await desktop.checkUpdate();
+  await desktop.restartUpdate();
   assert.deepEqual(calls, [
     ["remote:viewer-state", state],
     ["remote:fullscreen", true],
@@ -104,6 +111,9 @@ test("preload forwards native menu actions without exposing Electron events", as
     ["remote:clipboard-write", "a", { concealed: true }],
     ["remote:key-lock", true],
     ["remote:key-lock", false],
+    ["remote:update-state"],
+    ["remote:check-update"],
+    ["remote:restart-update"],
   ]);
   const fullscreen = [];
   const removeFullscreen = desktop.onFullscreenChange((...args) =>
@@ -111,12 +121,19 @@ test("preload forwards native menu actions without exposing Electron events", as
   );
   ipc.emit("remote:fullscreen-state", privilegedEvent, true);
   assert.deepEqual(fullscreen, [[true]]);
+  const ready = [];
+  const removeReady = desktop.onUpdateReady((...args) => ready.push(args));
+  ipc.emit("remote:update-ready", privilegedEvent, "0.4.0");
+  assert.deepEqual(ready, [["0.4.0"]]);
   removeFullscreen();
   remove();
+  removeReady();
   ipc.emit("remote:viewer-action", privilegedEvent, "disconnect");
   ipc.emit("remote:fullscreen-state", privilegedEvent, false);
+  ipc.emit("remote:update-ready", privilegedEvent, "0.4.1");
   assert.equal(received.length, 1);
   assert.equal(fullscreen.length, 1);
+  assert.equal(ready.length, 1);
 });
 
 test("address-page functions exist only on the local file page", async () => {

@@ -119,6 +119,10 @@ async function desktop(
   const permissions = {};
   let focused = false;
   const clipboardWrites = [];
+  const overlays = []; // every win.setTitleBarOverlay call
+  const theme = Object.assign(new EventEmitter(), {
+    shouldUseDarkColors: false,
+  });
   // The parts of Electron's async clipboard the app uses. A write is recorded as what a
   // reader would see: its types, the plain text and the size of every other format.
   class ClipboardItem {
@@ -216,6 +220,9 @@ async function desktop(
     setFullScreen(value) {
       fullscreenRequests.push(value);
     }
+    setTitleBarOverlay(options) {
+      overlays.push(options);
+    }
     async loadURL(url) {
       loads.push(url);
       this.webContents.mainFrame.url = url;
@@ -236,7 +243,7 @@ async function desktop(
     clipboard,
     ClipboardItem,
     ipcMain: { handle: (name, callback) => handlers.set(name, callback) },
-    nativeTheme: { shouldUseDarkColors: false },
+    nativeTheme: theme,
     shell: { openExternal: async (url) => external.push(url) },
     dialog: {
       showMessageBox: async (...args) => {
@@ -356,6 +363,12 @@ async function desktop(
       return menu;
     },
     fullscreenRequests,
+    overlays,
+    // The OS switches between light and dark.
+    setDark(dark) {
+      theme.shouldUseDarkColors = dark;
+      theme.emit("updated");
+    },
     keyLockCalls,
     notifications,
     clipboardWrites,
@@ -495,6 +508,9 @@ test("bridge calls work only from the gateway origin in the window's top frame",
         },
       ],
       ["open-setup"],
+      ["update-state"],
+      ["check-update"],
+      ["restart-update"],
       ["clipboard-read"],
       ["clipboard-write", "x"],
       ["key-lock", true],
@@ -865,8 +881,8 @@ test("a gateway that cannot be reached lands on a page where the address can be 
   assert.equal(f.loads.length, before + 1);
 });
 
-test("the Remote menu offers 서버 주소 바꾸기 at all times", async (t) => {
-  const f = await desktop({}, t);
+test("the Mac Remote menu offers 서버 주소 바꾸기 at all times", async (t) => {
+  const f = await desktop({ platform: "darwin" }, t);
   const item = f.menu.getMenuItemById("change-server");
   assert.equal(item.label, "서버 주소 바꾸기");
   assert.notEqual(item.enabled, false);
@@ -980,8 +996,8 @@ test("a second F11 during entry queues exit instead of repeating entry", async (
   assert.equal(await f.invoke("fullscreen-state"), false);
 });
 
-test("the resolution menu starts with auto (window size), checked by default, then the fixed sizes", async (t) => {
-  const f = await desktop({}, t);
+test("the Mac resolution menu starts with auto (window size), checked by default, then the fixed sizes", async (t) => {
+  const f = await desktop({ platform: "darwin" }, t);
   const group = f.menu.getMenuItemById("resolution").submenu;
   assert.deepEqual(
     [...group.map((item) => [item.id, item.label, item.type])].map((x) => [
@@ -1015,8 +1031,8 @@ test("the resolution menu starts with auto (window size), checked by default, th
   assert.equal(f.menu.getMenuItemById("resolution:2560x1440").checked, false);
 });
 
-test("native remote menu enables valid commands and forwards exact actions", async (t) => {
-  const f = await desktop({}, t);
+test("the Mac remote menu enables valid commands and forwards exact actions", async (t) => {
+  const f = await desktop({ platform: "darwin" }, t);
   const item = (id) => f.menu.getMenuItemById(id);
   for (const id of [
     "back",
@@ -1118,8 +1134,8 @@ test("native remote menu enables valid commands and forwards exact actions", asy
   assert.deepEqual(f.fullscreenRequests, [true, false]);
 });
 
-test("native fullscreen menu preserves a second click during entry", async (t) => {
-  const f = await desktop({}, t);
+test("the Mac fullscreen menu preserves a second click during entry", async (t) => {
+  const f = await desktop({ platform: "darwin" }, t);
   const fullscreen = f.menu.template.find((item) => item.label === "View")
     .submenu[0];
   fullscreen.click();
@@ -1215,8 +1231,8 @@ test("the address page shows the unreachable state for the URL the main process 
   assert.deepEqual(calls, ["retry"]);
   assert.equal(f.loads.length, loadsBefore + 1);
   assert.equal(f.loads.at(-1), GATEWAY, "retry opens the saved gateway again");
-  // The same page reached from the menu has no reason and shows only the form.
-  f.menu.getMenuItemById("change-server").click();
+  // The same page reached from the page's settings menu has no reason and shows only the form.
+  await f.invoke("open-setup");
   await settle();
   const plain = setupPageRuns(f.loads.at(-1), {
     current: () => f.call("setup:current"),
@@ -1317,9 +1333,16 @@ test("a rejected save shows the readable message without Electron's prefix and e
 
 // ---- leaving the viewer for the address page ----
 
-test("showing the address page closes the Remote menu entries and leaves fullscreen", async (t) => {
-  for (const how of ["menu", "unreachable", "bridge"]) {
-    const f = await desktop({}, t);
+test("showing the address page closes the Remote menu entries (Mac), gives the caption buttons the list colours (Windows) and leaves fullscreen", async (t) => {
+  for (const [platform, how] of [
+    ["darwin", "menu"],
+    ["darwin", "unreachable"],
+    ["darwin", "bridge"],
+    ["win32", "unreachable"],
+    ["win32", "bridge"],
+  ]) {
+    const f = await desktop({ platform }, t);
+    const mac = platform === "darwin";
     const item = (id) => f.menu.getMenuItemById(id);
     await f.invoke("viewer-state", {
       open: true,
@@ -1329,36 +1352,43 @@ test("showing the address page closes the Remote menu entries and leaves fullscr
     });
     await f.invoke("fullscreen", true);
     f.finishFullscreen(true);
-    assert.equal(item("back").enabled, true);
-    assert.equal(item("resolution").enabled, true);
+    if (mac) {
+      assert.equal(item("back").enabled, true);
+      assert.equal(item("resolution").enabled, true);
+    } else assert.equal(f.overlays.at(-1).color, "#202020");
     assert.deepEqual(f.fullscreenRequests, [true]);
     if (how === "menu") item("change-server").click();
     else if (how === "bridge") await f.invoke("open-setup");
     else f.window.webContents.emit("did-navigate", {}, `${GATEWAY}/`, 502);
     await settle();
     assert.ok(f.loads.at(-1).startsWith(SETUP), how);
-    for (const id of [
-      "back",
-      "disconnect",
-      "reconnect",
-      "text-input",
-      "paste-clipboard",
-      "resolution",
-    ])
-      assert.equal(item(id).enabled, false, `${how}: ${id}`);
-    assert.equal(item("resolution:auto").checked, true, how);
-    assert.equal(item("resolution:1920x1080").checked, false, how);
+    if (mac) {
+      for (const id of [
+        "back",
+        "disconnect",
+        "reconnect",
+        "text-input",
+        "paste-clipboard",
+        "resolution",
+      ])
+        assert.equal(item(id).enabled, false, `${how}: ${id}`);
+      assert.equal(item("resolution:auto").checked, true, how);
+      assert.equal(item("resolution:1920x1080").checked, false, how);
+    } else assert.equal(f.overlays.at(-1).color, "#f3f3f3", how);
     assert.deepEqual(
       f.fullscreenRequests,
       [true, false],
       `${how}: leaves fullscreen`,
     );
-    assert.deepEqual(
-      f.keyLockCalls,
-      [false],
-      `${how}: the page lock is released`,
-    );
-    assert.equal(f.scriptCalls.at(-1)[1], true, how);
+    if (mac) assert.deepEqual(f.keyLockCalls, [], how);
+    else {
+      assert.deepEqual(
+        f.keyLockCalls,
+        [false],
+        `${how}: the page lock is released`,
+      );
+      assert.equal(f.scriptCalls.at(-1)[1], true, how);
+    }
   }
 });
 
@@ -1475,12 +1505,13 @@ test("a granted answer clears the 2 s guard", async (t) => {
 
 test("showing the address page releases the page lock only on Windows and only from the gateway page", async (t) => {
   const f = await desktop({}, t);
-  f.menu.getMenuItemById("change-server").click();
+  await f.invoke("open-setup");
   await settle();
   assert.deepEqual(f.keyLockCalls, [false]);
   // The address page itself is showing now: a second visit has nothing to release.
-  f.menu.getMenuItemById("change-server").click();
+  f.window.webContents.emit("did-navigate", {}, `${GATEWAY}/`, 502);
   await settle();
+  assert.ok(f.loads.at(-1).startsWith(SETUP));
   assert.deepEqual(f.keyLockCalls, [false]);
   const mac = await desktop({ platform: "darwin" }, t);
   mac.menu.getMenuItemById("change-server").click();
@@ -1490,7 +1521,7 @@ test("showing the address page releases the page lock only on Windows and only f
 
 test("a dead page does not keep the address page from showing", async (t) => {
   const f = await desktop({ html: "dead" }, t);
-  f.menu.getMenuItemById("change-server").click();
+  await f.invoke("open-setup");
   await settle();
   assert.ok(f.loads.at(-1).startsWith(SETUP));
 });
@@ -1506,11 +1537,18 @@ test("F11 and the View menu stay native full screen: no page script, whatever th
   );
   assert.deepEqual(f.fullscreenRequests, [true]);
   f.finishFullscreen(true);
-  f.menu.getMenuItemById("back"); // (menu exists)
-  const view = f.menu.template.find((m) => m.label === "View");
-  view.submenu[0].click();
+  assert.equal(
+    f.input({ key: "F11", type: "keyDown", isAutoRepeat: false }),
+    true,
+  );
   assert.deepEqual(f.fullscreenRequests, [true, false]);
   assert.equal(f.scriptCalls.length, calls, "F11 runs no page script");
+  // The Mac keeps the View menu entry, which is native full screen too.
+  const mac = await desktop({ platform: "darwin" }, t);
+  const view = mac.menu.template.find((m) => m.label === "View");
+  view.submenu[0].click();
+  assert.deepEqual(mac.fullscreenRequests, [true]);
+  assert.equal(mac.scriptCalls.length, 0);
 });
 
 test("the permission handler grants fullscreen and keyboardLock only for the gateway origin's requestingUrl", async (t) => {
@@ -1574,7 +1612,7 @@ test("with no gateway configured the permission handler grants nothing, not even
 
 test("showing the address page while windowed does not touch fullscreen", async (t) => {
   const f = await desktop({}, t);
-  f.menu.getMenuItemById("change-server").click();
+  await f.invoke("open-setup");
   await settle();
   assert.deepEqual(f.fullscreenRequests, []);
 });
@@ -1584,7 +1622,7 @@ test("showing the address page while windowed does not touch fullscreen", async 
 const goodPage = {
   page: SETUP,
   title: "Gome Remote",
-  bridgeVersion: 4,
+  bridgeVersion: 5,
   read: "function",
   keyLock: "function",
   setup: "function",
@@ -1607,6 +1645,7 @@ test("--smoke-test exits 1 when the page or the bridge is not what the app promi
     { ...goodPage, bridgeVersion: 1 },
     { ...goodPage, bridgeVersion: 2 },
     { ...goodPage, bridgeVersion: 3 },
+    { ...goodPage, bridgeVersion: 4 },
     { ...goodPage, read: "undefined" },
     { ...goodPage, keyLock: "undefined" },
     { ...goodPage, bridgeVersion: undefined },
@@ -1718,7 +1757,7 @@ test("the address page channels accept exactly the page the app loads, in the to
 // ---- bridge version 3: the Mac agent ----
 
 test("a Mac agent session enables the resolution menu like RDP, and VNC still does not", async (t) => {
-  const f = await desktop({}, t);
+  const f = await desktop({ platform: "darwin" }, t);
   const item = (id) => f.menu.getMenuItemById(id);
   const state = (protocol, connected = true) => ({
     open: true,
@@ -1776,8 +1815,17 @@ test("the updater is not started in an unpackaged app or in the smoke test", asy
       [...f.timers.values()].some((timer) => timer.ms === 30_000),
       false,
     );
-    assert.equal(f.menu.getMenuItemById("check-update"), undefined);
-    assert.equal(f.menu.getMenuItemById("restart-update"), undefined);
+    f.show(`${GATEWAY}/`);
+    assert.deepEqual(
+      { ...(await f.invoke("update-state")) },
+      {
+        supported: false,
+        ready: "",
+      },
+    );
+    const mac = await desktop({ ...options, platform: "darwin" }, t);
+    assert.equal(mac.menu.getMenuItemById("check-update"), undefined);
+    assert.equal(mac.menu.getMenuItemById("restart-update"), undefined);
   }
 });
 
@@ -1870,16 +1918,20 @@ test("a missing or broken electron-updater never keeps the app from starting", a
       name,
     );
     assert.equal(f.intervals.size, 0, name);
-    assert.equal(f.menu.getMenuItemById("check-update"), undefined, name);
-    assert.equal(
-      f.menu.getMenuItemById("change-server").label,
-      "서버 주소 바꾸기",
+    assert.deepEqual(
+      { ...(await f.invoke("update-state")) },
+      {
+        supported: false,
+        ready: "",
+      },
     );
+    await f.invoke("check-update");
+    assert.deepEqual(f.dialogs, [], name);
   }
 });
 
-test("the Remote menu ends with a manual check and a hidden restart entry", async (t) => {
-  const f = await desktop({ packaged: true }, t);
+test("the Mac Remote menu ends with a manual check and a hidden restart entry", async (t) => {
+  const f = await desktop({ packaged: true, platform: "darwin" }, t);
   const items = remoteMenu(f);
   assert.deepEqual(
     [...items.slice(-3)].map((item) => item.type ?? item.id),
@@ -1893,7 +1945,7 @@ test("the Remote menu ends with a manual check and a hidden restart entry", asyn
 
 test("the manual check reports up to date, a download in progress, and an error", async (t) => {
   const f = await desktop({ packaged: true, version: "0.3.0" }, t);
-  const click = () => f.menu.getMenuItemById("check-update").click();
+  const click = () => f.invoke("check-update");
   await click();
   assert.equal(f.dialogs.length, 1);
   assert.match(f.dialogs[0].message, /최신 버전입니다 \(v0\.3\.0\)/);
@@ -1915,14 +1967,14 @@ test("the manual check reports up to date, a download in progress, and an error"
 test("a manual check that answers null says it cannot check, and dialogs are attached to the window", async (t) => {
   const f = await desktop({ packaged: true }, t);
   f.autoUpdater.result = null;
-  await f.menu.getMenuItemById("check-update").click();
+  await f.invoke("check-update");
   assert.equal(f.dialogs.length, 1);
   assert.equal(f.dialogs[0].type, "warning");
   assert.equal(f.dialogs[0].message, "업데이트를 확인할 수 없습니다.");
   assert.equal(f.dialogs[0].parent, f.window);
   // Without a usable window the dialog is free-standing instead of failing.
   f.window.destroyed = true;
-  await f.menu.getMenuItemById("check-update").click();
+  await f.invoke("check-update");
   assert.equal(f.dialogs[1].parent, null);
 });
 
@@ -1934,7 +1986,7 @@ test("a second click during a running manual check does not start another one", 
     await gate.promise;
     return f.autoUpdater.result;
   };
-  const click = () => f.menu.getMenuItemById("check-update").click();
+  const click = () => f.invoke("check-update");
   const one = click();
   const two = click();
   gate.resolve();
@@ -1943,8 +1995,8 @@ test("a second click during a running manual check does not start another one", 
   assert.equal(f.dialogs.length, 1);
 });
 
-test("the restart entry appears only after the download and then calls quitAndInstall", async (t) => {
-  const f = await desktop({ packaged: true }, t);
+test("the Mac restart entry appears only after the download and then calls quitAndInstall", async (t) => {
+  const f = await desktop({ packaged: true, platform: "darwin" }, t);
   const before = f.menu;
   assert.equal(visible(before.getMenuItemById("restart-update")), false);
   // A click on the hidden entry (a stale menu) does nothing.
@@ -1961,8 +2013,8 @@ test("the restart entry appears only after the download and then calls quitAndIn
   assert.equal(f.autoUpdater.restarts, 1);
 });
 
-test("rebuilding the menu for an update keeps the viewer state and the other entries", async (t) => {
-  const f = await desktop({ packaged: true }, t);
+test("rebuilding the Mac menu for an update keeps the viewer state and the other entries", async (t) => {
+  const f = await desktop({ packaged: true, platform: "darwin" }, t);
   f.show(GATEWAY);
   await f.invoke("viewer-state", {
     open: true,
@@ -2001,7 +2053,7 @@ test("a manual check after the download says it is ready instead of downloading 
     isUpdateAvailable: true,
     updateInfo: { version: "0.3.1" },
   };
-  await f.menu.getMenuItemById("check-update").click();
+  await f.invoke("check-update");
   assert.match(f.dialogs[0].message, /v0\.3\.1.*이미 받았습니다/);
   // And the background check stops asking while a restart is pending.
   const first = [...f.timers.values()].find((timer) => timer.ms === 30_000);
@@ -2010,8 +2062,77 @@ test("a manual check after the download says it is ready instead of downloading 
   assert.equal(f.autoUpdater.checks, checks);
 });
 
-test("the updater adds no IPC channel", async (t) => {
+test("the updater's channels exist whether or not the app has an updater", async (t) => {
   const plain = await desktop({}, t);
   const packaged = await desktop({ packaged: true }, t);
   assert.deepEqual([...packaged.handlers.keys()], [...plain.handlers.keys()]);
+});
+
+test("the page's settings menu reaches the updater: its state, the ready version and the restart", async (t) => {
+  const plain = await desktop({}, t);
+  await plain.invoke("check-update");
+  await plain.invoke("restart-update");
+  assert.equal(plain.autoUpdater.checks, 0, "an unpackaged app checks nothing");
+  const f = await desktop({ packaged: true }, t);
+  assert.deepEqual(
+    { ...(await f.invoke("update-state")) },
+    {
+      supported: true,
+      ready: "",
+    },
+  );
+  await f.invoke("restart-update");
+  assert.equal(f.autoUpdater.restarts, 0, "nothing downloaded yet");
+  f.autoUpdater.emit("update-downloaded", { version: "0.3.1" });
+  assert.deepEqual(f.notifications.at(-1), ["remote:update-ready", "0.3.1"]);
+  assert.deepEqual(
+    { ...(await f.invoke("update-state")) },
+    {
+      supported: true,
+      ready: "0.3.1",
+    },
+  );
+  assert.equal(f.autoUpdater.restarts, 0, "never restarts by itself");
+  await f.invoke("restart-update");
+  assert.equal(f.autoUpdater.restarts, 1);
+  // The address page is not told.
+  await f.invoke("open-setup");
+  const sent = f.notifications.length;
+  f.autoUpdater.emit("update-downloaded", { version: "0.3.2" });
+  assert.equal(f.notifications.length, sent);
+});
+
+test("Windows and Linux: no menu bar, no OS title bar, and caption buttons in the colours of what the page shows", async (t) => {
+  const LIGHT = { color: "#f3f3f3", symbolColor: "#1a1a1a", height: 40 };
+  const DARK = { color: "#202020", symbolColor: "#f2f2f2", height: 40 };
+  const viewer = (open) => ({
+    open,
+    connected: open,
+    protocol: open ? "rdp" : null,
+    resolution: "auto",
+  });
+  for (const platform of ["win32", "linux"]) {
+    const f = await desktop({ platform }, t);
+    assert.equal(f.menu, null, platform);
+    assert.equal(f.windowOptions.titleBarStyle, "hidden");
+    assert.deepEqual({ ...f.windowOptions.titleBarOverlay }, LIGHT);
+    await f.invoke("viewer-state", viewer(true));
+    assert.deepEqual({ ...f.overlays.at(-1) }, DARK, "a session is dark");
+    await f.invoke("viewer-state", viewer(false));
+    assert.deepEqual({ ...f.overlays.at(-1) }, LIGHT);
+    f.setDark(true);
+    assert.deepEqual(
+      { ...f.overlays.at(-1) },
+      DARK,
+      "the list follows the theme",
+    );
+    f.setDark(false);
+    assert.deepEqual({ ...f.overlays.at(-1) }, LIGHT);
+  }
+  const mac = await desktop({ platform: "darwin" }, t);
+  assert.ok(mac.menu);
+  assert.equal(mac.windowOptions.titleBarStyle, undefined);
+  await mac.invoke("viewer-state", viewer(true));
+  mac.setDark(true);
+  assert.deepEqual(mac.overlays, [], "the Mac keeps its native frame");
 });

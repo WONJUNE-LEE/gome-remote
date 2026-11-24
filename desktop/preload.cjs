@@ -13,10 +13,15 @@ const { contextBridge, ipcRenderer } = require("electron");
 // lock: keyLockSupported is true only on Windows; keyLock(true) asks main to put the page
 // into in-window HTML full screen, keyLock(false) to leave it, and both answer whether it
 // worked. The page takes navigator.keyboard.lock() itself.
+// Version 5 adds the updater for the page's settings menu: updateState() answers
+// { supported, ready }, checkUpdate() runs the manual check (its answer is a native
+// dialog), restartUpdate() installs a downloaded update, and onUpdateReady(callback) is
+// called with the version once one is downloaded. On Windows and Linux the window has no
+// menu bar and no OS title bar any more: the page's top bar replaces both.
 // The main process answers these calls only while the window shows the configured
 // gateway origin, so exposing them here grants nothing to any other page.
 const bridge = {
-  bridgeVersion: 4,
+  bridgeVersion: 5,
   fullscreen: (enabled) => ipcRenderer.invoke("remote:fullscreen", enabled),
   fullscreenState: () => ipcRenderer.invoke("remote:fullscreen-state"),
   viewerState: (state) => ipcRenderer.invoke("remote:viewer-state", state),
@@ -26,6 +31,14 @@ const bridge = {
   keyLockSupported: process.platform === "win32",
   keyLock: (on) => ipcRenderer.invoke("remote:key-lock", on),
   openSetup: () => ipcRenderer.invoke("remote:open-setup"),
+  updateState: () => ipcRenderer.invoke("remote:update-state"),
+  checkUpdate: () => ipcRenderer.invoke("remote:check-update"),
+  restartUpdate: () => ipcRenderer.invoke("remote:restart-update"),
+  onUpdateReady: (callback) => {
+    const listener = (_event, version) => callback(version);
+    ipcRenderer.on("remote:update-ready", listener);
+    return () => ipcRenderer.removeListener("remote:update-ready", listener);
+  },
   onViewerAction: (callback) => {
     const listener = (_event, action) => callback(action);
     ipcRenderer.on("remote:viewer-action", listener);

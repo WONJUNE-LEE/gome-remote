@@ -37,6 +37,8 @@
   font-synthesis: none;
   color-scheme: light dark;
   font-size: 14px;
+  /* Korean wraps between words, not inside them. */
+  word-break: keep-all;
 }
 @media (prefers-color-scheme: dark) {
   :root {
