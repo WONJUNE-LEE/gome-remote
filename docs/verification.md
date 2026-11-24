@@ -26,7 +26,9 @@ npm run build     # vite build
 - **Credential store (D2)**, `test/credentials.test.js`: a missing file means none; a mode
   other than 600, a foreign owner, a symlink or malformed content is refused without
   echoing values; a rewritten file is picked up without a restart; a loosened mode
-  degrades to "not ready".
+  degrades to "not ready"; an entry is accepted for an agent target only as
+  `{agentToken}` and refused in the wrong shape (400); `setTargets` changes which entry shape
+  `load()` accepts.
 - **`set-credential` (D2)**, `test/set-credential.test.js`: RDP and VNC targets prompt for
   a user name and a password (an empty VNC user name stores the password only, and the
   8-character note applies to a password without a user name); UTF-8 split across chunks
@@ -38,15 +40,28 @@ npm run build     # vite build
   ignored, and Ctrl-C and Ctrl-D cancel without writing; the 1024 and 256 character
   limits and the 8-character note are tested on both sides of the boundary; the replacement is atomic and leaves no temporary file; a wrong-mode
   file is left untouched.
+- **Device management (device-management design D1-D3)**, `test/targets.test.js`,
+  `test/manage.test.js`: the target shape built for an Ubuntu or Mac-agent kind; new IDs skip
+  taken ones; a second Ubuntu target, deleting the last target and renaming an unknown ID
+  are refused (409, 409, 404); a rename returns new objects and leaves its input alone;
+  config errors are mapped to Korean messages; an add with a key writes the target, a
+  `gateway.json.prev` of mode 640 holding the old file, and the key; two adds started
+  together both land; a hand edit made after start survives a rename; a credentials file
+  of mode 644 fails setting and removing with 500; replacing a key touches only that
+  target's entry; delete removes key and target; a key that cannot be saved after an add
+  keeps the target and says so; each write logs one line and no log line holds the key.
 - **Gateway (D3)**, `test/gateway.test.js`: allowed or refused login on every API route
   with the exact 403 text; static UI and health check open; Origin rules; client
-  credentials refused with 400; 0.1.3 client behaviour; the target list has no address or
-  secret; stored credentials are injected; tickets are bound to a login, single use and
+  credentials refused with 400; 0.1.3 client behaviour; the target list carries `hostname`
+  but no port and no secret; stored credentials are injected; tickets are bound to a login, single use and
   20 s (valid one millisecond before expiry); session sizes accepted at 640x480 and
   3840x2160 and refused one pixel beyond; a guacd `error` at the `select` or `connect`
   step reaches the browser, ends the tunnel, is dialed exactly once and spends the ticket
   (the fixture fails like a real guacd); WebSocket Origin and identity matrix;
-  development login.
+  development login; management writes (POST, PATCH, PUT, DELETE under `/api/targets`)
+  need the exact public Origin and do not reach the manager without it, pass the login and
+  the parsed body to the manager, map its error to its status and refuse bad bodies before
+  it; `GET /api/targets` items carry the hostname, agent tiles included.
 - **Socket (D3)**, `test/listen.test.js`, `test/index.test.js`: socket 0600 in a 0700
   directory; an open directory refused; a regular file never removed; a live gateway never
   taken over; the stale socket left by SIGKILL replaced; clear refusal messages at
@@ -233,6 +248,9 @@ for the procedure.
 - Redesign V6 (operator). Gateway restart comes back with Serve answering; each refusal condition
   (empty `allowedLogins`, credentials file mode, open socket directory) leaves a clear
   line in the log.
+- Device management, after deploy (owner; not run). The owner adds the existing Mac a second
+  time with the key from its token file, connects, then deletes it; the original Mac target
+  and its login stay untouched.
 
 ## Mac agent pre-test P1 (lock screen), recorded 2026-10-16
 

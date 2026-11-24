@@ -130,6 +130,28 @@ makes the whole file invalid. `--agent-token` is required for agent targets and 
 for the others; the token, like the passwords, is typed at the prompt and never given as an
 argument.
 
+### Add and manage devices
+
+There are two ways, and they edit the same files.
+
+- **In the app.** On the list, **기기 추가** takes a name and a kind (a Mac through its
+  agent, with its Tailscale address and the agent key; or the Ubuntu server itself, offered
+  only while the list has none). The row's **⋯** opens the device page: rename, replace the
+  login (password, or agent key) and delete. No restart and no server terminal. Any
+  allowed login can do this, and the same Origin rule as the rest of the API applies.
+- **On the server.** Edit `gateway.json` and restart the gateway, and store the login with
+  `scripts/set-credential.mjs`, as above. This keeps working.
+
+What the app does with a login: it sends a password or agent key once and the gateway
+stores it in the credentials file. Nothing returns it; the app never shows it, not even
+masked, and the list state (켜짐, 설정 필요, ...) is the only feedback. An address cannot
+be changed in the app: delete the device and add it again. The last device cannot be
+deleted. On every app write the gateway keeps the previous `gateway.json` as
+`gateway.json.prev` next to it and logs one line (the action, the target and the login;
+never a password or key). A hand edit of `gateway.json` made while the gateway runs is
+kept by the next app write, but only an app write or a restart makes the gateway use it.
+The app does not install the Mac agent (see [The Mac agent](#the-mac-agent)).
+
 Run it as a user service and publish it with Tailscale Serve on a port of its own:
 
 ```sh
@@ -207,7 +229,9 @@ permission to a program that starts afterwards). On the gateway server run
 `node scripts/set-credential.mjs <gateway.json> mac --agent-token` (the path of the gateway
 configuration you are setting up; during the parallel rollout that is the candidate's
 `gateway.json`) and paste the token the installer showed (it is shown once; it stays in
-`~/Library/Application Support/Gome Remote Agent/token`). In Korean Mac settings, the 한/영 key needs **System Settings > Keyboard >
+`~/Library/Application Support/Gome Remote Agent/token`). Or add the Mac in the app
+(**기기 추가**, then the Mac's Tailscale address and the same token). The agent is still
+installed on the Mac by hand; the app only takes its address and key. In Korean Mac settings, the 한/영 key needs **System Settings > Keyboard >
 Input Sources > Use the Caps Lock key to switch to and from ABC** to be on: the Windows
 Hangul key is sent as one Caps Lock press.
 
@@ -302,6 +326,9 @@ Open the same address in a browser for the identical screen.
   The bar comes with the gateway page: update the gateway before (or with) the app. A
   Windows or Linux app of this version showing an older gateway page has no menu bar and
   no bar to drag the window by.
+- **기기 추가** (above the list) and each row's **⋯** add, rename, re-key and delete devices;
+  see [Add and manage devices](#add-and-manage-devices). The app sends a password or agent
+  key once and never shows it again.
 - 연결 opens the session screen at once with a card: "<name>에 연결하는 중", a spinner,
   for the Ubuntu login a note that the next screen asks for the Ubuntu password, and 취소,
   which stops the attempt and returns to the list.
@@ -378,10 +405,15 @@ login after a FileVault reboot.
 
 ## Operations
 
-- **Restart** the gateway after changing `gateway.json` (targets, logins):
+- **Restart** the gateway after editing `gateway.json` by hand (targets, logins); the app's
+  device management needs no restart:
   `systemctl --user restart gome-remote-gateway.service`. Connections drop; the Ubuntu
   session and its windows do not.
-- **Change a password:** run `set-credential` again for that target. No restart.
+- **Add, rename, delete a device or change its login:** in the app (기기 추가, the row's ⋯)
+  or by hand as above. An address change is delete + add. Every app write logs one line
+  (`manage <action> <target> by <login>: ok`, or `failed at ...`) and leaves the previous
+  file as `gateway.json.prev`; to undo one, copy it back over `gateway.json` and restart.
+- **Change a password:** in the app, or run `set-credential` again for that target. No restart.
 - **Stop access:** stop the service and remove only its Serve listener,
   `sudo tailscale serve --https=8450 off`. Never reset all Serve routes.
 - **A Mac (agent) row says 오프라인** when the agent does not answer: the Mac is off or
@@ -395,7 +427,8 @@ gui/$(id -u)/net.gome.remote-agent` on the Mac). **권한 필요**: allow the tw
   the capture itself, up to three times a minute, when a display changes its mode); the row
   still opens (the mark clears at the next session), and if the picture stays black the permission is the first thing to check. After a token change on the Mac
   (delete `token` and run `install.sh`), run
-  `node scripts/set-credential.mjs <gateway.json> <id> --agent-token` again; the
+  `node scripts/set-credential.mjs <gateway.json> <id> --agent-token` again, or paste the
+  new key on the device page; the
   gateway log says when a token was refused ("did not accept the gateway token").
 - **Startup refused?** The log says why (`journalctl --user -u gome-remote-gateway`):
   an empty `allowedLogins`, a legacy `token` field, a credentials file whose mode is not

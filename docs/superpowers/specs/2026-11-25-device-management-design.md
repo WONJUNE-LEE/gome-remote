@@ -1,6 +1,6 @@
 # Add and manage devices in the app — design
 
-Status: owner approved the direction in chat on 2026-11-25 (grade F, phase 2 of the UI rework).
+Status: Implemented on branch feat/device-management (not yet merged or deployed). Owner approved the direction in chat on 2026-11-25 (grade F, phase 2 of the UI rework).
 Revision 2 (after design review round 1): addresses are no longer editable (a changed address
 is delete + add), remote Linux hosts are out of scope, writes are logged.
 Phase 1 (integrated title bar, list screen, connect → disconnect flow) is built separately on
