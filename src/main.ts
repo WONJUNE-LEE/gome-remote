@@ -944,7 +944,9 @@ api.onViewerAction((action) => {
       return;
     select.value = size;
     select.dispatchEvent(new Event("change"));
-  } else if (action === "disconnect") disconnect();
+  } else if (action === "disconnect" || action === "back")
+    // old apps (bridge 4 and earlier) still send "back" from their 서버 목록 menu entry
+    disconnect();
   else if (action === "reconnect") flow.reconnect();
   else if (action === "text-input") openTextDialog();
   else if (action === "paste-clipboard") pasteClipboard();

@@ -298,15 +298,14 @@ Open the same address in a browser for the identical screen.
   captured); Escape stays a remote key on a tap.
 - In the Windows and Linux app the bar is the window's title bar: drag it to move the
   window; minimise, maximise and close are the system's own buttons at its right end. There
-  is no menu bar. The Mac app keeps its normal title bar and its **원격** menu (서버 목록,
-  해상도, 텍스트 입력, 클립보드 붙여넣기, 다시 연결, 연결 끊기) and **View → 전체 화면**.
+  is no menu bar. The Mac app keeps its normal title bar and its **원격** menu (해상도, 텍스트 입력, 클립보드 붙여넣기, 다시 연결, 연결 끊기) and **View → 전체 화면**.
   The bar comes with the gateway page: update the gateway before (or with) the app. A
   Windows or Linux app of this version showing an older gateway page has no menu bar and
   no bar to drag the window by.
 - 연결 opens the session screen at once with a card: "<name>에 연결하는 중", a spinner,
   for the Ubuntu login a note that the next screen asks for the Ubuntu password, and 취소,
   which stops the attempt and returns to the list.
-- **연결 끊기** (or 서버 목록 and 연결 끊기 in the Mac menu) ends the session and returns to
+- **연결 끊기** (or 연결 끊기 in the Mac menu) ends the session and returns to
   the list, with a short message at the bottom ("<name> 연결을 끊었습니다") and a 다시 연결
   button that opens the same machine again. It goes away after about 6 seconds or when
   another connection starts. Only one machine is connected at a time.
