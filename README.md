@@ -411,7 +411,7 @@ login after a FileVault reboot.
   session and its windows do not.
 - **Add, rename, delete a device or change its login:** in the app (기기 추가, the row's ⋯)
   or by hand as above. An address change is delete + add. Every app write logs one line
-  (`manage <action> <target> by <login>: ok`, or `failed at ...`) and leaves the previous
+  (`manage <action> <target> by <login>: ok`, `refused (<status>)` or `failed at ...`) and leaves the previous
   file as `gateway.json.prev`; to undo one, copy it back over `gateway.json` and restart.
 - **Change a password:** in the app, or run `set-credential` again for that target. No restart.
 - **Stop access:** stop the service and remove only its Serve listener,
