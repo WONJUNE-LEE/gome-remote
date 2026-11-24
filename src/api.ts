@@ -142,4 +142,22 @@ export const api = {
       : Promise.resolve(false),
   // Only the app has an address to change; in a browser the address bar is the setting.
   openSetup: () => (appMode ? window.desktop!.openSetup() : Promise.resolve()),
+  // The app's updater (bridge version 5). Browsers and older apps have none, and an
+  // unpackaged app answers supported: false.
+  updateState: (): Promise<UpdateState> =>
+    appMode && window.desktop!.updateState
+      ? window.desktop!.updateState()
+      : Promise.resolve({ supported: false, ready: "" }),
+  checkUpdate: () =>
+    appMode && window.desktop!.checkUpdate
+      ? window.desktop!.checkUpdate()
+      : Promise.resolve(),
+  restartUpdate: () =>
+    appMode && window.desktop!.restartUpdate
+      ? window.desktop!.restartUpdate()
+      : Promise.resolve(),
+  onUpdateReady: (callback: (version: string) => void) =>
+    appMode && window.desktop!.onUpdateReady
+      ? window.desktop!.onUpdateReady(callback)
+      : () => {},
 };

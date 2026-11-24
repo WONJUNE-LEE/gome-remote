@@ -29,10 +29,16 @@ test("a tile is usable only when the machine answers and its credentials are set
   }
 });
 
-test("platform colours and the connecting text follow the design", () => {
-  assert.equal(tiles.platformClass("linux"), "ubuntu");
-  assert.equal(tiles.platformClass("mac"), "mac");
-  assert.equal(tiles.platformClass("windows"), "windows");
+test("the row's second line names the system and how it is reached, and the connecting text", () => {
+  for (const [change, meta] of [
+    [{ profile: "gnome-remote-login" }, "Ubuntu · 원격 로그인"],
+    [{}, "Linux · 원격 데스크톱(RDP)"],
+    [{ platform: "mac", protocol: "agent" }, "Mac · Gome 에이전트"],
+    [{ platform: "mac", protocol: "vnc" }, "Mac · 화면 공유(VNC)"],
+    [{ platform: "windows", protocol: "vnc" }, "Windows · VNC"],
+    [{ platform: "windows" }, "Windows · 원격 데스크톱(RDP)"],
+  ])
+    assert.equal(tiles.metaText(target(change)), meta, JSON.stringify(change));
   assert.equal(
     tiles.connectingText("Ubuntu 서버"),
     "Ubuntu 서버에 연결하는 중",

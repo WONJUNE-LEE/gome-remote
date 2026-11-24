@@ -36,6 +36,8 @@ interface ViewerState {
 // resolution to viewerState and the resolution:auto menu action. Version 3 adds the
 // protocol "agent" to viewerState (the page sends "rdp" to older apps). Version 4 adds
 // readClipboard and writeClipboard: text only, answered only while the window has focus.
+// Version 5 adds the updater (updateState, checkUpdate, restartUpdate, onUpdateReady); the
+// viewer state then also sets the colours of the Windows and Linux caption buttons.
 type ClipboardRead =
   | { ok: true; text: string; concealed: boolean }
   | { ok: false; reason: "unfocused" | "failed" };
@@ -64,6 +66,17 @@ interface DesktopBridge extends NativeBridge {
     text: string,
     opts?: { concealed?: boolean },
   ): Promise<ClipboardWrite>;
+  // Version 5: the updater, for the page's settings menu. Absent in older apps.
+  updateState?(): Promise<UpdateState>;
+  checkUpdate?(): Promise<void>;
+  restartUpdate?(): Promise<void>;
+  onUpdateReady?(callback: (version: string) => void): () => void;
+}
+// `supported`: the app has an updater (packaged); `ready`: the downloaded version waiting
+// for a restart, or "".
+interface UpdateState {
+  supported: boolean;
+  ready: string;
 }
 // navigator.keyboard (Keyboard Lock API); Chromium only, so it may be absent.
 interface Navigator {

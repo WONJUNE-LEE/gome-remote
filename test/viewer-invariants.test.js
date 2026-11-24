@@ -33,12 +33,11 @@ test("only the remote cursor shows over a connected desktop", () => {
   );
 });
 
-test("nothing is drawn over remote pixels: the overlay hides on connect and the browser bar is in the page flow", () => {
+test("nothing is drawn over remote pixels: the overlay hides on connect and the top bar is in the page flow", () => {
   assert.match(main, /state === 3\) \{[^}]*el\("overlay"\)\.hidden = true/);
-  assert.match(body(".session-toolbar"), /flex-shrink: 0/);
-  assert.doesNotMatch(body(".session-toolbar"), /position: (absolute|fixed)/);
+  assert.match(body(".topbar"), /flex-shrink: 0/);
+  assert.doesNotMatch(body(".topbar"), /position: (absolute|fixed)/);
   assert.match(body(".session"), /display: flex/);
-  assert.match(css, /\.app-mode \.browser-only \{ display: none; \}/);
 });
 
 test("F11 stays local and the viewer keeps its commands", () => {
@@ -50,7 +49,7 @@ test("F11 stays local and the viewer keeps its commands", () => {
     '"reconnect"',
     '"text-input"',
     '"paste-clipboard"',
-    '<button id="paste-remote" disabled>클립보드 붙여넣기</button>',
+    '<button id="paste-remote" class="bar-button" disabled>',
   ])
     assert.ok(main.includes(command), command);
   assert.match(main, /client\?\.sendSize\(size\.width, size\.height\)/);
@@ -59,13 +58,13 @@ test("F11 stays local and the viewer keeps its commands", () => {
 
 test("the list uses the approved palette, dark mode and state words", () => {
   for (const colour of [
-    "#f6f3ee",
-    "#22201e",
-    "#2e2b28",
-    "#e95420",
-    "#a83a1c",
-    "#9aa3b2",
-    "#5d6573",
+    "#f3f3f3",
+    "#202020",
+    "#2b2b2b",
+    "#c2410c",
+    "#107c10",
+    "#6ccb5f",
+    "#c42b1c",
   ])
     assert.ok(css.includes(colour), colour);
   assert.match(css, /prefers-color-scheme: dark/);
@@ -90,10 +89,10 @@ test("the list uses the approved palette, dark mode and state words", () => {
 // Grep-only on purpose, for what a fake page cannot show: the real DOM template and
 // the disabled attribute. Which screen a failure shows and when a connection may start are
 // tested behaviourally in viewer-flow.test.js (flow.ts and main.ts with a fake page).
-test("the server address is app-only, tiles that cannot open are real disabled buttons", () => {
+test("the server address is app-only, rows that cannot open have real disabled buttons", () => {
   assert.match(main, /el\("menu-address"\)\.hidden = !appMode/);
   assert.match(main, /el\("state-address"\)\.hidden = !appMode/);
-  assert.match(main, /tile\.disabled = !tileEnabled\(target\)/);
+  assert.match(main, /button\.disabled = !tileEnabled\(target\)/);
   assert.match(
     main,
     /if \(!targets\.includes\(target\) \|\| !tileEnabled\(target\)\) return/,
@@ -104,9 +103,9 @@ test("main.ts takes its failure screens and its connection policy from flow.ts",
   assert.match(main, /errorScreen\(kind, appMode\)/);
   assert.match(main, /connectFailure\(kind\)/);
   assert.match(main, /createSessionFlow\(/);
-  // No timer starts a connection: the only timers are the clipboard notice's 4 seconds
-  // and the ones handed to the clipboard sync (its paste barrier), and no timer callback
-  // calls connect() or the flow.
+  // No timer starts a connection: the only timers are the clipboard notice's 4 seconds,
+  // the disconnect toast's 6 seconds and the ones handed to the clipboard sync (its paste
+  // barrier), and no timer callback calls connect() or the flow.
   assert.doesNotMatch(main, /setInterval/);
   const timerLines = main
     .split("\n")
@@ -115,7 +114,7 @@ test("main.ts takes its failure screens and its connection policy from flow.ts",
   for (const line of timerLines)
     assert.match(
       line,
-      /noticeTimer|hideNotice|setTimeout: \(|setTimeout\(callback, ms\)|clearTimeout: \(|clearTimeout\(id\)/,
+      /noticeTimer|hideNotice|toastTimer|hideToast|setTimeout: \(|setTimeout\(callback, ms\)|clearTimeout: \(|clearTimeout\(id\)/,
       `an unexpected timer: ${line.trim()}`,
     );
   assert.doesNotMatch(
@@ -144,8 +143,9 @@ test("screens keep to the minimal copy of the spec", () => {
   }
 });
 
-test("the ended view offers 다시 연결 once, in the overlay card", () => {
-  assert.equal((main.match(/다시 연결/g) || []).length, 1);
+test("다시 연결 is offered by the ended card and by the toast after 연결 끊기, nowhere else", () => {
+  assert.equal((main.match(/다시 연결/g) || []).length, 2);
+  assert.match(main, /el\("toast-reconnect"\)\.onclick = reconnectFromToast/);
   assert.doesNotMatch(main, /id="reconnect"|el\("reconnect"\)/);
   assert.match(
     main,
@@ -166,15 +166,20 @@ const contrast = (a, b) => {
   return (hi + 0.05) / (lo + 0.05);
 };
 
-test("a disabled tile keeps its state word readable (AA 4.5:1) in light and dark", () => {
-  // The tile is not faded as a whole; only the colour block and the dot are dimmed.
-  assert.match(body(".tile:disabled"), /opacity: 1[;\s]/);
-  assert.match(body(".tile:disabled .tile-art"), /opacity/);
-  assert.match(body(".tile:disabled .dot"), /opacity/);
+test("a row that cannot open keeps its state word readable (AA 4.5:1) in light and dark", () => {
+  // Only the row's icon is dimmed; the row, its words and its dot are not faded.
+  assert.match(
+    body(".device:has(.device-connect:disabled) .device-icon"),
+    /opacity/,
+  );
+  assert.doesNotMatch(body(".device"), /opacity/);
+  assert.doesNotMatch(body(".device-state"), /opacity/);
   const light = css.match(/:root \{[^}]*\}/)[0];
   const dark = css.match(/prefers-color-scheme: dark\) \{ :root \{[^}]*\}/)[0];
   const value = (block, name) =>
     block.match(new RegExp(`${name}: (#[0-9a-f]{6})`, "i"))[1];
-  assert.ok(contrast(value(light, "--muted"), value(light, "--tile")) >= 4.5);
-  assert.ok(contrast(value(dark, "--muted"), value(dark, "--tile")) >= 4.5);
+  assert.ok(
+    contrast(value(light, "--muted"), value(light, "--surface")) >= 4.5,
+  );
+  assert.ok(contrast(value(dark, "--muted"), value(dark, "--surface")) >= 4.5);
 });

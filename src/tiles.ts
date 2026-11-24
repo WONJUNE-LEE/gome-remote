@@ -48,6 +48,16 @@ export const tileEnabled = (
     (state === "locked" && lockedEnabled)
   );
 };
-export const platformClass = (platform: Target["platform"]) =>
-  ({ linux: "ubuntu", mac: "mac", windows: "windows" })[platform];
+// The second line of a row in the device list: the system, then how the app reaches it.
+const systemName = { linux: "Linux", mac: "Mac", windows: "Windows" };
+export function metaText(target: Target): string {
+  if (target.profile === "gnome-remote-login") return "Ubuntu · 원격 로그인";
+  const system = systemName[target.platform];
+  if (target.protocol === "agent") return `${system} · Gome 에이전트`;
+  if (target.protocol === "vnc")
+    return target.platform === "mac"
+      ? "Mac · 화면 공유(VNC)"
+      : `${system} · VNC`;
+  return `${system} · 원격 데스크톱(RDP)`;
+}
 export const connectingText = (name: string) => `${name}에 연결하는 중`;
