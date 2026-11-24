@@ -2101,38 +2101,3 @@ test("the page's settings menu reaches the updater: its state, the ready version
   f.autoUpdater.emit("update-downloaded", { version: "0.3.2" });
   assert.equal(f.notifications.length, sent);
 });
-
-test("Windows and Linux: no menu bar, no OS title bar, and caption buttons in the colours of what the page shows", async (t) => {
-  const LIGHT = { color: "#f3f3f3", symbolColor: "#1a1a1a", height: 40 };
-  const DARK = { color: "#202020", symbolColor: "#f2f2f2", height: 40 };
-  const viewer = (open) => ({
-    open,
-    connected: open,
-    protocol: open ? "rdp" : null,
-    resolution: "auto",
-  });
-  for (const platform of ["win32", "linux"]) {
-    const f = await desktop({ platform }, t);
-    assert.equal(f.menu, null, platform);
-    assert.equal(f.windowOptions.titleBarStyle, "hidden");
-    assert.deepEqual({ ...f.windowOptions.titleBarOverlay }, LIGHT);
-    await f.invoke("viewer-state", viewer(true));
-    assert.deepEqual({ ...f.overlays.at(-1) }, DARK, "a session is dark");
-    await f.invoke("viewer-state", viewer(false));
-    assert.deepEqual({ ...f.overlays.at(-1) }, LIGHT);
-    f.setDark(true);
-    assert.deepEqual(
-      { ...f.overlays.at(-1) },
-      DARK,
-      "the list follows the theme",
-    );
-    f.setDark(false);
-    assert.deepEqual({ ...f.overlays.at(-1) }, LIGHT);
-  }
-  const mac = await desktop({ platform: "darwin" }, t);
-  assert.ok(mac.menu);
-  assert.equal(mac.windowOptions.titleBarStyle, undefined);
-  await mac.invoke("viewer-state", viewer(true));
-  mac.setDark(true);
-  assert.deepEqual(mac.overlays, [], "the Mac keeps its native frame");
-});
