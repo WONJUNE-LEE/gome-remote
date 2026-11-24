@@ -4,23 +4,25 @@ One list of your own machines, on your own tailnet. Pick the Ubuntu server or th
 and the desktop fills the window. The same screen runs in the Windows app, the Mac app
 and a browser.
 
-Tiles show a coloured block per platform, an online dot, the name and one word of
-state: 켜짐 (on), 꺼짐 (off) or 설정 필요 (needs setup). The Mac, which has its own agent,
+The list (기기) has one row per machine: an icon for the platform, the name, a line that
+says how it is reached (for example "Ubuntu · 원격 로그인" or "Mac · Gome 에이전트"), a
+dot with one word of state and a **연결** button. The state is 켜짐 (on), 꺼짐 (off) or
+설정 필요 (needs setup). The Mac, which has its own agent,
 also says 오프라인 (the agent does not answer), 권한 필요 (macOS permissions are missing),
 권한 필요(의심) (the screen only returns black pictures, probably a missing permission) or
-잠김 (the screen is locked). Off, unconfigured and unusable machines are dimmed and cannot
-be opened; 권한 필요(의심) and 잠김 stay openable, so that a screen that has recovered can be
+잠김 (the screen is locked). Off, unconfigured and unusable machines have a disabled 연결
+button; 권한 필요(의심) and 잠김 stay openable, so that a screen that has recovered can be
 used and a locked Mac can be unlocked through the agent.
 
 ## How you sign in: one password
 
-- **Ubuntu server.** Click the tile and the Ubuntu login screen (GDM) appears. Type the
+- **Ubuntu server.** Click 연결 and the Ubuntu login screen (GDM) appears. Type the
   `gome` account password there, once. You land in the desktop session that is already
   running, with your windows as you left them. Disconnect and reconnect later: the
   session is still there and GDM asks for the password again, like a lock screen.
-- **Mac.** Click the tile and the Mac screen appears. There is nothing to type in the
+- **Mac.** Click 연결 and the Mac screen appears. There is nothing to type in the
   app. The Mac runs a small agent of its own (see [The Mac agent](#the-mac-agent)) that
-  streams the screen as H.264 video straight to your device; a second tile, **Mac (VNC)**,
+  streams the screen as H.264 video straight to your device; a second row, **Mac (VNC)**,
   keeps the older route through Apple's Screen Sharing for unlocking the Mac, for
   allowing macOS permissions, and as a way back.
 - **The app itself asks for nothing but the server address,** once, the first time.
@@ -28,7 +30,7 @@ used and a locked Mac can be unlocked through the agent.
 What the machines need before their own login screen is stored on the gateway server by
 its owner and injected by the gateway: the Ubuntu system Remote Login user name and
 password, the Mac's macOS account name and password (Apple Remote Desktop
-authentication, for the Mac (VNC) tile), and the Mac agent's token. No client stores or
+authentication, for the Mac (VNC) row), and the Mac agent's token. No client stores or
 sends a password or a token: the gateway decides from your Tailscale login.
 
 ## How it works
@@ -39,7 +41,7 @@ Windows/Mac app (a thin window) or browser
   -> gateway on a unix socket  (checks login and Origin, serves the UI, issues tickets)
   -> guacd on 127.0.0.1:4822   (Apache Guacamole, read-only container)
        -> 127.0.0.1:3389  GNOME Remote Desktop -> GDM -> your session
-       -> <mac tailnet ip>:5900  macOS Screen Sharing   (the Mac (VNC) tile)
+       -> <mac tailnet ip>:5900  macOS Screen Sharing   (the Mac (VNC) row)
 
 Mac (agent): the gateway only relays the connection set-up
   page --offer--> gateway --token--> agent on the Mac (<mac tailnet ip>:18471)
@@ -162,7 +164,7 @@ and password. On the server, run `node scripts/set-credential.mjs mac-vnc` and e
 macOS account name and password. The separate "VNC viewers may control screen with
 password" option is not needed; leave it off. The gateway asks for 16-bit colour from
 the Mac to keep a 4K screen responsive, so gradients may show slight banding. This
-route measured about 170 to 180 ms from click to picture; it stays as the tile for
+route measured about 170 to 180 ms from click to picture; it stays as the row for
 unlocking the Mac, allowing permissions and as a fallback.
 
 ### The Mac agent
@@ -171,7 +173,7 @@ A small program in [`agent/mac`](agent/mac) (Rust) that captures the screen with
 ScreenCaptureKit, encodes H.264 on the Mac's hardware encoder and sends it over WebRTC;
 keyboard and mouse come back on a data channel and are posted as system events. It runs
 in the owner's login session, so it exists only while the owner is logged in: after a
-reboot, before login, the tile says 오프라인. The design and its decisions are in
+reboot, before login, the row says 오프라인. The design and its decisions are in
 [`docs/mac-agent-spec.md`](docs/mac-agent-spec.md).
 
 Requirements: macOS 14 or later (the ScreenCaptureKit APIs the agent uses), Rust, the Xcode
@@ -221,7 +223,7 @@ Good to know:
   clipboard sync sends from the Mac. This is the same trust placed in the gateway for the
   screen and input.
 - **The 30-day reconfirmation.** macOS 27 asks the owner every 30 days to confirm that a
-  program may record the screen. If the screen goes blank or the tile says 권한 필요 (or
+  program may record the screen. If the screen goes blank or the row says 권한 필요 (or
   권한 필요(의심)) around then, open Mac (VNC) and click the confirmation window.
 - **Updating.** Run `./install.sh` again; the token and settings are kept. The administrator
   password is needed every time, because the program lives in a root-owned folder. If
@@ -272,14 +274,15 @@ the first-launch prompt (do not disable Gatekeeper or SmartScreen globally):
 After that, updates arrive by themselves. The packaged app looks for a new release shortly
 after it starts and then every 6 hours, and downloads it in the background. It never
 restarts on its own, because you may be in a remote session. The update is installed when
-you quit the app, or right away with **원격 → 다시 시작해서 업데이트**, which appears once
-a download has finished. **원격 → 업데이트 확인** checks now and tells you the result.
+you quit the app, or right away with **다시 시작해서 업데이트** in the settings menu (the
+button next to 기기; on the Mac also in the 원격 menu), which appears once a download has
+finished. **업데이트 확인** in the same places checks now and tells you the result.
 Errors in the background check are only logged. A development run (`npm start`) never
 updates itself.
 
 On first launch the app asks for the server address, for example
 `your-server.your-tailnet.ts.net:8450`, and then shows the gateway's own page. Change
-it later from **원격 → 서버 주소 바꾸기** or the `⋯` menu. If the gateway cannot be
+it later from **서버 주소 바꾸기** in the settings menu (on the Mac also in the 원격 menu). If the gateway cannot be
 reached the app shows the address page again. On first launch the app deletes the `vault.enc`
 that 0.1.x versions left in its data directory.
 
@@ -287,16 +290,29 @@ Open the same address in a browser for the identical screen.
 
 ## Using it
 
-- Click a tile. While connecting, the window shows a spinner and "<name>에 연결하는 중".
-- In the app, use the native **원격** menu: 서버 목록, 해상도 (RDP and the Mac agent; 자동 by default; apps older than bridge version 2 offer fixed sizes only), 텍스트 입력,
-  클립보드 붙여넣기 (bridge version 4 or later), 다시 연결, 연결 종료. F11 and
-  **View → 전체 화면** toggle full screen locally (on Windows also while the keyboard is
+- Every screen has one 40px bar on top. On the list it shows the app name. In a session it
+  is dark and shows the machine, its state (연결 중, 연결됨, 연결 끊김) and the tools:
+  붙여넣기 (clipboard paste), 텍스트 입력, 해상도 (RDP and the Mac agent; 자동 by default),
+  전체 화면 and a red **연결 끊기**. The bar sits above the picture, never over it, and hides
+  in full screen; F11 toggles full screen locally (on Windows also while the keyboard is
   captured); Escape stays a remote key on a tap.
-- In a browser the same controls sit in a bar above the picture, never over it.
+- In the Windows and Linux app the bar is the window's title bar: drag it to move the
+  window; minimise, maximise and close are the system's own buttons at its right end. There
+  is no menu bar. The Mac app keeps its normal title bar and its **원격** menu (해상도, 텍스트 입력, 클립보드 붙여넣기, 다시 연결, 연결 끊기) and **View → 전체 화면**.
+  The bar comes with the gateway page: update the gateway before (or with) the app. A
+  Windows or Linux app of this version showing an older gateway page has no menu bar and
+  no bar to drag the window by.
+- 연결 opens the session screen at once with a card: "<name>에 연결하는 중", a spinner,
+  for the Ubuntu login a note that the next screen asks for the Ubuntu password, and 취소,
+  which stops the attempt and returns to the list.
+- **연결 끊기** (or 연결 끊기 in the Mac menu) ends the session and returns to
+  the list, with a short message at the bottom ("<name> 연결을 끊었습니다") and a 다시 연결
+  button that opens the same machine again. It goes away after about 6 seconds or when
+  another connection starts. Only one machine is connected at a time.
 - One pointer is drawn over a connected desktop: the remote cursor on the Guacamole paths (RDP
   and VNC), and your own device's pointer in a Mac (agent) session, whose picture has no cursor in it.
 - Resolution (Ubuntu, RDP) defaults to **자동 (창 크기)**: the remote desktop follows the window
-  size and is resized shortly after the window stops changing. Fixed sizes remain in the menu.
+  size and is resized shortly after the window stops changing. Fixed sizes remain in the picker.
 - A Mac (VNC) session uses guacd's local cursor: a normal pointer instead of a dot, moving without round-trip lag.
 - A Mac (agent) session shows your own device's pointer over the picture, and the Mac's
   cursor follows it (so hover effects work); the Mac's pointer shapes, such as the text
@@ -309,8 +325,8 @@ Open the same address in a browser for the identical screen.
   notice says so). Nothing is pushed when a session starts. Client to remote: the text is
   sent when the remote view gains focus and right before a paste, that is a paste key
   (Cmd+V on a Mac target; Ctrl+V, Ctrl+Shift+V or Shift+Insert elsewhere) or the
-  **클립보드 붙여넣기** menu item or bar button. The paste key and every input after it wait up to
-  500 ms for the clipboard to be read, so the new text is in place before the V. The menu item
+  **붙여넣기** bar button (클립보드 붙여넣기 in the Mac menu). The paste key and every input after it wait up to
+  500 ms for the clipboard to be read, so the new text is in place before the V. The Mac menu item
   reads the clipboard even though the native menu took focus from the page, and retries once.
   Remote to client: only while the remote view is focused; a change made while another window
   is in front is dropped. Known limit: a Mac copy made in the last few hundred milliseconds
@@ -321,16 +337,16 @@ Open the same address in a browser for the identical screen.
   with the browser's own clipboard permission; a refused permission is silent. An app older
   than bridge version 4 (0.3.2 and earlier) has no clipboard sync and no menu item; the
   update arrives with the next desktop release tag.
-  During a rollout, while the new app still loads an old gateway page, or after the gateway
-  is rolled back to an older page, the **클립보드 붙여넣기** menu item is shown but does nothing:
-  the page has no clipboard sync to answer it. Update the gateway to bring it back.
+  On the Mac, while the app still loads an old gateway page, or after the gateway is rolled
+  back to an older page, the **클립보드 붙여넣기** menu item is shown but does nothing: the
+  page has no clipboard sync to answer it. Update the gateway to bring it back.
 - Mac (agent) clipboard writes are current-host-only (Universal Clipboard does not carry
   them to other Apple devices). Text the Mac marks as concealed (password managers) is passed on
   with the matching mark where the system allows it. If Windows Clipboard History still keeps
   Mac-copied text, that is a residual risk: writing the mark on Windows is not yet tested there.
   No clipboard text is logged anywhere; only the reason and the byte length.
 - Lock screen (Mac agent): when the Mac is really locked (the console lock, not just a sleeping
-  display), Cmd+V or **클립보드 붙여넣기** types the client's text into the password field with key
+  display), Cmd+V or **붙여넣기** types the client's text into the password field with key
   codes (characters outside the US layout fall back to Unicode typing). The text is held in the
   agent's memory only and is never written to the Mac pasteboard; it is dropped on unlock and
   at session end. One trailing line break is dropped; text with a line break inside is refused
@@ -343,7 +359,7 @@ Open the same address in a browser for the identical screen.
   click the remote view to take it again (a tap on Escape stays a remote key). F11 still
   toggles full screen while it is held. Win+L and Ctrl+Alt+Del stay with Windows. If the
   keyboard capture is refused, the session works without it. The Mac and Linux apps and
-  browsers are unchanged: no capture, F11 and **View → 전체 화면** are plain full screen.
+  browsers are unchanged: no capture, F11 (and on the Mac **View → 전체 화면**) is plain full screen.
 - Korean text over Mac (VNC): whether macOS Screen Sharing carries Korean and emoji in the
   clipboard is not yet measured (see `docs/verification.md`); until it is, assume Latin-1 text
   only on that path. The Mac agent carries Unicode; Ubuntu (RDP) with Korean is also still to be checked.
@@ -368,15 +384,15 @@ login after a FileVault reboot.
 - **Change a password:** run `set-credential` again for that target. No restart.
 - **Stop access:** stop the service and remove only its Serve listener,
   `sudo tailscale serve --https=8450 off`. Never reset all Serve routes.
-- **A Mac (agent) tile says 오프라인** when the agent does not answer: the Mac is off or
+- **A Mac (agent) row says 오프라인** when the agent does not answer: the Mac is off or
   asleep, nobody is logged in, or the program stopped (`launchctl print
 gui/$(id -u)/net.gome.remote-agent` on the Mac). **권한 필요**: allow the two permissions
   (or the 30-day reconfirmation) through Mac (VNC). **잠김** (the screen is locked): the
-  tile still opens, and the agent shows the lock screen and takes keys, so the Mac is
+  row still opens, and the agent shows the lock screen and takes keys, so the Mac is
   unlocked through the agent (spec P1, 2026-10-16); Mac (VNC) stays as the fallback. **권한 필요(의심)**: the screen
   returned only black pictures for a few seconds, or the system stopped the capture while the
   permission still reads as granted and the session could not restart it (the agent restarts
-  the capture itself, up to three times a minute, when a display changes its mode); the tile
+  the capture itself, up to three times a minute, when a display changes its mode); the row
   still opens (the mark clears at the next session), and if the picture stays black the permission is the first thing to check. After a token change on the Mac
   (delete `token` and run `install.sh`), run
   `node scripts/set-credential.mjs <gateway.json> <id> --agent-token` again; the

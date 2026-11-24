@@ -28,13 +28,3 @@ test("a tile is usable only when the machine answers and its credentials are set
     assert.equal(tiles.tileEnabled(t), enabled);
   }
 });
-
-test("platform colours and the connecting text follow the design", () => {
-  assert.equal(tiles.platformClass("linux"), "ubuntu");
-  assert.equal(tiles.platformClass("mac"), "mac");
-  assert.equal(tiles.platformClass("windows"), "windows");
-  assert.equal(
-    tiles.connectingText("Ubuntu 서버"),
-    "Ubuntu 서버에 연결하는 중",
-  );
-});

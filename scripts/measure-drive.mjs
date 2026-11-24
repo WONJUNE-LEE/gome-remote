@@ -406,11 +406,15 @@ async function main() {
     const page = await browser.newPage({ viewport: options.viewport });
     page.on("pageerror", (e) => console.log("[pageerror]", e.message));
     await page.goto(options.url);
-    const tile = page.locator("button.tile", { hasText: options.tile }).first();
+    const tile = page
+      .locator(".device")
+      .filter({ has: page.locator(".device-name", { hasText: options.tile }) })
+      .first()
+      .locator("button.device-connect");
     await tile.waitFor({ timeout: 20_000 });
     await page
       .waitForFunction(
-        () => !document.querySelector("button.tile")?.disabled,
+        () => !document.querySelector("button.device-connect")?.disabled,
         null,
         { timeout: 20_000 },
       )

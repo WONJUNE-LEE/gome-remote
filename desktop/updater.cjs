@@ -1,8 +1,8 @@
 // Auto-update for the packaged app (electron-updater against the GitHub Releases of this
 // repository). This module needs neither Electron nor electron-updater at load time:
 // main.cjs passes the updater, the dialog and the timers in, so the logic can run against
-// stand-ins. It has no IPC and never shows an error dialog unless the user asked for the
-// check from the menu.
+// stand-ins. It has no IPC of its own and never shows an error dialog unless the user asked for the
+// check (the page's settings menu, or the Mac menu).
 const FIRST_CHECK_DELAY_MS = 30_000;
 const CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000;
 
@@ -51,14 +51,14 @@ function createUpdater({
             type: "info",
             message: `v${readyVersion} 업데이트를 이미 받았습니다.`,
             detail:
-              "원격 메뉴의 '다시 시작해서 업데이트'로 지금 설치할 수 있습니다.",
+              "설정 메뉴의 '다시 시작해서 업데이트'로 지금 설치할 수 있습니다.",
           });
         } else if (result && result.isUpdateAvailable) {
           await notify({
             type: "info",
             message: `v${result.updateInfo.version}을(를) 내려받는 중입니다.`,
             detail:
-              "다 받으면 원격 메뉴에 '다시 시작해서 업데이트'가 나타납니다. 앱을 닫을 때도 설치됩니다.",
+              "다 받으면 설정 메뉴에 '다시 시작해서 업데이트'가 나타납니다. 앱을 닫을 때도 설치됩니다.",
           });
         } else if (result) {
           await notify({

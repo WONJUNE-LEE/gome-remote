@@ -61,17 +61,19 @@ npm run build     # vite build
   blocking; an unreachable gateway lands on the address page; the address page's own
   script is run against the URL `main.cjs` really loads (unreachable state, retry, a
   rejected save without Electron's error prefix); showing the address page closes the
-  Remote menu and leaves fullscreen; `--smoke-test` checks the page and bridge and
-  cannot hang; fullscreen and F11 serialization; native menu states; `remote:key-lock`
+  Mac Remote menu and leaves fullscreen; `--smoke-test`
+  checks the page and bridge (version 5) and cannot hang; fullscreen and F11 serialization;
+  Mac menu states; `remote:key-lock`
   (Windows only, focus, origin, user-gesture scripts, 2 s guard, native full screen untouched).
 - **Desktop auto-update**, `test/desktop.test.js` (updater part) and
   `test/desktop-release.test.js`: against a stand-in `electron-updater`, the updater is off
   when unpackaged and in the smoke test; a packaged app checks once 30 s after start and
   every 6 hours, downloads and installs on quit; background errors are logged, never shown;
-  the manual check reports up to date, a download, null and an error (with the window as
-  parent); the restart entry is hidden until `update-downloaded` and then calls
-  `quitAndInstall` (the menu is rebuilt and keeps the viewer state); a missing or broken
-  `electron-updater` never keeps the app from starting; no IPC channel is added. The release
+  the manual check (from the page's settings menu) reports up to date, a download, null and
+  an error (with the window as parent); the Mac restart entry is hidden until
+  `update-downloaded` and then calls `quitAndInstall` (the menu is rebuilt and keeps the
+  viewer state); a missing or broken `electron-updater` never keeps the app
+  from starting. The release
   test checks `package.json` (exact pins, draft publish to this repository, `identity: null`,
   `afterSign`), `scripts/mac-sign.cjs` with a recording `codesign` (nothing without the
   variables, one variable alone fails, sign then strict verify then the requirement, a
@@ -82,10 +84,11 @@ npm run build     # vite build
   `test/viewer-flow.test.js`, `test/viewer-invariants.test.js`,
   `test/resolution.test.js` (자동 해상도, 구 앱 호환): same-origin requests
   without token or credentials; error classification; the bridge version gate; browser
-  fullscreen serialization; tile states and labels; which screen each failure shows and
-  that a connection starts only from a click or the menu, never from an error, close or
-  state change (`src/flow.ts`, and `src/main.ts` itself run against a fake page and fake
-  Guacamole); the cursor, overlay and in-flow toolbar rules, the palette and the exact
+  fullscreen serialization; device list states and labels; which screen each
+  failure shows and that a connection starts only from a click (연결, 다시 연결, the
+  disconnect toast's 다시 연결) or the menu, never from an error, close, state change or the
+  toast's timer (`src/flow.ts`, and `src/main.ts` itself run against a fake page and fake
+  Guacamole); the cursor, overlay and in-flow top bar rules, the palette and the exact
   screen texts (read from the source, as a fake page cannot show them).
 - **Mac agent, gateway side (agent spec D2, D7)**, `test/config-agent.test.js`,
   `test/credentials-agent.test.js`, `test/set-credential-agent.test.js`,
@@ -495,10 +498,14 @@ Rehearsal checks added by the implementation (all not yet run):
   the app writes for Mac-concealed text keeps Mac-copied text out of Win+V history, through
   Electron 44's `application/osclipboard` formats; if it does not, README's residual risk
   stands. Not yet run.
-- Menu F11 against page F11 under keyboard lock. With the lock held, F11 (handled by the page,
+- Windows/Linux top bar (needs a Windows run). The page's bar is the title bar: the bar and the
+  caption buttons stay usable while the Windows-key lock is on; dragging by the bar moves the
+  window; double-click maximises; F11 hides the bar; the caption button colours (40px overlay)
+  follow list, session and dark mode; there is no application menu. Not yet run.
+- Menu F11 against page F11 under keyboard lock (Mac only). With the lock held, F11 (handled by the page,
   which asks main for the native toggle) and the menu's View → 전체 화면 each toggle native full
   screen once and do not toggle it twice. Not yet run.
-- Native menu paste on Windows. 클립보드 붙여넣기 from the native menu reads the freshly
+- The bar's 붙여넣기 button on Windows. 클립보드 붙여넣기 from the bar button reads the freshly
   copied Windows clipboard even though focus was in the menu (the focus timing and the single
   retry). Not yet run.
 - VNC clipboard encoding. Copy `안녕 한글` and an emoji both ways against the Mac (VNC) tile with

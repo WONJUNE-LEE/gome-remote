@@ -1,43 +1,60 @@
 :root {
-  --bg: #f6f3ee;
-  --ink: #2b2723;
-  --muted: #7a7168;
-  --tile: #ffffff;
-  --line: #e4ddd2;
-  --shadow: 0 1px 2px rgba(43, 39, 35, 0.06), 0 6px 18px rgba(43, 39, 35, 0.06);
-  --accent: #2b2723;
+  --bg: #f3f3f3;
+  --surface: #ffffff;
+  --line: #e5e5e5;
+  --line-soft: #ededed;
+  --control: #d1d1d1;
+  --ink: #1a1a1a;
+  --muted: #5f5f5f;
+  --note: #f7f7f7;
+  --hover: #ebebeb;
+  --accent: #c2410c;
+  --accent-hover: #a8380a;
   --accent-ink: #ffffff;
-  --viewport: #141210;
-  --on: #3fa66b;
-  --off: #b7aea3;
-  --setup: #d9902f;
-  --danger: #b3261e;
+  --on: #107c10;
+  --off: #8a8a8a;
+  --setup: #b25e00;
+  --danger: #c42b1c;
+  --danger-hover: #a92316;
+  --viewport: #161616;
+  --shadow: 0 8px 24px rgba(0, 0, 0, 0.14);
+  /* The session bar is dark in both themes. */
+  --bar: #202020;
+  --bar-ink: #f2f2f2;
+  --bar-muted: #b5b5b5;
+  --bar-line: #3d3d3d;
+  --bar-hover: rgba(255, 255, 255, 0.08);
+  --bar-on: #6ccb5f;
   font-family:
-    Inter,
-    "Noto Sans KR",
+    "Segoe UI Variable Text",
+    "Segoe UI",
     -apple-system,
     BlinkMacSystemFont,
-    "Segoe UI",
+    "Noto Sans KR",
     sans-serif;
   color: var(--ink);
   background: var(--bg);
   font-synthesis: none;
   color-scheme: light dark;
-  font-size: 15px;
+  font-size: 14px;
+  /* Korean wraps between words, not inside them. */
+  word-break: keep-all;
 }
 @media (prefers-color-scheme: dark) {
   :root {
-    --bg: #22201e;
-    --ink: #f0ebe4;
-    --muted: #a39a90;
-    --tile: #2e2b28;
-    --line: #433f3a;
-    --shadow: 0 1px 2px rgba(0, 0, 0, 0.3), 0 6px 18px rgba(0, 0, 0, 0.25);
-    --accent: #f0ebe4;
-    --accent-ink: #22201e;
-    --viewport: #0d0c0b;
-    --off: #6f675f;
-    --danger: #f2b8b5;
+    --bg: #202020;
+    --surface: #2b2b2b;
+    --line: #3d3d3d;
+    --line-soft: #353535;
+    --control: #4a4a4a;
+    --ink: #f2f2f2;
+    --muted: #b5b5b5;
+    --note: #333333;
+    --hover: #353535;
+    --on: #6ccb5f;
+    --off: #8a8a8a;
+    --setup: #f0a830;
+    --shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
   }
 }
 * {
@@ -45,7 +62,6 @@
 }
 body {
   margin: 0;
-  min-height: 100vh;
   background: var(--bg);
 }
 button,
@@ -57,22 +73,38 @@ textarea {
 }
 button {
   cursor: pointer;
-  padding: 8px 14px;
-  border: 1px solid var(--line);
-  border-radius: 10px;
-  background: var(--tile);
+  height: 36px;
+  padding: 0 18px;
+  border: 1px solid var(--control);
+  border-radius: 6px;
+  background: var(--surface);
+}
+button:hover {
+  background: var(--hover);
 }
 button.primary {
   border-color: var(--accent);
   background: var(--accent);
   color: var(--accent-ink);
+  font-weight: 600;
 }
-button.danger {
-  color: var(--danger);
+button.primary:hover {
+  border-color: var(--accent-hover);
+  background: var(--accent-hover);
 }
 button:disabled {
   cursor: not-allowed;
   opacity: 0.5;
+}
+button:disabled:hover {
+  background: var(--surface);
+}
+/* A disabled primary button keeps full opacity in neutral colours: readable, clearly off. */
+button.primary:disabled {
+  opacity: 1;
+  border-color: var(--line);
+  background: var(--line);
+  color: var(--muted);
 }
 button:focus-visible,
 select:focus-visible,
@@ -83,151 +115,307 @@ textarea:focus-visible {
 select,
 textarea {
   padding: 7px 10px;
-  border: 1px solid var(--line);
-  border-radius: 10px;
-  background: var(--tile);
+  border: 1px solid var(--control);
+  border-radius: 6px;
+  background: var(--surface);
 }
 svg {
-  width: 28px;
-  height: 28px;
   flex-shrink: 0;
 }
 [hidden] {
   display: none !important;
 }
-.sr-only {
-  position: absolute;
-  width: 1px;
-  height: 1px;
-  overflow: hidden;
-  clip: rect(0 0 0 0);
-  white-space: nowrap;
-}
 .muted {
   color: var(--muted);
 }
 
-/* Server list */
+/* The page: one 40px bar on top, the screen below it. */
 #app {
-  min-height: 100vh;
+  height: 100vh;
+  height: 100dvh;
+  display: flex;
+  flex-direction: column;
 }
-.home {
-  max-width: 960px;
-  margin: 0 auto;
-  padding: 28px 32px 48px;
-}
-.home-bar {
+.topbar {
+  flex-shrink: 0;
+  height: 40px;
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  margin-bottom: 28px;
+  gap: 4px;
+  padding: 0 6px 0 14px;
+  background: var(--bg);
+  color: var(--ink);
+  font-size: 12px;
+  user-select: none;
 }
-.home-bar h1 {
-  margin: 0;
-  font-size: 18px;
+/* Windows and Linux app: the bar is the window's title bar. It is the drag region, its
+   controls are not, and it leaves the OS caption buttons (the overlay) their room. */
+.wco .topbar {
+  -webkit-app-region: drag;
+  padding-right: calc(
+    100vw - env(titlebar-area-x, 0px) - env(titlebar-area-width, 100vw) + 6px
+  );
+}
+.wco .topbar button,
+.wco .topbar select,
+.wco .topbar label {
+  -webkit-app-region: no-drag;
+}
+.bar-home {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.app-mark {
+  width: 18px;
+  height: 18px;
+  border-radius: 5px;
+  background: var(--accent);
+  color: #ffffff;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+/* The session bar is dark whatever the theme. */
+.viewing .topbar {
+  background: var(--bar);
+  color: var(--bar-ink);
+}
+/* The app's native full screen shows only the remote picture; F11 brings the bar back.
+   A browser keeps the bar in full screen. */
+.app-mode.viewing.fullscreen .topbar {
+  display: none;
+}
+.bar-session {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.bar-target {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  white-space: nowrap;
+}
+.session-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: 13px;
   font-weight: 600;
+}
+.session-state {
+  color: var(--bar-muted);
+}
+.bar-session .dot {
+  background: var(--bar-muted);
+}
+.bar-session[data-state="connected"] .dot {
+  background: var(--bar-on);
+}
+.bar-session[data-state="ended"] .dot {
+  background: #ff99a4;
+}
+.bar-tools {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+.bar-button,
+.bar-select {
+  height: 30px;
+  padding: 0 10px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--bar-ink);
+  font-size: 12px;
+  white-space: nowrap;
+}
+.bar-button:hover:not(:disabled),
+.bar-select:hover {
+  background: var(--bar-hover);
+}
+.bar-button:disabled:hover {
+  background: transparent;
+}
+.bar-select select {
+  height: 30px;
+  padding: 0 2px;
+  border: 0;
+  background: transparent;
+  color: var(--bar-ink);
+  font-size: 12px;
+  cursor: pointer;
+}
+.bar-select select:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+.bar-select option {
+  background: #2b2b2b;
+  color: var(--bar-ink);
+}
+.viewing .topbar :focus-visible {
+  outline-color: var(--bar-ink);
+}
+.bar-separator {
+  width: 1px;
+  height: 20px;
+  margin: 0 8px;
+  background: var(--bar-line);
+}
+.bar-danger {
+  height: 28px;
+  padding: 0 12px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 0;
+  border-radius: 4px;
+  background: var(--danger);
+  color: #ffffff;
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.bar-danger:hover {
+  background: var(--danger-hover);
+}
+
+/* Device list */
+.home {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 56px 32px 48px;
+}
+.home-inner {
+  max-width: 860px;
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+}
+.home-head {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 24px;
+}
+.home-heading h1 {
+  margin: 0 0 6px;
+  font-size: 28px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+.home-heading p {
+  margin: 0;
 }
 .menu-wrap {
   position: relative;
 }
 .icon-button {
-  width: 40px;
-  height: 40px;
+  width: 36px;
   padding: 0;
-  border-radius: 50%;
-  font-size: 20px;
-  line-height: 1;
-  background: transparent;
-  border-color: transparent;
-}
-.icon-button:hover {
-  background: var(--tile);
-  border-color: var(--line);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
 }
 .menu {
   position: absolute;
   right: 0;
-  top: 46px;
+  top: 42px;
   z-index: 10;
-  min-width: 190px;
-  padding: 6px;
+  min-width: 230px;
+  padding: 4px;
   border: 1px solid var(--line);
-  border-radius: 14px;
-  background: var(--tile);
+  border-radius: 8px;
+  background: var(--surface);
   box-shadow: var(--shadow);
 }
 .menu button {
   display: block;
   width: 100%;
+  height: 34px;
+  padding: 0 12px;
   text-align: left;
   border: 0;
+  border-radius: 4px;
   background: transparent;
 }
 .menu button:hover {
-  background: var(--bg);
+  background: var(--hover);
 }
-.tiles {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
-  gap: 20px;
-}
-.tile {
+.device-list {
   display: flex;
   flex-direction: column;
-  gap: 4px;
-  padding: 12px 12px 16px;
   border: 1px solid var(--line);
-  border-radius: 20px;
-  background: var(--tile);
-  box-shadow: var(--shadow);
-  text-align: left;
-  transition: transform 0.12s ease;
+  border-radius: 8px;
+  background: var(--surface);
 }
-.tile:not(:disabled):hover {
-  transform: translateY(-2px);
+.device-list:empty {
+  display: none;
 }
-.tile:disabled {
-  opacity: 1; /* undo the generic button:disabled fade; see .tile-art and .dot below */
-  box-shadow: none;
-}
-.tile-art {
+.device {
   display: grid;
-  place-items: center;
-  aspect-ratio: 16 / 10;
-  margin-bottom: 10px;
-  border-radius: 12px;
-  color: #ffffff;
+  grid-template-columns: 44px minmax(0, 1fr) 140px auto;
+  gap: 16px;
+  align-items: center;
+  padding: 18px 20px;
+  border-bottom: 1px solid var(--line-soft);
 }
-.platform-ubuntu {
-  background: linear-gradient(145deg, #e95420, #a83a1c);
+.device:last-child {
+  border-bottom: 0;
 }
-.platform-mac {
-  background: linear-gradient(145deg, #9aa3b2, #5d6573);
+.device-icon {
+  width: 44px;
+  height: 44px;
+  border-radius: 8px;
+  background: var(--bg);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
 }
-.platform-windows {
-  background: linear-gradient(145deg, #5b8fd1, #2f5f9e);
-}
-/* Dim the colour block and the dot, not the words: the state text must stay readable. */
-.tile:disabled .tile-art {
-  filter: grayscale(1);
+/* Only the icon is dimmed on a row that cannot open: its words stay readable. */
+.device:has(.device-connect:disabled) .device-icon {
   opacity: 0.55;
 }
-.tile:disabled .dot {
-  opacity: 0.55;
-}
-.tile-meta {
+.device-text {
   display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+.device-name {
+  font-size: 16px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.device-meta {
+  color: var(--muted);
+  font-size: 13px;
+}
+.device-state {
+  display: inline-flex;
   align-items: center;
   gap: 8px;
-  padding: 0 4px;
 }
-.tile-name {
-  font-weight: 600;
-  font-size: 16px;
+.device-connect {
+  padding: 0 22px;
 }
 .dot {
-  width: 9px;
-  height: 9px;
+  width: 8px;
+  height: 8px;
+  flex-shrink: 0;
   border-radius: 50%;
   background: var(--off);
 }
@@ -240,25 +428,24 @@ svg {
 .is-suspect .dot {
   background: var(--setup);
 }
-.tile-state {
-  padding: 0 4px 0 21px;
-  color: var(--muted);
-  font-size: 13px;
-}
 
 /* Loading, unreachable and refused-login screens */
 .state {
-  min-height: 100vh;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px 24px 64px;
+}
+.state-card {
   display: flex;
   flex-direction: column;
   align-items: center;
-  justify-content: center;
-  gap: 18px;
-  padding: 24px;
+  gap: 20px;
   text-align: center;
 }
-.state h2,
-.overlay h2 {
+.state h2 {
   margin: 0;
   font-size: 20px;
   font-weight: 600;
@@ -266,16 +453,24 @@ svg {
 .actions {
   display: flex;
   flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+.state .actions {
   justify-content: center;
-  gap: 10px;
 }
 .spinner {
-  width: 34px;
-  height: 34px;
+  width: 32px;
+  height: 32px;
   border: 3px solid var(--line);
-  border-top-color: var(--ink);
+  border-top-color: var(--accent);
   border-radius: 50%;
   animation: spin 0.9s linear infinite;
+}
+.spinner.small {
+  width: 20px;
+  height: 20px;
+  border-width: 2px;
 }
 @keyframes spin {
   to {
@@ -286,9 +481,6 @@ svg {
   .spinner {
     animation-duration: 3s;
   }
-  .tile {
-    transition: none;
-  }
 }
 
 /* Viewer */
@@ -296,46 +488,26 @@ svg {
   overflow: hidden;
 }
 .session {
+  flex: 1;
+  min-height: 0;
   position: relative;
-  height: 100dvh;
   display: flex;
   flex-direction: column;
-}
-/* The desktop app uses the native Remote menu instead of this bar. */
-.app-mode .browser-only {
-  display: none;
-}
-.session-toolbar {
-  flex-shrink: 0;
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  align-items: center;
-  padding: 6px 10px;
-  border-bottom: 1px solid var(--line);
-  background: var(--bg);
-}
-.session-title {
-  font-weight: 600;
-  margin-left: 6px;
-}
-.session-state {
-  color: var(--muted);
-  font-size: 12px;
-}
-.toolbar-spacer {
-  flex: 1;
 }
 .viewport {
   position: relative;
   flex: 1;
   min-height: 0;
-  background: var(--viewport);
+  background: var(--bg);
   display: flex;
   align-items: center;
   justify-content: center;
   overflow: hidden;
   padding: 0;
+}
+.viewport:has(.remote-connected),
+.viewport:has(.agent-connected) {
+  background: var(--viewport);
 }
 .display {
   display: flex;
@@ -366,8 +538,12 @@ svg {
   width: 100%;
   height: 100%;
   object-fit: contain;
-  background: #000;
+  background: transparent;
   cursor: default;
+}
+/* Black letterbox once the picture shows; the connecting card sits on the page colour. */
+.agent-connected .agent-video {
+  background: #000;
 }
 .remote-cursor {
   visibility: hidden;
@@ -384,41 +560,107 @@ svg {
   transform: translateX(-50%);
   max-width: 80%;
   padding: 10px 16px;
-  border-radius: 12px;
-  background: rgba(20, 18, 16, 0.88);
-  color: #fff;
+  border-radius: 8px;
+  background: rgba(32, 32, 32, 0.92);
+  color: #f2f2f2;
   font-size: 14px;
   text-align: center;
   pointer-events: none;
 }
-/* Shown only while there is no remote picture to cover; hidden once connected. */
+/* The connecting and ended card. Shown only while there is no remote picture to cover;
+   hidden once connected. */
 .overlay {
   position: absolute;
   z-index: 5;
+  width: min(440px, calc(100% - 48px));
   display: flex;
   flex-direction: column;
+  gap: 24px;
+  padding: 32px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--ink);
+}
+.overlay-head {
+  display: flex;
   align-items: center;
   gap: 14px;
-  max-width: 80%;
-  padding: 28px 36px;
-  border-radius: 20px;
-  background: var(--tile);
-  box-shadow: var(--shadow);
-  text-align: center;
+}
+.overlay-heading {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+  font-size: 13px;
+}
+.overlay h2 {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.overlay-progress {
+  display: flex;
+  align-items: center;
+  gap: 12px;
 }
 .overlay p {
   margin: 0;
   color: var(--muted);
 }
+.overlay .note {
+  font-size: 13px;
+  line-height: 1.6;
+  padding: 10px 12px;
+  border-radius: 6px;
+  background: var(--note);
+}
+
+/* The toast after 연결 끊기 */
+.toast {
+  position: fixed;
+  z-index: 20;
+  left: 50%;
+  bottom: 36px;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 12px 12px 12px 18px;
+  border-radius: 8px;
+  background: #2b2b2b;
+  color: #f2f2f2;
+  font-size: 14px;
+  white-space: nowrap;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.18);
+}
+.toast button {
+  height: 32px;
+  padding: 0 12px;
+  border: 0;
+  background: #3d3d3d;
+  color: #ffffff;
+  font-size: 13px;
+}
+.toast button:hover {
+  background: #4a4a4a;
+}
+.toast button:focus-visible {
+  outline-color: #f2f2f2;
+}
 
 /* Dialogs */
 dialog {
   max-width: min(480px, 92vw);
-  padding: 20px;
+  padding: 24px;
   border: 1px solid var(--line);
-  border-radius: 18px;
-  background: var(--tile);
+  border-radius: 8px;
+  background: var(--surface);
   color: var(--ink);
+}
+dialog p {
+  margin: 0 0 16px;
 }
 dialog::backdrop {
   background: rgba(0, 0, 0, 0.4);
@@ -432,12 +674,12 @@ dialog::backdrop {
 .dialog-heading h2 {
   margin: 0;
   font-size: 17px;
+  font-weight: 600;
 }
 .close-button {
   width: 32px;
   height: 32px;
   padding: 0;
-  border-radius: 50%;
   border-color: transparent;
   background: transparent;
   font-size: 18px;
@@ -446,6 +688,9 @@ dialog::backdrop {
   display: flex;
   flex-direction: column;
   gap: 12px;
+}
+#text-form p {
+  margin: 0;
 }
 #remote-text {
   width: 100%;

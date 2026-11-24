@@ -109,13 +109,28 @@ const closedViewer = {
   resolution: resolutions[0],
 };
 let viewerState = closedViewer;
-// Enables the Remote menu entries that make sense for what the page shows.
+// Windows and Linux: the window has no title bar of its own. The page's top bar takes its
+// place and the OS draws the caption buttons over it (the overlay), in the bar's colours:
+// dark on a session in either theme, the page background on the list.
+const mac = process.platform === "darwin";
+const BAR_HEIGHT = 40;
+function titleBarOverlay(state) {
+  return state.open || nativeTheme.shouldUseDarkColors
+    ? { color: "#202020", symbolColor: "#f2f2f2", height: BAR_HEIGHT }
+    : { color: "#f3f3f3", symbolColor: "#1a1a1a", height: BAR_HEIGHT };
+}
+function applyTitleBarOverlay() {
+  if (mac || !window || window.isDestroyed()) return;
+  window.setTitleBarOverlay(titleBarOverlay(viewerState));
+}
+// Follows what the page shows: the caption button colours, and on a Mac the Remote menu
+// entries that make sense for it.
 function applyViewerState(state) {
   viewerState = state;
+  applyTitleBarOverlay();
   const menu = Menu.getApplicationMenu();
   if (!menu) return;
-  for (const id of ["back", "disconnect"])
-    menu.getMenuItemById(id).enabled = state.open;
+  menu.getMenuItemById("disconnect").enabled = state.open;
   menu.getMenuItemById("reconnect").enabled = state.open && !state.connected;
   menu.getMenuItemById("text-input").enabled = state.open && state.connected;
   menu.getMenuItemById("paste-clipboard").enabled =
@@ -133,6 +148,8 @@ function applyViewerState(state) {
 // set once an update has been downloaded and waits for a restart.
 let updater;
 let readyVersion = "";
+// Only the Mac app has an application menu. On Windows and Linux every entry lives in the
+// page (its top bar, its overlays and its settings menu), and no menu bar is shown.
 function buildMenu() {
   const command = (id, label) => ({
     id,
@@ -141,7 +158,7 @@ function buildMenu() {
     click: () => window.webContents.send("remote:viewer-action", id),
   });
   return Menu.buildFromTemplate([
-    ...(process.platform === "darwin" ? [{ role: "appMenu" }] : []),
+    { role: "appMenu" },
     {
       label: "View",
       submenu: [
@@ -159,8 +176,6 @@ function buildMenu() {
     {
       label: "원격",
       submenu: [
-        command("back", "서버 목록"),
-        { type: "separator" },
         {
           id: "resolution",
           label: "해상도",
@@ -180,7 +195,7 @@ function buildMenu() {
         command("text-input", "텍스트 입력"),
         command("paste-clipboard", "클립보드 붙여넣기"),
         command("reconnect", "다시 연결"),
-        command("disconnect", "연결 종료"),
+        command("disconnect", "연결 끊기"),
         { type: "separator" },
         {
           id: "change-server",
@@ -212,7 +227,7 @@ function buildMenu() {
 // `visible` or the label of an item that is already in the menu is not reliably shown on
 // every platform (Windows and Linux draw the menu bar once), so a new menu is set instead.
 function setMenu() {
-  Menu.setApplicationMenu(buildMenu());
+  Menu.setApplicationMenu(mac ? buildMenu() : null);
   applyViewerState(viewerState);
 }
 function showSetup(reason) {
@@ -301,6 +316,18 @@ app
       if (on && !window.isFocused()) return false;
       return runKeyLockScript(on ? KEY_LOCK_ON : KEY_LOCK_OFF);
     });
+    // The page's settings menu: the updater's state, a manual check, and the restart once
+    // an update has been downloaded. An app without an updater says so and does nothing.
+    handle("gateway", "remote:update-state", () => ({
+      supported: !!updater,
+      ready: readyVersion,
+    }));
+    handle("gateway", "remote:check-update", async () => {
+      if (updater) await updater.checkNow();
+    });
+    handle("gateway", "remote:restart-update", () => {
+      if (updater) updater.restart();
+    });
     handle("gateway", "remote:viewer-state", (state) => {
       if (
         !state ||
@@ -337,6 +364,13 @@ app
           onReady: (version) => {
             readyVersion = version;
             setMenu();
+            // The page's settings menu shows the restart entry from now on.
+            if (
+              window &&
+              !window.isDestroyed() &&
+              originOf(window.webContents.mainFrame.url) === gateway
+            )
+              window.webContents.send("remote:update-ready", version);
           },
           setTimeout,
           setInterval,
@@ -355,7 +389,14 @@ app
       minWidth: 900,
       minHeight: 620,
       title: "Gome Remote",
-      backgroundColor: nativeTheme.shouldUseDarkColors ? "#22201e" : "#f6f3ee",
+      backgroundColor: nativeTheme.shouldUseDarkColors ? "#202020" : "#f3f3f3",
+      // Windows and Linux: no OS title bar; the page's 40px bar is the title bar.
+      ...(mac
+        ? {}
+        : {
+            titleBarStyle: "hidden",
+            titleBarOverlay: titleBarOverlay(viewerState),
+          }),
       webPreferences: {
         preload: path.join(__dirname, "preload.cjs"),
         nodeIntegration: false,
@@ -375,6 +416,7 @@ app
       // Serialize OS transitions so a pending entry cannot swallow an exit request.
       applyFullscreenTarget();
     };
+    nativeTheme.on("updated", applyTitleBarOverlay);
     window.on("enter-full-screen", publishFullscreen);
     window.on("leave-full-screen", publishFullscreen);
     window.webContents.on("before-input-event", (event, input) => {
@@ -444,7 +486,7 @@ app
       if (
         state.page !== setupPage ||
         state.title !== "Gome Remote" ||
-        state.bridgeVersion !== 4 ||
+        state.bridgeVersion !== 5 ||
         state.read !== "function" ||
         state.keyLock !== "function" ||
         state.setup !== "function"

@@ -32,20 +32,24 @@ function load(protocol = "https:", platform = "win32") {
   return { ipc, calls, exposed };
 }
 
-test("the bridge announces version 4 and exposes only the viewer, fullscreen, clipboard and address-page functions", () => {
+test("the bridge announces version 5 and exposes only the viewer, fullscreen, clipboard, updater and address-page functions", () => {
   const { exposed } = load();
   assert.deepEqual([...Object.keys(exposed)], ["desktop"]);
-  assert.equal(exposed.desktop.bridgeVersion, 4);
+  assert.equal(exposed.desktop.bridgeVersion, 5);
   assert.deepEqual([...Object.keys(exposed.desktop)].sort(), [
     "bridgeVersion",
+    "checkUpdate",
     "fullscreen",
     "fullscreenState",
     "keyLock",
     "keyLockSupported",
     "onFullscreenChange",
+    "onUpdateReady",
     "onViewerAction",
     "openSetup",
     "readClipboard",
+    "restartUpdate",
+    "updateState",
     "viewerState",
     "writeClipboard",
   ]);
@@ -60,7 +64,7 @@ test("the bridge announces version 4 and exposes only the viewer, fullscreen, cl
   assert.ok(Object.isFrozen(exposed.desktop));
 });
 
-test("keyLockSupported is true on Windows only, and the bridge stays version 4", () => {
+test("keyLockSupported is true on Windows only, and the bridge is version 5 everywhere", () => {
   for (const [platform, expected] of [
     ["win32", true],
     ["darwin", false],
@@ -68,7 +72,7 @@ test("keyLockSupported is true on Windows only, and the bridge stays version 4",
   ]) {
     const { exposed } = load("https:", platform);
     assert.strictEqual(exposed.desktop.keyLockSupported, expected, platform);
-    assert.equal(exposed.desktop.bridgeVersion, 4, platform);
+    assert.equal(exposed.desktop.bridgeVersion, 5, platform);
     assert.equal(typeof exposed.desktop.keyLock, "function", platform);
   }
 });

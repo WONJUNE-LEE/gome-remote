@@ -700,6 +700,9 @@ export async function viewer({
         .filter((f) => f.path === "/api/agent-sessions")
         .map((f) => f.body),
     gets: () => fetches.filter((f) => f.path === "/api/targets").length,
-    tiles: () => el("tiles").children,
+    // The device list: one row per target, each with its 연결 button.
+    rows: () => el("devices").children,
+    tiles: () =>
+      el("devices").children.map((row) => row.querySelector(".device-connect")),
   };
 }

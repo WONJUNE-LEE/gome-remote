@@ -128,8 +128,8 @@ test("the list renders the agent words and disables the tiles that cannot open",
     ],
   });
   const words = v
-    .tiles()
-    .map((t) => t.querySelector(".tile-state").textContent);
+    .rows()
+    .map((row) => row.querySelector(".device-word").textContent);
   assert.deepEqual(words, [
     "켜짐",
     "권한 필요",
@@ -453,7 +453,7 @@ test("a Mac session that ends by itself really sends the release on its channel 
 test("leaving the viewer closes the Mac session", async () => {
   const v = await opened();
   v.agents[0].deps.onFirstFrame();
-  v.el("back").click();
+  v.el("disconnect").click();
   await v.settle();
   assert.equal(v.agents[0].closed, 1);
   assert.equal(v.el("display").classes.has("agent-display"), false);
@@ -583,15 +583,14 @@ test("window blur releases the lock and focus takes it again", async () => {
   assert.deepEqual(lockCalls(v), ["true,false,true", 2, 1]);
 });
 
-test("every end of the session releases the lock: the connection ending, 연결 종료, and back", async () => {
-  for (const end of ["ended", "disconnect", "back"]) {
+test("every end of the session releases the lock: the connection ending, 연결 끊기", async () => {
+  for (const end of ["ended", "disconnect"]) {
     const v = await opened(WIN_APP);
     v.agents[0].deps.onFirstFrame();
     await v.settle();
     assert.deepEqual(lockCalls(v), ["true", 1, 0], end);
     if (end === "ended") v.agents[0].deps.onEnded("disconnected");
-    else if (end === "disconnect") v.el("disconnect").click();
-    else v.el("back").click();
+    else v.el("disconnect").click();
     await v.settle();
     assert.deepEqual(lockCalls(v), ["true,false", 1, 1], end);
   }

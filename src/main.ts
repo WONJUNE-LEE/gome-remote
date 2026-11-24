@@ -17,64 +17,120 @@ import { guacamoleSource, initMeasure, videoSource } from "./measure";
 import { createResolution, sizeFor } from "./resolution";
 import {
   connectingText,
-  platformClass,
+  metaText,
   stateText,
   tileEnabled,
   tileState,
 } from "./tiles";
 import "./style.css";
 
-const monitor =
-  '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><rect x="3" y="4" width="18" height="13" rx="3"/><path d="M8 21h8M12 17v4"/></svg>';
+// Inline stroke icons (currentColor), one per platform and one per bar tool.
+const svg = (body: string, size = 22, width = 1.6) =>
+  `<svg width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="${width}" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${body}</svg>`;
+const platformIcon: Record<Target["platform"], string> = {
+  linux: svg(
+    '<rect x="4" y="3.5" width="16" height="7" rx="2"/><rect x="4" y="13.5" width="16" height="7" rx="2"/><path d="M8 7h.01M8 17h.01"/>',
+  ),
+  mac: svg(
+    '<rect x="5" y="5" width="14" height="10" rx="2"/><path d="M3 19h18"/>',
+  ),
+  windows: svg(
+    '<rect x="3" y="4" width="18" height="12" rx="2"/><path d="M9 20h6M12 16v4"/>',
+  ),
+};
+const appMark = `<span class="app-mark">${svg('<rect x="3" y="4" width="18" height="12" rx="2"/><path d="M9 20h6M12 16v4"/>', 12, 2.4)}</span>`;
+const settingsIcon = svg(
+  '<path d="M4 7h9M17 7h3M4 17h3M11 17h9"/><circle cx="15" cy="7" r="2"/><circle cx="9" cy="17" r="2"/>',
+  18,
+);
+const pasteIcon = svg(
+  '<rect x="7" y="4" width="10" height="4" rx="1"/><path d="M7 6H6a2 2 0 0 0-2 2v11a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-1"/>',
+  15,
+  1.7,
+);
+const keyboardIcon = svg(
+  '<rect x="2.5" y="6" width="19" height="12" rx="2"/><path d="M6 10h.01M10 10h.01M14 10h.01M18 10h.01M8 14h8"/>',
+  15,
+  1.7,
+);
+const fullscreenIcon = svg(
+  '<path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/>',
+  15,
+  1.7,
+);
+const powerIcon = svg(
+  '<path d="M12 3v9"/><path d="M6.3 7.5a8 8 0 1 0 11.4 0"/>',
+  14,
+  2,
+);
 document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
+  <header id="topbar" class="topbar">
+    <div id="bar-home" class="bar-home">${appMark}<span class="bar-app">Gome Remote</span></div>
+    <div id="bar-session" class="bar-session" hidden>
+      <div class="bar-target"><span class="dot"></span><span id="session-title" class="session-title"></span><span id="session-state" class="session-state"></span></div>
+      <nav class="bar-tools" aria-label="원격 도구">
+        <button id="paste-remote" class="bar-button" disabled>${pasteIcon}<span>붙여넣기</span></button>
+        <button id="text-input" class="bar-button" disabled>${keyboardIcon}<span>텍스트 입력</span></button>
+        <label class="bar-select"><span>해상도</span><select id="resolution"><option value="auto">자동 (창 크기)</option><option value="1440x900">1440 × 900</option><option value="1920x1080">1920 × 1080</option><option value="2560x1440">2560 × 1440</option></select></label>
+        <button id="fullscreen" class="bar-button" title="F11">${fullscreenIcon}<span id="fullscreen-label">전체 화면</span></button>
+        <span class="bar-separator" aria-hidden="true"></span>
+        <button id="disconnect" class="bar-danger">${powerIcon}<span>연결 끊기</span></button>
+      </nav>
+    </div>
+  </header>
   <section id="home" class="home" hidden>
-    <header class="home-bar">
-      <h1>Gome Remote</h1>
-      <div class="menu-wrap">
-        <button id="menu-button" class="icon-button" aria-label="메뉴" aria-haspopup="menu" aria-expanded="false">⋯</button>
-        <div id="menu" class="menu" role="menu" hidden>
-          <button id="menu-refresh" role="menuitem">새로고침</button>
-          <button id="menu-address" role="menuitem" hidden>서버 주소 바꾸기</button>
+    <div class="home-inner">
+      <div class="home-head">
+        <div class="home-heading">
+          <h1>기기</h1>
+          <p class="muted">한 번에 한 기기에만 연결됩니다. 다른 기기로 가려면 먼저 연결을 끊으세요.</p>
+        </div>
+        <div class="menu-wrap">
+          <button id="menu-button" class="icon-button" aria-label="설정" aria-haspopup="menu" aria-expanded="false">${settingsIcon}</button>
+          <div id="menu" class="menu" role="menu" hidden>
+            <button id="menu-refresh" role="menuitem">새로고침</button>
+            <button id="menu-address" role="menuitem" hidden>서버 주소 바꾸기</button>
+            <button id="menu-update" role="menuitem" hidden>업데이트 확인</button>
+            <button id="menu-restart" role="menuitem" hidden></button>
+          </div>
         </div>
       </div>
-    </header>
-    <div id="tiles" class="tiles"></div>
+      <div id="devices" class="device-list"></div>
+    </div>
   </section>
   <section id="state" class="state">
-    <div id="state-spinner" class="spinner" role="status" aria-label="불러오는 중"></div>
-    <h2 id="state-title" hidden></h2>
-    <div id="state-actions" class="actions" hidden>
-      <button id="state-retry" class="primary">다시 시도</button>
-      <button id="state-address" hidden>서버 주소 바꾸기</button>
+    <div class="state-card">
+      <div id="state-spinner" class="spinner" role="status" aria-label="불러오는 중"></div>
+      <h2 id="state-title" hidden></h2>
+      <div id="state-actions" class="actions" hidden>
+        <button id="state-address" hidden>서버 주소 바꾸기</button>
+        <button id="state-retry" class="primary">다시 시도</button>
+      </div>
     </div>
   </section>
   <section id="session" class="session" hidden>
-    <div id="session-tools" class="session-toolbar browser-only">
-      <button id="back">← 목록</button>
-      <span id="session-title" class="session-title"></span>
-      <span id="session-state" class="session-state"></span>
-      <div class="toolbar-spacer"></div>
-      <label class="sr-only" for="resolution">해상도</label>
-      <select id="resolution"><option value="auto">자동 (창 크기)</option><option value="1440x900">1440 × 900</option><option value="1920x1080">1920 × 1080</option><option value="2560x1440">2560 × 1440</option></select>
-      <button id="paste-remote" disabled>클립보드 붙여넣기</button>
-      <button id="text-input" disabled>텍스트 입력</button>
-      <button id="fullscreen">전체 화면</button>
-      <button id="disconnect" class="danger">연결 종료</button>
-    </div>
     <div id="viewport" class="viewport">
       <div id="notice" class="notice" role="status" hidden></div>
       <div id="overlay" class="overlay">
-        <div id="overlay-spinner" class="spinner"></div>
-        <h2 id="overlay-title"></h2>
+        <div class="overlay-head">
+          <span id="overlay-icon" class="device-icon"></span>
+          <div class="overlay-heading"><h2 id="overlay-title"></h2><span id="overlay-meta" class="muted"></span></div>
+        </div>
+        <div id="overlay-spinner" class="overlay-progress" role="status"><span class="spinner small"></span><span>원격 화면을 여는 중입니다</span></div>
         <p id="overlay-detail" hidden>작업은 그대로 남아 있습니다</p>
+        <p id="overlay-note" class="note" hidden>다음 화면에서 Ubuntu 계정 비밀번호를 입력합니다. 열어 둔 창은 연결을 끊어도 그대로 남습니다.</p>
+        <div id="overlay-cancel-row" class="actions">
+          <button id="overlay-cancel">취소</button>
+        </div>
         <div id="overlay-actions" class="actions" hidden>
-          <button id="overlay-reconnect" class="primary">다시 연결</button>
           <button id="overlay-back">목록으로</button>
+          <button id="overlay-reconnect" class="primary">다시 연결</button>
         </div>
       </div>
       <div id="display" class="display"></div>
     </div>
   </section>
+  <div id="toast" class="toast" role="status" hidden><span id="toast-text"></span><button id="toast-reconnect">다시 연결</button></div>
   <dialog id="viewer-error"><p id="viewer-error-text"></p><button data-close="viewer-error">닫기</button></dialog>
   <dialog id="text-dialog"><form id="text-form"><div class="dialog-heading"><h2>원격 화면에 텍스트 입력</h2><button type="button" class="close-button" data-close="text-dialog" aria-label="닫기">×</button></div><p class="muted">원격 앱의 입력 위치를 먼저 선택하세요</p><textarea id="remote-text" rows="5" maxlength="4000" aria-label="보낼 텍스트"></textarea><button class="primary wide" type="submit">입력하기 →</button></form></dialog>
 `;
@@ -125,11 +181,43 @@ if (!autoResolution) {
 }
 el("menu-address").hidden = !appMode;
 el("state-address").hidden = !appMode;
+// The Windows and Linux app draws no title bar: the OS caption buttons sit over the top
+// right of the page (the window controls overlay), and the top bar is the window's drag
+// region. A browser and the Mac app have no overlay, so there the bar is only a toolbar.
+const controlsOverlay = (navigator as any).windowControlsOverlay;
+const updateControlsOverlay = () =>
+  document.body.classList.toggle("wco", !!controlsOverlay?.visible);
+updateControlsOverlay();
+controlsOverlay?.addEventListener?.("geometrychange", updateControlsOverlay);
+// App-only settings: the update entries exist only where the app has an updater.
+function showUpdateReady(version: string) {
+  el("menu-restart").hidden = !version;
+  el("menu-restart").textContent = `다시 시작해서 업데이트 (v${version})`;
+}
+void api
+  .updateState()
+  .then((state) => {
+    el("menu-update").hidden = !state.supported;
+    showUpdateReady(state.ready);
+  })
+  .catch(() => {});
+api.onUpdateReady(showUpdateReady);
 
 type Screen = "home" | "state" | "session";
 function showScreen(screen: Screen) {
   for (const name of ["home", "state", "session"] as Screen[])
     el(name).hidden = name !== screen;
+  el("bar-home").hidden = screen === "session";
+  el("bar-session").hidden = screen !== "session";
+}
+// The session bar: its dot and word follow the connection.
+function showSessionState(state: "connecting" | "connected" | "ended") {
+  el("bar-session").dataset.state = state;
+  el("session-state").textContent = {
+    connecting: "연결 중",
+    connected: "연결됨",
+    ended: "연결 끊김",
+  }[state];
 }
 function showLoading() {
   showScreen("state");
@@ -158,7 +246,7 @@ function syncViewerMenu() {
       resolution: el<HTMLSelectElement>("resolution").value,
     })
     .catch(() =>
-      showViewerError("원격 메뉴를 갱신하지 못했습니다. 앱을 다시 열어주세요."),
+      showViewerError("창 상태를 갱신하지 못했습니다. 앱을 다시 열어주세요."),
     );
 }
 function showViewerError(message: string) {
@@ -170,9 +258,11 @@ function showViewerError(message: string) {
 function fullscreenChanged(enabled: boolean) {
   releaseInput();
   fullscreen = enabled;
-  el("fullscreen").textContent = enabled
-    ? "전체화면 나가기 · F11"
-    : "전체 화면 · F11";
+  // In the app's native full screen only the remote picture shows: the bar hides (F11 leaves).
+  document.body.classList.toggle("fullscreen", enabled);
+  el("fullscreen-label").textContent = enabled
+    ? "전체 화면 나가기"
+    : "전체 화면";
 }
 async function setFullscreen(enabled: boolean) {
   releaseInput();
@@ -254,18 +344,25 @@ async function refresh() {
   }
 }
 function renderTargets() {
-  const grid = el("tiles");
-  grid.replaceChildren();
+  const list = el("devices");
+  list.replaceChildren();
   for (const target of targets) {
     const state = tileState(target);
-    const tile = document.createElement("button");
-    tile.className = `tile is-${state}`;
-    tile.disabled = !tileEnabled(target);
-    tile.innerHTML = `<span class="tile-art platform-${platformClass(target.platform)}">${monitor}</span><span class="tile-meta"><span class="dot"></span><span class="tile-name"></span></span><span class="tile-state"></span>`;
-    tile.querySelector(".tile-name")!.textContent = target.name;
-    tile.querySelector(".tile-state")!.textContent = stateText(target, state);
-    tile.onclick = () => openTarget(target);
-    grid.append(tile);
+    const row = document.createElement("div");
+    row.className = `device is-${state}`;
+    row.innerHTML = `<span class="device-icon">${platformIcon[target.platform]}</span><span class="device-text"><span class="device-name"></span><span class="device-meta"></span></span><span class="device-state"><span class="dot"></span><span class="device-word"></span></span>`;
+    row.querySelector(".device-name")!.textContent = target.name;
+    row.querySelector(".device-meta")!.textContent = metaText(target);
+    row.querySelector(".device-word")!.textContent = stateText(target, state);
+    // A row that cannot open has a real disabled button; its state word stays readable.
+    const button = document.createElement("button");
+    button.className = "primary device-connect";
+    button.textContent = "연결";
+    button.setAttribute("aria-label", `${target.name} 연결`);
+    button.disabled = !tileEnabled(target);
+    button.onclick = () => openTarget(target);
+    row.append(button);
+    list.append(row);
   }
 }
 function openTarget(target: Target) {
@@ -348,6 +445,10 @@ function showOverlay(
 ) {
   const ended = kind === "ended";
   el("overlay").hidden = false;
+  el("overlay-icon").innerHTML = selected
+    ? platformIcon[selected.platform]
+    : "";
+  el("overlay-meta").textContent = selected ? metaText(selected) : "";
   el("overlay-spinner").hidden = ended;
   el("overlay-title").textContent = ended
     ? (text?.title ?? "연결이 끊겼습니다")
@@ -355,6 +456,9 @@ function showOverlay(
   el("overlay-detail").textContent =
     text?.detail ?? "작업은 그대로 남아 있습니다";
   el("overlay-detail").hidden = !ended;
+  el("overlay-note").hidden =
+    ended || selected?.profile !== "gnome-remote-login";
+  el("overlay-cancel-row").hidden = ended;
   el("overlay-actions").hidden = !ended;
 }
 function sessionEnded(reason?: string) {
@@ -365,7 +469,7 @@ function sessionEnded(reason?: string) {
   syncFocused = false;
   keyLock?.end();
   resolution.stopped();
-  el("session-state").textContent = "연결 종료";
+  showSessionState("ended");
   showOverlay("ended", endText(reason));
   el("display")
     .querySelector(".remote-surface")
@@ -376,13 +480,16 @@ function sessionEnded(reason?: string) {
 }
 async function connect(input: ConnectInput) {
   stop();
+  hideToast();
+  // A list refresh still on its way must not take the screen from the session.
+  listGeneration++;
   const current = generation;
   document.body.classList.add("viewing");
   el<HTMLDialogElement>("viewer-error").close();
   el("session-title").textContent = selected?.name || "원격 데스크톱";
   showScreen("session");
   syncViewerMenu();
-  el("session-state").textContent = "연결 중";
+  showSessionState("connecting");
   showOverlay("connecting");
   // Both RDP and the Mac agent can follow the window size; macOS VNC cannot.
   const resizable =
@@ -556,7 +663,7 @@ async function connect(input: ConnectInput) {
         resolution.connected();
         surface.classList.add("remote-connected");
         syncViewerMenu();
-        el("session-state").textContent = "연결됨";
+        showSessionState("connected");
         el("overlay").hidden = true;
         el<HTMLButtonElement>("text-input").disabled = false;
         el<HTMLButtonElement>("paste-remote").disabled = !thisSync;
@@ -617,7 +724,7 @@ async function connectAgent(
       resolution.connected();
       session.element.classList.add("agent-connected");
       syncViewerMenu();
-      el("session-state").textContent = "연결됨";
+      showSessionState("connected");
       el("overlay").hidden = true;
       el<HTMLButtonElement>("text-input").disabled = false;
       el<HTMLButtonElement>("paste-remote").disabled = !thisSync;
@@ -683,9 +790,37 @@ function back(reload = true) {
   syncViewerMenu();
   if (reload) void refresh();
 }
+// 연결 끊기: the session stops and the list comes back, with a toast that can open the
+// same target again with the same input. The toast's button is an explicit user action.
+const TOAST_MS = 6000;
+let toastTimer: ReturnType<typeof setTimeout> | undefined;
+let toastReconnect: { target: Target; input: ConnectInput } | undefined;
+function hideToast() {
+  if (toastTimer !== undefined) clearTimeout(toastTimer);
+  toastTimer = undefined;
+  toastReconnect = undefined;
+  el("toast").hidden = true;
+}
 function disconnect() {
-  stop();
-  flow.ended();
+  const target = selected;
+  const input = flow.lastInput;
+  back();
+  if (!target || !input) return;
+  hideToast();
+  toastReconnect = { target, input };
+  el("toast-text").textContent = `${target.name} 연결을 끊었습니다`;
+  el("toast").hidden = false;
+  toastTimer = setTimeout(hideToast, TOAST_MS);
+}
+function reconnectFromToast() {
+  const last = toastReconnect;
+  hideToast();
+  if (!last) return;
+  // The list may have been refreshed since: open the target as it is listed now.
+  const target = targets.find((t) => t.id === last.target.id);
+  if (!target || !tileEnabled(target)) return;
+  selected = target;
+  flow.open(last.input);
 }
 // The 클립보드 붙여넣기 menu item and bar button: the paste barrier sends the changed local
 // clipboard, then the paste keys go out behind it. Called straight from the click or the
@@ -734,8 +869,17 @@ el("menu-address").onclick = el("state-address").onclick = () => {
   void api.openSetup();
 };
 el("state-retry").onclick = () => void refresh();
-el("back").onclick = el("overlay-back").onclick = () => back();
+el("overlay-back").onclick = el("overlay-cancel").onclick = () => back();
 el("disconnect").onclick = disconnect;
+el("toast-reconnect").onclick = reconnectFromToast;
+el("menu-update").onclick = () => {
+  closeMenu();
+  void api.checkUpdate().catch(() => {});
+};
+el("menu-restart").onclick = () => {
+  closeMenu();
+  void api.restartUpdate().catch(() => {});
+};
 el("overlay-reconnect").onclick = () => flow.reconnect();
 el("fullscreen").onclick = () => {
   void setFullscreen(!fullscreen);
@@ -800,8 +944,9 @@ api.onViewerAction((action) => {
       return;
     select.value = size;
     select.dispatchEvent(new Event("change"));
-  } else if (action === "back") back();
-  else if (action === "disconnect") disconnect();
+  } else if (action === "disconnect" || action === "back")
+    // old apps (bridge 4 and earlier) still send "back" from their 서버 목록 menu entry
+    disconnect();
   else if (action === "reconnect") flow.reconnect();
   else if (action === "text-input") openTextDialog();
   else if (action === "paste-clipboard") pasteClipboard();
