@@ -19,6 +19,9 @@ import {
 } from "../server/credentials.js";
 import { createManager } from "../server/manage.js";
 
+// The credential file is checked for mode 600 and its owner uid, which only POSIX has;
+// the gateway runs on Linux.
+const posix = process.platform !== "win32";
 const TOKEN_ONE = "a".repeat(43);
 const TOKEN_TWO = "b".repeat(43);
 const TOKEN_NEW = "c".repeat(43);
@@ -109,7 +112,7 @@ async function setup(
 
 const readJson = async (file) => JSON.parse(await readFile(file, "utf8"));
 
-test("add of a Mac with its key writes the target, a backup and the key", async (t) => {
+test("add of a Mac with its key writes the target, a backup and the key", { skip: !posix }, async (t) => {
   const s = await setup(t);
   const target = await s.manager.add(LOGIN, {
     name: "Mac Three",
@@ -147,7 +150,7 @@ test("add of a Mac with its key writes the target, a backup and the key", async 
   assert.deepEqual(s.logs, [`manage add t-00000001 by ${LOGIN}: ok`]);
 });
 
-test("two adds started together both land in the file", async (t) => {
+test("two adds started together both land in the file", { skip: !posix }, async (t) => {
   const s = await setup(t);
   const [a, b] = await Promise.all([
     s.manager.add(LOGIN, {
@@ -173,7 +176,7 @@ test("two adds started together both land in the file", async (t) => {
   );
 });
 
-test("a hand edit made after start survives a rename", async (t) => {
+test("a hand edit made after start survives a rename", { skip: !posix }, async (t) => {
   const s = await setup(t);
   const edited = {
     ...JSON.parse(s.original),
@@ -196,7 +199,7 @@ test("a hand edit made after start survives a rename", async (t) => {
   assert.deepEqual(s.logs, [`manage rename mac-one by ${LOGIN}: ok`]);
 });
 
-test("a credential file with mode 644 fails setCredential and remove with 500", async (t) => {
+test("a credential file with mode 644 fails setCredential and remove with 500", { skip: !posix }, async (t) => {
   const s = await setup(t, { targets: [macOne, macTwo] });
   await chmod(s.credentialsFile, 0o644);
   for (const run of [
@@ -221,7 +224,7 @@ test("a credential file with mode 644 fails setCredential and remove with 500", 
   );
 });
 
-test("setCredential replaces only that target's entry", async (t) => {
+test("setCredential replaces only that target's entry", { skip: !posix }, async (t) => {
   const s = await setup(t, { targets: [macOne, macTwo] });
   await s.manager.setCredential(LOGIN, "mac-two", { agentToken: TOKEN_NEW });
   const entries = await readCredentialFile(s.credentialsFile);
@@ -230,7 +233,7 @@ test("setCredential replaces only that target's entry", async (t) => {
   assert.deepEqual(s.logs, [`manage credential mac-two by ${LOGIN}: ok`]);
 });
 
-test("remove deletes the key and the target; the last target cannot be removed", async (t) => {
+test("remove deletes the key and the target; the last target cannot be removed", { skip: !posix }, async (t) => {
   const s = await setup(t, { targets: [macOne, macTwo] });
   await s.manager.remove(LOGIN, "mac-two");
   assert.deepEqual((await readJson(s.configPath)).targets, [macOne]);
@@ -260,7 +263,7 @@ test("remove deletes the key and the target; the last target cannot be removed",
   ]);
 });
 
-test("a key that cannot be saved after the add keeps the target and says so", async (t) => {
+test("a key that cannot be saved after the add keeps the target and says so", { skip: !posix }, async (t) => {
   const s = await setup(t, { credentialDir: "creds" });
   // Readable but not writable: the ID check reads it, the key write fails.
   await chmod(join(s.dir, "creds"), 0o500);
@@ -293,7 +296,7 @@ test("a key that cannot be saved after the add keeps the target and says so", as
   assert.equal(s.logs[0].includes(TOKEN_NEW), false);
 });
 
-test("the first add on a gateway with no credential file creates it with mode 600", async (t) => {
+test("the first add on a gateway with no credential file creates it with mode 600", { skip: !posix }, async (t) => {
   const s = await setup(t, { withCredentials: false });
   await s.manager.add(LOGIN, {
     name: "Mac Two",
