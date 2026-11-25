@@ -1,5 +1,7 @@
 import { constants } from "node:fs";
 import { open } from "node:fs/promises";
+import { writeFileAtomic } from "./atomic-file.js";
+import { ManageError } from "./targets.js";
 
 // File format: {"version":1,"targets":{"<id>":{"username":"...","password":"..."}}}
 // Values never appear in errors or logs; messages name only the file and target IDs.
@@ -133,6 +135,50 @@ export async function readCredentialFile(
   }
 }
 
+// Same body format as always; mode 600, replaced atomically.
+export function writeCredentialFile(file, entries) {
+  const body = `${JSON.stringify(
+    { version: 1, targets: Object.fromEntries(entries) },
+    null,
+    2,
+  )}\n`;
+  return writeFileAtomic(file, body, 0o600);
+}
+
+// Validates a credential body for a target (the rules of scripts/set-credential.mjs) and
+// returns the entry to store. Values never appear in the error messages.
+export function credentialEntry(target, input) {
+  const bad = (message) => new ManageError(400, message);
+  if (!input || typeof input !== "object" || Array.isArray(input))
+    throw bad("입력값을 확인하세요.");
+  if (target.protocol === "agent") {
+    const token =
+      typeof input.agentToken === "string" ? input.agentToken.trim() : "";
+    if (!AGENT_TOKEN.test(token))
+      throw bad(
+        "토큰은 43자의 영문·숫자·-·_ 여야 합니다. 저장하지 않았습니다.",
+      );
+    return { agentToken: token };
+  }
+  if (input.username !== undefined && typeof input.username !== "string")
+    throw bad("입력값을 확인하세요.");
+  const username = input.username?.trim() || undefined;
+  if (username === undefined && target.protocol === "rdp")
+    throw bad("사용자 이름이 비어 있어 저장하지 않았습니다.");
+  if (
+    typeof input.password !== "string" ||
+    !input.password ||
+    input.password.length > 1024
+  )
+    throw bad("비밀번호는 1-1024자여야 합니다. 저장하지 않았습니다.");
+  if (username !== undefined && username.length > 256)
+    throw bad("사용자 이름은 256자 이하여야 합니다. 저장하지 않았습니다.");
+  return {
+    ...(username !== undefined ? { username } : {}),
+    password: input.password,
+  };
+}
+
 // What a target needs: RDP a username and password. VNC needs a password; the username
 // is optional because macOS Screen Sharing negotiates Apple Remote Desktop authentication
 // (account name + password) while a plain VNC host uses the password alone.
@@ -162,6 +208,9 @@ export class CredentialStore {
     this.uid = uid;
     this.log = log;
     // The configured targets decide which entry shape each ID may have.
+    this.protocols = new Map(targets.map((t) => [t.id, t.protocol]));
+  }
+  setTargets(targets) {
     this.protocols = new Map(targets.map((t) => [t.id, t.protocol]));
   }
   load() {

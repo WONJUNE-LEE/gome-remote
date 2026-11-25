@@ -193,6 +193,7 @@ test(
       name: "Mac (새 방식)",
       platform: "mac",
       protocol: "agent",
+      hostname: "100.64.0.20",
       persistent: false,
       online: true,
       ready: true,
@@ -208,7 +209,7 @@ test(
 );
 
 test(
-  "the tile carries enumerations only: no token, no address, no agent text",
+  "the tile carries enumerations only: no token, no port, no agent text",
   { skip: !posix },
   async (t) => {
     const f = await fixture(t);
@@ -221,7 +222,6 @@ test(
     const { text } = await f.call("/api/targets");
     for (const leak of [
       TOKEN,
-      "100.64.0.20",
       "18471",
       "secret detail",
       "evil.example",

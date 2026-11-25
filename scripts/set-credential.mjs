@@ -1,12 +1,16 @@
-import { constants, realpathSync } from "node:fs";
-import { mkdir, open, rename, rm } from "node:fs/promises";
-import { randomBytes } from "node:crypto";
+import { realpathSync } from "node:fs";
 import { homedir } from "node:os";
-import { basename, dirname, join } from "node:path";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { StringDecoder } from "node:string_decoder";
 import { loadConfig } from "../server/config.js";
-import { AGENT_TOKEN, readCredentialFile } from "../server/credentials.js";
+import {
+  AGENT_TOKEN,
+  readCredentialFile,
+  writeCredentialFile,
+} from "../server/credentials.js";
+
+export { writeCredentialFile };
 
 // Secrets are read from the terminal only: never from argv, the environment, or a file
 // named on the command line, so they cannot appear in `ps`, shell history, or logs.
@@ -110,49 +114,6 @@ class Prompter {
     }
     return typed.join("");
   }
-}
-
-async function syncDirectory(directory) {
-  let handle;
-  try {
-    handle = await open(directory, constants.O_RDONLY);
-    await handle.sync();
-  } catch (error) {
-    // Windows cannot open or fsync a directory; every POSIX system can.
-    if (process.platform !== "win32") throw error;
-  } finally {
-    await handle?.close();
-  }
-}
-
-// Temp file (mode 600, same directory) -> fsync -> rename -> fsync directory.
-export async function writeCredentialFile(file, entries) {
-  const directory = dirname(file);
-  await mkdir(directory, { recursive: true, mode: 0o700 });
-  const temp = join(
-    directory,
-    `.${basename(file)}.${process.pid}.${randomBytes(6).toString("hex")}.tmp`,
-  );
-  const body = `${JSON.stringify(
-    { version: 1, targets: Object.fromEntries(entries) },
-    null,
-    2,
-  )}\n`;
-  let handle;
-  try {
-    handle = await open(temp, "wx", 0o600);
-    await handle.chmod(0o600); // the umask can only remove bits, but be explicit
-    await handle.writeFile(body, "utf8");
-    await handle.sync();
-    await handle.close();
-    handle = undefined;
-    await rename(temp, file);
-  } catch (error) {
-    await handle?.close().catch(() => {});
-    await rm(temp, { force: true });
-    throw error;
-  }
-  await syncDirectory(directory);
 }
 
 const usage =

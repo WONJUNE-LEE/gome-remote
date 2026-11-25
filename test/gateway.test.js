@@ -222,6 +222,7 @@ async function fixture(t, options = {}) {
     probe = async () => true,
     dist,
     guacd = "ok",
+    manager,
   } = options;
   const received = [];
   const connections = new Set();
@@ -243,6 +244,7 @@ async function fixture(t, options = {}) {
     credentials,
     probe: probe ?? undefined,
     dist,
+    manager,
   });
   await listenOnSocket(gateway.server, socketPath);
   t.after(async () => {
@@ -548,7 +550,7 @@ test(
 );
 
 test(
-  "the target list carries state but no address and no secret",
+  "the target list carries state and the hostname but no port and no secret",
   { skip: !posix },
   async (t) => {
     const f = await fixture(t, {
@@ -561,6 +563,7 @@ test(
     const response = await f.call("/api/targets");
     assert.equal(response.status, 200);
     assert.deepEqual(Object.keys(response.json.targets[0]).sort(), [
+      "hostname",
       "id",
       "name",
       "online",
@@ -572,7 +575,7 @@ test(
     ]);
     assert.equal(response.json.targets[0].profile, "gnome-remote-login");
     assert.equal(response.json.targets[0].ready, true);
-    for (const secret of ["entry-user", "entry-password", "127.0.0.1", "3390"])
+    for (const secret of ["entry-user", "entry-password", "3390"])
       assert.ok(!response.text.includes(secret), secret);
   },
 );
@@ -1180,5 +1183,67 @@ test(
     await chmod(file, 0o644);
     assert.equal((await f.call("/api/targets")).json.targets[0].ready, false);
     assert.equal((await f.post({ targetId: "linux" })).status, 409);
+  },
+);
+
+// A stub manager records its calls and throws on demand.
+function stubManager(failure) {
+  const calls = [];
+  const record =
+    (name, result) =>
+    async (...args) => {
+      calls.push([name, ...args]);
+      if (failure) throw failure;
+      return result;
+    };
+  const created = {
+    id: "new-one",
+    name: "New",
+    platform: "linux",
+    protocol: "rdp",
+    hostname: "100.64.0.20",
+    port: 3389,
+    security: "nla",
+  };
+  return {
+    calls,
+    add: record("add", created),
+    rename: record("rename", { ...created, name: "Renamed" }),
+    setCredential: record("setCredential"),
+    remove: record("remove"),
+  };
+}
+const JSON_TYPE = { "Content-Type": "application/json" };
+const writes = [
+  [
+    "POST",
+    "/api/targets",
+    { name: "New", kind: "linux", hostname: "100.64.0.20" },
+  ],
+  ["PATCH", "/api/targets/linux", { name: "Renamed" }],
+  ["PUT", "/api/targets/linux/credential", { username: "u", password: "p" }],
+  ["DELETE", "/api/targets/linux", undefined],
+];
+
+test(
+  "management writes need the exact public Origin and never reach the manager without it",
+  { skip: !posix },
+  async (t) => {
+    const manager = stubManager();
+    const f = await fixture(t, { manager });
+    for (const [method, path, input] of writes)
+      for (const origin of [undefined, "https://evil.example"]) {
+        const res = await f.call(path, {
+          method,
+          headers: { ...JSON_TYPE, ...(origin ? { Origin: origin } : {}) },
+          body: input && JSON.stringify(input),
+        });
+        assert.equal(res.status, 403, `${method} ${origin}`);
+        assert.deepEqual(res.json, {
+          error: "Origin rejected.",
+          code: "origin",
+        });
+      }
+    assert.deepEqual(manager.calls, []);
   },
 );

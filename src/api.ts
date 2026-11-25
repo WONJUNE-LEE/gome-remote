@@ -43,11 +43,15 @@ export function forBridge(state: ViewerState): ViewerState {
     : state;
 }
 
-async function request<T>(path: string, input?: unknown): Promise<T> {
+async function request<T>(
+  path: string,
+  input?: unknown,
+  method = input ? "POST" : "GET",
+): Promise<T> {
   let response: Response;
   try {
     response = await fetch(path, {
-      method: input ? "POST" : "GET",
+      method,
       credentials: "same-origin",
       signal: AbortSignal.timeout(12_000),
       ...(input
@@ -60,6 +64,8 @@ async function request<T>(path: string, input?: unknown): Promise<T> {
   } catch {
     throw new ApiError("unreachable", UNREACHABLE_TEXT);
   }
+  // The device management writes answer 204 with no body.
+  if (response.status === 204) return undefined as T;
   let result: any;
   try {
     result = await response.json();
@@ -124,6 +130,28 @@ export const api = {
       websocket: `${location.origin.replace(/^http/, "ws")}/tunnel`,
     };
   },
+  // Device management (the gateway's /api/targets writes). Secrets go in the body only;
+  // the gateway never sends them back.
+  addTarget: (input: NewTarget) =>
+    request<{ target: Target }>("/api/targets", input),
+  renameTarget: (id: string, name: string) =>
+    request<{ target: Target }>(
+      `/api/targets/${encodeURIComponent(id)}`,
+      { name },
+      "PATCH",
+    ),
+  setCredential: (id: string, credential: TargetCredential) =>
+    request<void>(
+      `/api/targets/${encodeURIComponent(id)}/credential`,
+      credential,
+      "PUT",
+    ),
+  deleteTarget: (id: string) =>
+    request<void>(
+      `/api/targets/${encodeURIComponent(id)}`,
+      undefined,
+      "DELETE",
+    ),
   // Relays the page's WebRTC offer to the Mac agent through the gateway.
   agentSession: (input: ConnectInput & { sdp: string }) =>
     request<{ sdp: string }>("/api/agent-sessions", input),

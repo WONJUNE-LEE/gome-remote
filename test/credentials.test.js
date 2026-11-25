@@ -8,7 +8,9 @@ import {
   CredentialStore,
   CredentialFileError,
   MAX_CREDENTIAL_FILE_BYTES,
+  credentialEntry,
   credentialsFor,
+  writeCredentialFile,
   readCredentialFile,
 } from "../server/credentials.js";
 
@@ -289,5 +291,50 @@ test(
       "over.json",
     );
     await assert.rejects(readCredentialFile(over), /larger than expected/);
+  },
+);
+
+const tok = "A".repeat(43);
+const agentTarget = { id: "mac-agent", protocol: "agent" };
+const status400 = (e) => e.status === 400;
+
+test("credentialEntry accepts a token for an agent target", () => {
+  assert.deepEqual(credentialEntry(agentTarget, { agentToken: tok }), {
+    agentToken: tok,
+  });
+});
+
+test("credentialEntry rejects shapes that do not fit the target", () => {
+  assert.throws(
+    () => credentialEntry(agentTarget, { username: "a", password: "b" }),
+    status400,
+  );
+  assert.throws(() => credentialEntry(rdp, { agentToken: tok }), status400);
+  assert.throws(() => credentialEntry(rdp, { password: "x" }), status400);
+  assert.throws(
+    () => credentialEntry(rdp, { username: "u", password: "x".repeat(1025) }),
+    status400,
+  );
+  assert.deepEqual(credentialEntry(vnc, { username: " ", password: "p" }), {
+    password: "p",
+  });
+});
+
+test(
+  "setTargets changes which entry shape load() accepts",
+  { skip: !posix },
+  async (t) => {
+    const dir = await workdir(t);
+    const file = join(dir, "c.json");
+    await writeCredentialFile(
+      file,
+      new Map([["mac-agent", { agentToken: tok }]]),
+    );
+    const store = new CredentialStore(file, { targets: [rdp] });
+    await store.load(); // unknown to the map, so either shape fits
+    store.setTargets([{ id: "mac-agent", protocol: "rdp" }]);
+    await assert.rejects(store.load(), CredentialFileError);
+    store.setTargets([agentTarget]);
+    assert.equal((await store.load()).get("mac-agent").agentToken, tok);
   },
 );
