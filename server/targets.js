@@ -79,8 +79,8 @@ const MESSAGES = new Map([
 ]);
 
 export function koreanConfigError(error) {
-  return new ManageError(
-    400,
-    MESSAGES.get(error.message) ?? "입력값을 확인하세요.",
-  );
+  const known = MESSAGES.get(error.message);
+  const refused = new ManageError(400, known ?? "입력값을 확인하세요.");
+  if (!known) refused.detail = error.message;
+  return refused;
 }

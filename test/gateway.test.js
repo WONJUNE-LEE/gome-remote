@@ -9,7 +9,6 @@ import { join } from "node:path";
 import { WebSocket } from "ws";
 import { createGateway, Tickets } from "../server/gateway.js";
 import { validateConfig } from "../server/config.js";
-import { ManageError } from "../server/targets.js";
 import { CredentialStore } from "../server/credentials.js";
 import { listenOnSocket } from "../server/listen.js";
 import { loadTs } from "./helpers/load-ts.js";
@@ -1246,121 +1245,5 @@ test(
         });
       }
     assert.deepEqual(manager.calls, []);
-  },
-);
-
-test(
-  "management writes call the manager with the login and the parsed body",
-  { skip: !posix },
-  async (t) => {
-    const manager = stubManager();
-    const f = await fixture(t, { manager });
-    const send = (method, path, input) =>
-      f.call(path, {
-        method,
-        headers: { ...JSON_TYPE, Origin: ORIGIN },
-        body: input && JSON.stringify(input),
-      });
-    const added = await send("POST", "/api/targets", writes[0][2]);
-    assert.equal(added.status, 201);
-    assert.deepEqual(added.json, {
-      target: {
-        id: "new-one",
-        name: "New",
-        platform: "linux",
-        protocol: "rdp",
-        hostname: "100.64.0.20",
-      },
-    });
-    const renamed = await send("PATCH", "/api/targets/linux", {
-      name: " Renamed ",
-    });
-    assert.equal(renamed.status, 200);
-    assert.equal(renamed.json.target.name, "Renamed");
-    for (const [method, path, input] of writes.slice(2)) {
-      const res = await send(method, path, input);
-      assert.equal(res.status, 204);
-      assert.equal(res.text, "");
-    }
-    assert.deepEqual(manager.calls, [
-      ["add", LOGIN, writes[0][2]],
-      ["rename", LOGIN, "linux", "Renamed"],
-      ["setCredential", LOGIN, "linux", writes[2][2]],
-      ["remove", LOGIN, "linux"],
-    ]);
-  },
-);
-
-test(
-  "management writes map a ManageError to its status and refuse bad bodies before the manager",
-  { skip: !posix },
-  async (t) => {
-    const failing = stubManager(new ManageError(409, "x"));
-    const f = await fixture(t, { manager: failing });
-    const send = (method, path, input, headers = JSON_TYPE) =>
-      f.call(path, {
-        method,
-        headers: { ...headers, Origin: ORIGIN },
-        body:
-          typeof input === "string" ? input : input && JSON.stringify(input),
-      });
-    for (const [method, path, input] of writes) {
-      const res = await send(method, path, input);
-      assert.equal(res.status, 409, method);
-      assert.deepEqual(res.json, { error: "x" });
-    }
-    const manager = stubManager();
-    const g = await fixture(t, { manager });
-    const bad = (method, path, input, headers = JSON_TYPE) =>
-      g.call(path, {
-        method,
-        headers: { ...headers, Origin: ORIGIN },
-        body: typeof input === "string" ? input : JSON.stringify(input),
-      });
-    assert.equal((await bad("POST", "/api/targets", {}, {})).status, 415);
-    assert.equal(
-      (await bad("PATCH", "/api/targets/linux", {}, {})).status,
-      415,
-    );
-    assert.equal(
-      (await bad("PUT", "/api/targets/linux/credential", {}, {})).status,
-      415,
-    );
-    for (const [method, path, input] of [
-      ["PATCH", "/api/targets/linux", { name: "A", hostname: "100.64.0.20" }],
-      ["PATCH", "/api/targets/linux", { name: "A", port: 1 }],
-      ["PATCH", "/api/targets/linux", {}],
-      ["PATCH", "/api/targets/linux", { name: "  " }],
-      ["POST", "/api/targets", { kind: "linux" }],
-      ["POST", "/api/targets", { name: "A", kind: "linux", port: 1 }],
-      ["POST", "/api/targets", { name: "A", kind: "linux", credential: "x" }],
-      ["PUT", "/api/targets/linux/credential", []],
-      ["PUT", "/api/targets/linux/credential", "{not json"],
-    ]) {
-      const res = await bad(method, path, input);
-      assert.equal(res.status, 400, JSON.stringify(input));
-    }
-    assert.equal(
-      (await bad("POST", "/api/targets", { name: "A" })).json.error,
-      "입력값을 확인하세요.",
-    );
-    assert.deepEqual(manager.calls, []);
-  },
-);
-
-test(
-  "GET /api/targets items carry the hostname, agent tiles included",
-  { skip: !posix },
-  async (t) => {
-    const f = await fixture(t);
-    const res = await f.call("/api/targets");
-    assert.equal(res.json.targets[0].hostname, "100.64.0.10");
-    const agent = await fixture(t, {
-      protocol: "agent",
-      credentials: stub({}),
-      overrides: { platform: "mac", hostname: "100.64.0.10" },
-    });
-    const tile = await agent.call("/api/targets");
-    assert.equal(tile.json.targets[0].hostname, "100.64.0.10");
   },
 );

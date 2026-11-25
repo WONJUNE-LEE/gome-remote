@@ -138,7 +138,9 @@ There are two ways, and they edit the same files.
   agent, with its Tailscale address and the agent key; or the Ubuntu server itself, offered
   only while the list has none). The row's **⋯** opens the device page: rename, replace the
   login (password, or agent key) and delete. No restart and no server terminal. Any
-  allowed login can do this, and the same Origin rule as the rest of the API applies.
+  allowed login can do this. The app's writes must carry an Origin equal to the
+  gateway's public origin and are refused without one, so a plain `curl` from the server
+  terminal gets 403; use the server-terminal path below instead.
 - **On the server.** Edit `gateway.json` and restart the gateway, and store the login with
   `scripts/set-credential.mjs`, as above. This keeps working.
 
@@ -229,9 +231,13 @@ permission to a program that starts afterwards). On the gateway server run
 `node scripts/set-credential.mjs <gateway.json> mac --agent-token` (the path of the gateway
 configuration you are setting up; during the parallel rollout that is the candidate's
 `gateway.json`) and paste the token the installer showed (it is shown once; it stays in
-`~/Library/Application Support/Gome Remote Agent/token`). Or add the Mac in the app
-(**기기 추가**, then the Mac's Tailscale address and the same token). The agent is still
-installed on the Mac by hand; the app only takes its address and key. In Korean Mac settings, the 한/영 key needs **System Settings > Keyboard >
+`~/Library/Application Support/Gome Remote Agent/token`).
+
+Or add the Mac in the app (**기기 추가**, then the Mac's Tailscale address and the same
+token). The agent is still installed on the Mac by hand; the app only takes its address
+and key.
+
+In Korean Mac settings, the 한/영 key needs **System Settings > Keyboard >
 Input Sources > Use the Caps Lock key to switch to and from ABC** to be on: the Windows
 Hangul key is sent as one Caps Lock press.
 

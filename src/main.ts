@@ -485,6 +485,7 @@ async function write(
   errorId: string,
   run: () => Promise<unknown>,
   mayBePartial = false,
+  onPartial?: (message: string) => void,
 ) {
   el<HTMLButtonElement>(button).disabled = true;
   showWriteError(errorId);
@@ -495,7 +496,10 @@ async function write(
     showWriteError(errorId, error);
     const refused =
       error instanceof ApiError && error.status >= 400 && error.status < 500;
-    if (mayBePartial && !refused) void refresh();
+    if (mayBePartial && !refused) {
+      void refresh();
+      if (error instanceof Error) onPartial?.(error.message);
+    }
     return false;
   } finally {
     clearSecrets();
@@ -568,7 +572,18 @@ async function submitAdd() {
           },
         };
   if (
-    await write("add-submit", "add-error", () => api.addTarget(input), true)
+    await write(
+      "add-submit",
+      "add-error",
+      () => api.addTarget(input),
+      true,
+      // The server may have added the device without its key: the dialog closes and
+      // the list says so.
+      (message) => {
+        closeDialog("add-dialog");
+        showToastMessage(message);
+      },
+    )
   ) {
     closeDialog("add-dialog");
     void refresh();
@@ -667,8 +682,11 @@ async function confirmDelete() {
   const target = managed;
   if (!target) return;
   if (
-    await write("delete-confirm", "delete-error", () =>
-      api.deleteTarget(target.id),
+    await write(
+      "delete-confirm",
+      "delete-error",
+      () => api.deleteTarget(target.id),
+      true,
     )
   ) {
     closeDialog("delete-dialog");
@@ -1112,6 +1130,14 @@ function hideToast() {
   toastReconnect = undefined;
   el("toast").hidden = true;
 }
+// A plain message on the list screen (no reconnect button).
+function showToastMessage(text: string) {
+  hideToast();
+  el("toast-text").textContent = text;
+  el("toast-reconnect").hidden = true;
+  el("toast").hidden = false;
+  toastTimer = setTimeout(hideToast, TOAST_MS);
+}
 function disconnect() {
   const target = selected;
   const input = flow.lastInput;
@@ -1119,6 +1145,7 @@ function disconnect() {
   if (!target || !input) return;
   hideToast();
   toastReconnect = { target, input };
+  el("toast-reconnect").hidden = false;
   el("toast-text").textContent = `${target.name} 연결을 끊었습니다`;
   el("toast").hidden = false;
   toastTimer = setTimeout(hideToast, TOAST_MS);

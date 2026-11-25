@@ -51,7 +51,8 @@ export function createManager({
         return value;
       } catch (error) {
         if (error instanceof ManageError && error.status < 500) {
-          log(`${prefix()}: refused (${error.status})`);
+          const why = error.detail ? `: ${error.detail}` : "";
+          log(`${prefix()}: refused (${error.status}${why})`);
           throw error;
         }
         log(`${prefix()}: failed at ${step.at} (${reason(error)})`);

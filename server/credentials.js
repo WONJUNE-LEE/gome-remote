@@ -151,10 +151,6 @@ export function credentialEntry(target, input) {
   const bad = (message) => new ManageError(400, message);
   if (!input || typeof input !== "object" || Array.isArray(input))
     throw bad("입력값을 확인하세요.");
-  const allowed =
-    target.protocol === "agent" ? ["agentToken"] : ["username", "password"];
-  if (Object.keys(input).some((key) => !allowed.includes(key)))
-    throw bad("이 대상에 맞지 않는 입력입니다.");
   if (target.protocol === "agent") {
     const token =
       typeof input.agentToken === "string" ? input.agentToken.trim() : "";

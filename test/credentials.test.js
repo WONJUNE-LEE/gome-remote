@@ -315,10 +315,6 @@ test("credentialEntry rejects shapes that do not fit the target", () => {
     () => credentialEntry(rdp, { username: "u", password: "x".repeat(1025) }),
     status400,
   );
-  assert.throws(
-    () => credentialEntry(rdp, { username: "u", password: "x", extra: 1 }),
-    status400,
-  );
   assert.deepEqual(credentialEntry(vnc, { username: " ", password: "p" }), {
     password: "p",
   });

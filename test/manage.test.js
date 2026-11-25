@@ -50,7 +50,10 @@ function counter() {
   };
 }
 
-async function setup(t, { targets = [macOne], credentialDir } = {}) {
+async function setup(
+  t,
+  { targets = [macOne], credentialDir, withCredentials = true } = {},
+) {
   const dir = await mkdtemp(join(tmpdir(), "gr-manage-"));
   t.after(async () => {
     await chmod(join(dir, "creds"), 0o700).catch(() => {});
@@ -70,15 +73,16 @@ async function setup(t, { targets = [macOne], credentialDir } = {}) {
   const original = `${JSON.stringify(raw, null, 2)}\n`;
   await writeFile(configPath, original);
   await chmod(configPath, 0o640);
-  await writeCredentialFile(
-    credentialsFile,
-    new Map(
-      targets.map((target, i) => [
-        target.id,
-        { agentToken: i === 0 ? TOKEN_ONE : TOKEN_TWO },
-      ]),
-    ),
-  );
+  if (withCredentials)
+    await writeCredentialFile(
+      credentialsFile,
+      new Map(
+        targets.map((target, i) => [
+          target.id,
+          { agentToken: i === 0 ? TOKEN_ONE : TOKEN_TWO },
+        ]),
+      ),
+    );
   const config = validateConfig(JSON.parse(original));
   const credentials = new CredentialStore(credentialsFile, {
     targets: config.targets,
@@ -287,4 +291,19 @@ test("a key that cannot be saved after the add keeps the target and says so", as
     /^manage add t-00000001 by .*: failed at credential \(EACCES\)$/,
   );
   assert.equal(s.logs[0].includes(TOKEN_NEW), false);
+});
+
+test("the first add on a gateway with no credential file creates it with mode 600", async (t) => {
+  const s = await setup(t, { withCredentials: false });
+  await s.manager.add(LOGIN, {
+    name: "Mac Two",
+    kind: "mac-agent",
+    hostname: "100.64.0.20",
+    credential: { agentToken: TOKEN_NEW },
+  });
+  const file = await readJson(s.configPath);
+  assert.equal(file.targets.length, 2);
+  assert.equal((await stat(s.credentialsFile)).mode & 0o777, 0o600);
+  const entries = await readCredentialFile(s.credentialsFile);
+  assert.deepEqual([...entries], [["t-00000001", { agentToken: TOKEN_NEW }]]);
 });

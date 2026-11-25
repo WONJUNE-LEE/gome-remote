@@ -220,8 +220,8 @@ export function createGateway(
     ...(t.profile ? { profile: t.profile } : {}),
     hostname: t.hostname,
   });
-  // Device management (spec D1). The body is shape-checked here; the manager
-  // validates the values. Request bodies are never logged.
+  // Device management (spec D1). The body must be an object with a name; the manager
+  // validates the rest. Request bodies are never logged.
   const manage = async (req, res, login, managed) => {
     const bad = () => json(res, 400, { error: BAD_INPUT });
     const noContent = () => {
@@ -240,22 +240,11 @@ export function createGateway(
       await manager.setCredential(login, managed[1], input);
       return noContent();
     }
-    const keys = Object.keys(input);
     if (!named(input.name)) return bad();
     if (req.method === "PATCH") {
-      if (keys.some((k) => k !== "name")) return bad();
       const target = await manager.rename(login, managed[1], input.name.trim());
       return json(res, 200, { target: publicTarget(target) });
     }
-    if (
-      keys.some(
-        (k) => !["name", "kind", "hostname", "credential"].includes(k),
-      ) ||
-      typeof input.kind !== "string" ||
-      (input.hostname !== undefined && typeof input.hostname !== "string") ||
-      (input.credential !== undefined && !plain(input.credential))
-    )
-      return bad();
     const target = await manager.add(login, input);
     return json(res, 201, { target: publicTarget(target) });
   };

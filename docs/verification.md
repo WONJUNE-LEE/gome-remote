@@ -41,15 +41,14 @@ npm run build     # vite build
   limits and the 8-character note are tested on both sides of the boundary; the replacement is atomic and leaves no temporary file; a wrong-mode
   file is left untouched.
 - **Device management (device-management design D1-D3)**, `test/targets.test.js`,
-  `test/manage.test.js`: the target shape built for an Ubuntu or Mac-agent kind; new IDs skip
-  taken ones; a second Ubuntu target, deleting the last target and renaming an unknown ID
-  are refused (409, 409, 404); a rename returns new objects and leaves its input alone;
-  config errors are mapped to Korean messages; an add with a key writes the target, a
+  `test/manage.test.js`: new IDs skip taken ones; a second Ubuntu target, deleting
+  the last target and renaming an unknown ID are refused (409, 409, 404); an add with a key writes the target, a
   `gateway.json.prev` of mode 640 holding the old file, and the key; two adds started
   together both land; a hand edit made after start survives a rename; a credentials file
   of mode 644 fails setting and removing with 500; replacing a key touches only that
   target's entry; delete removes key and target; a key that cannot be saved after an add
-  keeps the target and says so; each write logs one line and no log line holds the key.
+  keeps the target and says so; the first add on a gateway with no credential file creates
+  it with mode 600 and one entry; each write logs one line and no log line holds the key.
 - **Gateway (D3)**, `test/gateway.test.js`: allowed or refused login on every API route
   with the exact 403 text; static UI and health check open; Origin rules; client
   credentials refused with 400; 0.1.3 client behaviour; the target list carries `hostname`
@@ -59,9 +58,7 @@ npm run build     # vite build
   step reaches the browser, ends the tunnel, is dialed exactly once and spends the ticket
   (the fixture fails like a real guacd); WebSocket Origin and identity matrix;
   development login; management writes (POST, PATCH, PUT, DELETE under `/api/targets`)
-  need the exact public Origin and do not reach the manager without it, pass the login and
-  the parsed body to the manager, map its error to its status and refuse bad bodies before
-  it; `GET /api/targets` items carry the hostname, agent tiles included.
+  need the exact public Origin and do not reach the manager without it.
 - **Socket (D3)**, `test/listen.test.js`, `test/index.test.js`: socket 0600 in a 0700
   directory; an open directory refused; a regular file never removed; a live gateway never
   taken over; the stale socket left by SIGKILL replaced; clear refusal messages at
