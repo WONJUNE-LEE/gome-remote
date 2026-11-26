@@ -381,6 +381,11 @@ test("a_closed_channel_sends_nothing_and_stays_silent", async () => {
 test("paste_shortcut_matrix", () => {
   const mac = (o) => isPasteShortcut(key(o), "mac");
   const other = (o) => isPasteShortcut(key(o), "other");
+  const swapped = (o) => isPasteShortcut(key(o), "mac-swapped");
+  assert.equal(swapped({ altKey: true }), true);
+  assert.equal(swapped({ metaKey: true }), false);
+  assert.equal(swapped({ altKey: true, metaKey: true }), false);
+  assert.equal(swapped({ altKey: true, ctrlKey: true }), false);
   assert.equal(mac({ metaKey: true }), true);
   assert.equal(mac({ metaKey: true, shiftKey: true }), true);
   assert.equal(mac({}), false);

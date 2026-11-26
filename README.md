@@ -271,8 +271,9 @@ Good to know:
   emptied when it passes 5 MiB.
 - **Scope.** The main display only, no sound. Text clipboard sync with the desktop app or a
   browser (see "Using it"), and a typed paste at the lock screen (the held text is typed
-  with key codes; nothing else is automated there). No key remapping: Ctrl stays Control,
-  Alt stays Option, the Windows key stays Command. Agent 0.2.0 is the first with clipboard
+  with key codes; nothing else is automated there). Keys: Ctrl stays Control; from a
+  device that is not a Mac, Alt is Command and the Windows key is Option, and from a Mac the keys
+  are sent as they are. Agent 0.2.0 is the first with clipboard
   sync; installing it needs the owner's `./install.sh` (administrator password), and an older
   agent simply ignores the clipboard messages. With the older agent (0.1.0) the page's paste
   therefore gives no signal at all (no text arrives and no notice appears) until the agent is
@@ -349,7 +350,8 @@ Open the same address in a browser for the identical screen.
 - A Mac (VNC) session uses guacd's local cursor: a normal pointer instead of a dot, moving without round-trip lag.
 - A Mac (agent) session shows your own device's pointer over the picture, and the Mac's
   cursor follows it (so hover effects work); the Mac's pointer shapes, such as the text
-  cursor, are not shown. Ctrl is Control, Alt is Option and the Windows key is Command.
+  cursor, are not shown. Ctrl is Control; from a device that is not a Mac, Alt is Command and the
+  Windows key is Option, and from a Mac the keys are sent as they are.
   The text input window types the characters directly and does not touch the Mac's
   clipboard (it is separate from clipboard sync). Opening `#measure` after the address (for example
   `https://your-server.your-tailnet.ts.net:8450/#measure`) shows a small panel that times
@@ -386,7 +388,7 @@ Open the same address in a browser for the identical screen.
   with a notice. VNC sessions have no such special case.
 - Windows key (desktop app on Windows): while a remote view is shown and the app window has the
   focus, the app captures the keyboard, windowed or full screen, so Win+V, Win+C and the bare
-  Windows key go to the Mac as Command (Alt+Tab, Win+D and the like go to the Mac too). A short
+  Windows key go to the Mac as Option (Alt is Command, so Alt+V pastes; Alt+Tab, Win+D and the like go to the Mac too). A short
   notice says so when it starts. Leave with the mouse (clicking another window or switching
   away releases it) or hold Escape for about 1.5 seconds, which releases it with a notice;
   click the remote view to take it again (a tap on Escape stays a remote key). F11 still

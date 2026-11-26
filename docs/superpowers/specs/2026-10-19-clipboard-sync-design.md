@@ -26,6 +26,12 @@ Windows key stays Command): swapping keys would make Mac shortcuts confusing. Th
 copy on Windows with Ctrl+C, paste on the remote Mac with Cmd+V; and the reverse, copy on the
 Mac with Cmd+C, paste on Windows with Ctrl+V.
 
+(Amended 2026-11-26 by an owner decision: from a client that is not a Mac, the page now sends Alt
+as Command and the Windows key as Option; from a Mac the keys are sent as they are, and the Mac
+agent's own mapping is unchanged. So the paste chord from a non-Mac client is Alt+V, and the
+Windows key reaches the Mac as Option. The Windows key capture (D4) stays; its keys now arrive
+as Option.)
+
 ## 2. Goals
 
 - G1. Windows → remote: text copied on the client is what the remote's own paste pastes, at
