@@ -91,6 +91,34 @@ export function keyCode(event: {
   return event.code && event.code !== "Unidentified" ? event.code : undefined;
 }
 
+// A non-Mac keyboard on a Mac target: Alt is Command and the Windows key is Option (Ctrl stays
+// Control), left and right kept. The agent keeps mapping Meta to Command and Alt to Option;
+// the page swaps the codes before sending, so only physical keys are swapped, never
+// programmatic sends such as the paste chord.
+const CODE_SWAP: Record<string, string> = {
+  AltLeft: "MetaLeft",
+  AltRight: "MetaRight",
+  MetaLeft: "AltLeft",
+  MetaRight: "AltRight",
+};
+export function swapCode(code: string, swap: boolean): string {
+  return (swap && CODE_SWAP[code]) || code;
+}
+
+// The same swap for Guacamole keysyms: Alt (0xFFE9/A) becomes Meta (Command), and Meta,
+// Win and Super (0xFFE7/8, 0xFFEB/C) become Alt (Option).
+const KEYSYM_SWAP: Record<number, number> = {
+  0xffe9: 0xffe7,
+  0xffea: 0xffe8,
+  0xffe7: 0xffe9,
+  0xffeb: 0xffe9,
+  0xffe8: 0xffea,
+  0xffec: 0xffea,
+};
+export function swapKeysym(keysym: number, swap: boolean): number {
+  return (swap && KEYSYM_SWAP[keysym]) || keysym;
+}
+
 // The agent refuses a data channel message over 8 KiB; stay a little under it.
 export const MAX_TEXT_MESSAGE_BYTES = 8000;
 // `{"type":"text","s":""}`: what a text message costs with nothing in it.

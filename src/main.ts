@@ -1,6 +1,7 @@
 import Guacamole from "../vendor/guacamole.js";
 import { ApiError, api, appMode, autoResolution } from "./api";
 import { createAgentSession, type AgentSession } from "./agent";
+import { swapKeysym } from "./agent-input";
 import { endText, startFailureReason } from "./agent-messages";
 import { localClipboardFor } from "./clipboard-local";
 import {
@@ -866,6 +867,7 @@ async function connect(input: ConnectInput) {
     // Only where there is a local clipboard to sync (the app with bridge 4 or later, or a
     // browser with navigator.clipboard).
     const local = localClipboardFor();
+    const swapKeys = selected?.platform === "mac" && !clientIsMac();
     let thisSync: ClipboardSync | undefined;
     if (local) {
       thisSync = sync = createClipboardSync({
@@ -881,7 +883,12 @@ async function connect(input: ConnectInput) {
             }
           },
         },
-        target: selected?.platform === "mac" ? "mac" : "other",
+        target:
+          selected?.platform === "mac"
+            ? swapKeys
+              ? "mac-swapped"
+              : "mac"
+            : "other",
         notify: (key) => {
           if (current === generation) showNotice(key);
         },
@@ -968,13 +975,15 @@ async function connect(input: ConnectInput) {
     keyboard = new Guacamole.Keyboard(surface);
     keyboard.onkeydown = (keysym: number) => {
       gated(() => {
-        if (flow.active) connection.sendKeyEvent(1, keysym);
+        if (flow.active)
+          connection.sendKeyEvent(1, swapKeysym(keysym, swapKeys));
       });
       return false;
     };
     keyboard.onkeyup = (keysym: number) => {
       gated(() => {
-        if (flow.active) connection.sendKeyEvent(0, keysym);
+        if (flow.active)
+          connection.sendKeyEvent(0, swapKeysym(keysym, swapKeys));
       });
     };
     surface.addEventListener("blur", releaseInput);
@@ -1026,6 +1035,9 @@ function sendRemoteClipboard(text: string): "sent" {
 function pasteKeysFor(platform: string | undefined): [number, number] {
   return [platform === "mac" ? 0xffe7 : 0xffe3, 0x76];
 }
+// A Mac target gets Alt as Command and the Windows key as Option unless the client is itself
+// a Mac. iPadOS reports "MacIntel" too, and its keyboards have Command keys, so it counts.
+const clientIsMac = () => /Mac/.test(navigator.platform);
 // A Mac (agent) session: WebRTC video and input straight to the Mac, set up through the
 // gateway (src/agent.ts). The flow, the overlay, the menu and the fullscreen handling are
 // the ones the Guacamole path uses.
@@ -1038,7 +1050,9 @@ async function connectAgent(
   // browser with navigator.clipboard).
   const local = localClipboardFor();
   let thisSync: ClipboardSync | undefined;
+  const swapKeys = !clientIsMac();
   const session = createAgentSession({
+    swapKeys,
     signal: (sdp) =>
       api.agentSession({
         targetId: input.targetId,
@@ -1082,7 +1096,7 @@ async function connectAgent(
     thisSync = sync = createClipboardSync({
       local,
       remote: session,
-      target: "mac",
+      target: swapKeys ? "mac-swapped" : "mac",
       notify: (key) => {
         if (current === generation) showNotice(key);
       },

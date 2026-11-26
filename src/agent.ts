@@ -7,6 +7,7 @@ import {
   MAX_CLIPBOARD_MESSAGE_BYTES,
   contentRect,
   keyCode,
+  swapCode,
   message,
   normalise,
   parseAgentMessage,
@@ -32,6 +33,8 @@ export interface AgentDeps {
   // is closed `run` happens at once, while it is open `run` waits. Clipboard text, the
   // watch switch and the release at the end of the session do not go through it.
   gate?(run: () => void): void;
+  // The client is not a Mac: Alt is sent as Command and the Windows key as Option.
+  swapKeys?: boolean;
   // A key-down is about to be sent (before it is): the paste barrier decides here.
   onPasteKey?(event: KeyboardEvent): void;
   // The input channel opened.
@@ -186,10 +189,10 @@ export function createAgentSession(deps: AgentDeps): AgentSession {
     send(message.wheel(d));
   };
   const onKey = (down: boolean) => (event: KeyboardEvent) => {
-    const code = keyCode(event);
+    const local = keyCode(event);
     event.preventDefault();
     event.stopPropagation();
-    if (!code) return;
+    if (!local) return;
     if (down)
       try {
         deps.onPasteKey?.(event);
@@ -199,12 +202,14 @@ export function createAgentSession(deps: AgentDeps): AgentSession {
     // Browsers on macOS send no keyup for a key pressed while Command is held, so the Mac
     // would keep that key down. When the Command key (the Meta key here) comes up, every
     // other key still held is let go first, while Command is still down on the Mac.
-    if (!down && /^Meta(Left|Right)$/.test(code))
+    // That is the local key, which is never swapped on a Mac client.
+    if (!down && /^Meta(Left|Right)$/.test(local))
       for (const held of [...pressedKeys]) {
         if (MODIFIER_CODE.test(held)) continue;
         pressedKeys.delete(held);
         send(message.key(held, false));
       }
+    const code = swapCode(local, !!deps.swapKeys);
     if (down) pressedKeys.add(code);
     else pressedKeys.delete(code);
     send(message.key(code, down));

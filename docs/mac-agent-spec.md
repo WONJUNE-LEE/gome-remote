@@ -216,8 +216,10 @@
 - 포인터: **내 기기 포인터**(오너 결정 2026-10-14). 캡처에 커서를 넣지 않고 페이지는 영상 위에
   기본 화살표를 보인다. 에이전트는 포인터 이동마다 Mac 커서를 실제로 옮긴다(호버 동작 유지).
   Mac의 포인터 모양 변화(I자 등)는 보이지 않는다.
-- 키보드: 물리 키 위치(`code`)를 Mac 가상 키코드로 바꾼다. 수식 키는 물리 위치 그대로
-  (Ctrl→Control, Alt→Option, Win/Meta→Command) — 지금 VNC 경로와 같은 동작이다. 한글은 Mac
+- 키보드: 물리 키 위치(`code`)를 Mac 가상 키코드로 바꾼다. 에이전트의 수식 키 매핑은
+  물리 위치 그대로다(Ctrl→Control, Alt→Option, Win/Meta→Command). 다만 클라이언트가 Mac이
+  아니면 페이지가 보내기 전에 Alt와 Win을 맞바꾼다(Alt→Command, Win→Option, 좌우 유지).
+  Mac 클라이언트는 그대로 보낸다. VNC 경로도 같은 규칙이다. 한글은 Mac
   입력기가 처리한다. Windows의 한/영 키(`code` `Lang1` 또는 `key` `HangulMode`)는 Mac Caps Lock
   한 번(한/A 전환)으로 보낸다(O3). 모르는 `code`는 버린다. OS가 가로채는 조합(Alt+Tab 등)은
   범위 밖이다.

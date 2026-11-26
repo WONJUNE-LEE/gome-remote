@@ -203,7 +203,9 @@ export async function viewer({
       for (const release of clipboard.held.splice(0)) release();
     },
   };
+  // A Mac client, so the Alt/Windows swap for Mac targets stays off in these tests.
   const navigator = {
+    platform: "MacIntel",
     ...(browserClipboard ? { clipboard: browserClipboard } : {}),
     ...(keyboardLock === "absent"
       ? {}
@@ -597,6 +599,7 @@ export async function viewer({
       "./api": api,
       "./tiles": tiles,
       "./flow": flow,
+      "./agent-input": agentInput,
       "./keyboard-lock": keyboardLockModule,
       "./clipboard-sync": clipboardSync,
       "./clipboard-local": clipboardLocal,

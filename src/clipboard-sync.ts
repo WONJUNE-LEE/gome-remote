@@ -39,9 +39,12 @@ export interface PasteKeyEvent {
 
 export function isPasteShortcut(
   e: PasteKeyEvent,
-  target: "mac" | "other",
+  target: "mac" | "mac-swapped" | "other",
 ): boolean {
   const v = e.code === "KeyV" || e.key.toLowerCase() === "v";
+  // Alt is Command when a non-Mac keyboard is swapped for a Mac.
+  if (target === "mac-swapped")
+    return v && e.altKey && !e.ctrlKey && !e.metaKey;
   if (target === "mac") return v && e.metaKey && !e.ctrlKey && !e.altKey;
   if (v) return e.ctrlKey && !e.metaKey && !e.altKey;
   const insert = e.code === "Insert" || e.key === "Insert";
@@ -70,7 +73,7 @@ export interface RemoteClipboard {
 export interface SyncDeps {
   local: LocalClipboard;
   remote: RemoteClipboard;
-  target: "mac" | "other";
+  target: "mac" | "mac-swapped" | "other";
   notify(key: NoticeKey): void;
   setTimeout: typeof setTimeout;
   clearTimeout: typeof clearTimeout;
