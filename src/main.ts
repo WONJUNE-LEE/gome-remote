@@ -1035,15 +1035,12 @@ function sendRemoteClipboard(text: string): "sent" {
 function pasteKeysFor(platform: string | undefined): [number, number] {
   return [platform === "mac" ? 0xffe7 : 0xffe3, 0x76];
 }
+// A Mac target gets Alt as Command and the Windows key as Option unless the client is itself
+// a Mac. iPadOS reports "MacIntel" too, and its keyboards have Command keys, so it counts.
+const clientIsMac = () => /Mac/.test(navigator.platform);
 // A Mac (agent) session: WebRTC video and input straight to the Mac, set up through the
 // gateway (src/agent.ts). The flow, the overlay, the menu and the fullscreen handling are
 // the ones the Guacamole path uses.
-// A Mac target gets Alt as Command and the Windows key as Option unless the client is itself
-// a Mac. iPadOS reports "MacIntel" too, and its keyboards have Command keys, so it counts.
-const clientIsMac = () =>
-  ((navigator as { userAgentData?: { platform?: string } }).userAgentData
-    ?.platform ?? navigator.platform) === "macOS" ||
-  /Mac/.test(navigator.platform);
 async function connectAgent(
   input: ConnectInput,
   size: { width: number; height: number },

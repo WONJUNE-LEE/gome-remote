@@ -359,7 +359,7 @@ Open the same address in a browser for the identical screen.
 - Clipboard (text only, at most 64 KiB of UTF-8; larger text is not sent or cut, and a short
   notice says so). Nothing is pushed when a session starts. Client to remote: the text is
   sent when the remote view gains focus and right before a paste, that is a paste key
-  (Cmd+V on a Mac target; Ctrl+V, Ctrl+Shift+V or Shift+Insert elsewhere) or the
+  (Cmd+V on a Mac target, Alt+V from a device that is not a Mac; Ctrl+V, Ctrl+Shift+V or Shift+Insert elsewhere) or the
   **붙여넣기** bar button (클립보드 붙여넣기 in the Mac menu). The paste key and every input after it wait up to
   500 ms for the clipboard to be read, so the new text is in place before the V. The Mac menu item
   reads the clipboard even though the native menu took focus from the page, and retries once.
@@ -381,7 +381,7 @@ Open the same address in a browser for the identical screen.
   Mac-copied text, that is a residual risk: writing the mark on Windows is not yet tested there.
   No clipboard text is logged anywhere; only the reason and the byte length.
 - Lock screen (Mac agent): when the Mac is really locked (the console lock, not just a sleeping
-  display), Cmd+V or **붙여넣기** types the client's text into the password field with key
+  display), Cmd+V (Alt+V from a device that is not a Mac) or **붙여넣기** types the client's text into the password field with key
   codes (characters outside the US layout fall back to Unicode typing). The text is held in the
   agent's memory only and is never written to the Mac pasteboard; it is dropped on unlock and
   at session end. One trailing line break is dropped; text with a line break inside is refused
